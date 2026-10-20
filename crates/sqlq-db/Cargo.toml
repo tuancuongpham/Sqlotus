@@ -1,0 +1,24 @@
+[package]
+name = "sqlq-db"
+description = "Database connections, query execution and metadata loading"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sqlq-core = { path = "../sqlq-core" }
+serde.workspace = true
+thiserror.workspace = true
+tokio = { version = "1", features = ["net", "time", "rt", "macros", "sync"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+tiberius = { version = "0.13", features = ["sql-browser-tokio", "chrono"] }
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+tokio-postgres = "0.7"
+postgres-native-tls = "0.5"
+native-tls = "0.2"
+mysql_async = { version = "0.37", default-features = false, features = ["minimal-rust", "native-tls-tls"] }
+futures-util = "0.3"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+serde_json.workspace = true

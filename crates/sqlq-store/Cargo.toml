@@ -1,0 +1,15 @@
+[package]
+name = "sqlq-store"
+description = "Local persistence: saved connections, settings, snippets, history, catalog cache"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sqlq-core = { path = "../sqlq-core" }
+sqlq-db = { path = "../sqlq-db" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+rusqlite = { version = "0.40", features = ["bundled"] }
+keyring = "4"

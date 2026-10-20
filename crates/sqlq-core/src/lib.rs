@@ -9,6 +9,7 @@ pub mod format;
 pub mod keywords;
 pub mod lexer;
 pub mod scope;
+pub mod search;
 pub mod snippet;
 pub mod statements;
 

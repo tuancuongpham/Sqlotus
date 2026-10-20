@@ -80,6 +80,16 @@ pub struct ForeignKey {
     pub to_columns: Vec<String>,
 }
 
+/// Source text of a programmable object (view, procedure, function, trigger).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ObjectDefinition {
+    pub schema: String,
+    pub name: String,
+    pub kind: ObjectKind,
+    pub definition: String,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Catalog {
