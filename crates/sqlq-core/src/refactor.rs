@@ -14,7 +14,7 @@ use crate::{Dialect, keywords};
 
 /// (start, end, replacement) byte edits, applied back to front.
 fn apply(src: &str, mut edits: Vec<(usize, usize, String)>) -> String {
-    edits.sort_by(|a, b| b.0.cmp(&a.0));
+    edits.sort_by_key(|e| std::cmp::Reverse(e.0));
     let mut out = src.to_string();
     let mut last_start = usize::MAX;
     for (s, e, text) in edits {
@@ -199,14 +199,14 @@ pub fn qualify_object_names(src: &str, dialect: Dialect, catalog: &Catalog) -> S
             {
                 continue;
             }
-            if let Some(o) = catalog.find(None, &r.name) {
-                if seen.insert(r.name_start) {
-                    edits.push((
-                        r.name_start,
-                        r.name_start,
-                        format!("{}.", dialect.quote_ident(&o.schema)),
-                    ));
-                }
+            if let Some(o) = catalog.find(None, &r.name)
+                && seen.insert(r.name_start)
+            {
+                edits.push((
+                    r.name_start,
+                    r.name_start,
+                    format!("{}.", dialect.quote_ident(&o.schema)),
+                ));
             }
         }
         let t = sig(&stmt);
@@ -223,14 +223,13 @@ pub fn qualify_object_names(src: &str, dialect: Dialect, catalog: &Catalog) -> S
             if let Some(o) = catalog
                 .find(None, &n.ident_value())
                 .filter(|o| o.kind == ObjectKind::Procedure)
+                && seen.insert(n.start)
             {
-                if seen.insert(n.start) {
-                    edits.push((
-                        n.start,
-                        n.start,
-                        format!("{}.", dialect.quote_ident(&o.schema)),
-                    ));
-                }
+                edits.push((
+                    n.start,
+                    n.start,
+                    format!("{}.", dialect.quote_ident(&o.schema)),
+                ));
             }
         }
     }
@@ -244,8 +243,7 @@ pub fn insert_semicolons(src: &str, dialect: Dialect) -> String {
     for span in split_statements(src, dialect) {
         let last = tokens
             .iter()
-            .filter(|t| t.start >= span.start && t.end() <= span.end && !t.is_trivia())
-            .last();
+            .rfind(|t| t.start >= span.start && t.end() <= span.end && !t.is_trivia());
         let Some(last) = last else { continue };
         let skip = match last.kind {
             TokenKind::Semicolon

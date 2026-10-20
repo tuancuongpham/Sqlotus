@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { save } from "@tauri-apps/plugin-dialog";
+import { api, errorText } from "../api";
 import type { Dialect, ResultSet } from "../types";
 
 const ROW_H = 24;
@@ -56,6 +58,16 @@ function toCsv(rs: ResultSet, rows: (string | null)[][]): string {
   return [rs.columns.map((c) => esc(c.name)).join(","), ...rows.map((r) => r.map(esc).join(","))].join("\r\n");
 }
 
+type Row = (string | null)[];
+
+function compareCells(a: string | null, b: string | null): number {
+  if (a == null || b == null) return a == null ? (b == null ? 0 : -1) : 1;
+  const na = Number(a);
+  const nb = Number(b);
+  if (a.trim() !== "" && b.trim() !== "" && !Number.isNaN(na) && !Number.isNaN(nb)) return na - nb;
+  return a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
+}
+
 interface Cell {
   row: number;
   col: number;
@@ -67,6 +79,36 @@ export function ResultGrid({ rs, dialect = "mssql" }: { rs: ResultSet; dialect?:
   const [selected, setSelected] = useState<Cell | null>(null);
   const [selRows, setSelRows] = useState<Set<number>>(new Set());
   const [widths, setWidths] = useState<number[]>(() => columnWidths(rs));
+  const [sort, setSort] = useState<{ col: number; desc: boolean } | null>(null);
+  const [filter, setFilter] = useState("");
+  const [note, setNote] = useState("");
+
+  // filtered + sorted view of the rows; selections index into it
+  const rows: Row[] = useMemo(() => {
+    const f = filter.trim().toLowerCase();
+    let out = f ? rs.rows.filter((r) => r.some((v) => (v ?? "null").toLowerCase().includes(f))) : rs.rows;
+    if (sort) {
+      out = [...out].sort((a, b) => compareCells(a[sort.col], b[sort.col]) * (sort.desc ? -1 : 1));
+    }
+    return out;
+  }, [rs, filter, sort]);
+
+  const toggleSort = (col: number) => {
+    setSelRows(new Set());
+    setSelected(null);
+    setSort((s) => (s?.col !== col ? { col, desc: false } : s.desc ? null : { col, desc: true }));
+  };
+
+  const saveCsv = async () => {
+    try {
+      const path = await save({ defaultPath: "results.csv", filters: [{ name: "CSV", extensions: ["csv"] }] });
+      if (!path) return;
+      await api.saveTextFile(path, toCsv(rs, targetRows()));
+      setNote(`Saved ${targetRows().length} rows`);
+    } catch (e) {
+      setNote(errorText(e));
+    }
+  };
   const ref = useRef<HTMLDivElement>(null);
   const resizing = useRef<{ col: number; x: number; w: number } | null>(null);
 
@@ -78,24 +120,24 @@ export function ResultGrid({ rs, dialect = "mssql" }: { rs: ResultSet; dialect?:
     return () => ro.disconnect();
   }, []);
 
-  const rowNumW = Math.max(40, String(rs.rows.length).length * 8 + 16);
+  const rowNumW = Math.max(40, String(rows.length).length * 8 + 16);
   const totalW = useMemo(() => widths.reduce((a, b) => a + b, rowNumW), [widths, rowNumW]);
   const first = Math.max(0, Math.floor(scrollTop / ROW_H) - OVERSCAN);
-  const last = Math.min(rs.rows.length, Math.ceil((scrollTop + height) / ROW_H) + OVERSCAN);
+  const last = Math.min(rows.length, Math.ceil((scrollTop + height) / ROW_H) + OVERSCAN);
 
   const copy = (headers: boolean) => {
     let text: string;
     if (selRows.size > 0) {
-      text = toTsv(rs, [...selRows].sort((a, b) => a - b).map((i) => rs.rows[i]), headers);
+      text = toTsv(rs, [...selRows].sort((a, b) => a - b).map((i) => rows[i]), headers);
     } else if (selected) {
-      text = rs.rows[selected.row]?.[selected.col] ?? "NULL";
+      text = rows[selected.row]?.[selected.col] ?? "NULL";
     } else {
-      text = toTsv(rs, rs.rows, headers);
+      text = toTsv(rs, rows, headers);
     }
     void navigator.clipboard.writeText(text);
   };
 
-  const targetRows = () => (selRows.size > 0 ? [...selRows].sort((a, b) => a - b).map((i) => rs.rows[i]) : rs.rows);
+  const targetRows = () => (selRows.size > 0 ? [...selRows].sort((a, b) => a - b).map((i) => rows[i]) : rows);
 
   const copyAs = (format: string) => {
     let text = "";
@@ -117,7 +159,7 @@ export function ResultGrid({ rs, dialect = "mssql" }: { rs: ResultSet; dialect?:
     }
     if (e.ctrlKey && e.key.toLowerCase() === "a") {
       e.preventDefault();
-      setSelRows(new Set(rs.rows.map((_, i) => i)));
+      setSelRows(new Set(rows.map((_, i) => i)));
       return;
     }
     if (!selected) return;
@@ -132,7 +174,7 @@ export function ResultGrid({ rs, dialect = "mssql" }: { rs: ResultSet; dialect?:
     const m = moves[e.key];
     if (!m) return;
     e.preventDefault();
-    const row = Math.max(0, Math.min(rs.rows.length - 1, selected.row + m[0]));
+    const row = Math.max(0, Math.min(rows.length - 1, selected.row + m[0]));
     const col = Math.max(0, Math.min(rs.columns.length - 1, selected.col + m[1]));
     setSelected({ row, col });
     setSelRows(new Set());
@@ -179,8 +221,10 @@ export function ResultGrid({ rs, dialect = "mssql" }: { rs: ResultSet; dialect?:
     <div className="grid-wrap">
       <div className="grid-toolbar">
         <span>
-          {rs.rows.length.toLocaleString()} rows{rs.truncated ? " (truncated)" : ""} · {rs.columns.length} columns
+          {rows.length === rs.rows.length ? rows.length.toLocaleString() : `${rows.length.toLocaleString()} of ${rs.rows.length.toLocaleString()}`} rows
+          {rs.truncated ? " (truncated)" : ""} · {rs.columns.length} columns {note && <small>· {note}</small>}
         </span>
+        <input className="grid-filter" value={filter} placeholder="Filter rows…" onChange={(e) => setFilter(e.target.value)} />
         <button onClick={() => copy(false)} title="Ctrl+C">Copy</button>
         <button onClick={() => copy(true)} title="Ctrl+Shift+C">Copy with headers</button>
         <select
@@ -199,6 +243,9 @@ export function ResultGrid({ rs, dialect = "mssql" }: { rs: ResultSet; dialect?:
           <option value="csv">CSV</option>
           <option value="in">IN (…) list of the column</option>
         </select>
+        <button onClick={saveCsv} title="Save the selected rows (or all rows) as a CSV file">
+          Save CSV…
+        </button>
       </div>
       <div
         className="grid"
@@ -210,14 +257,21 @@ export function ResultGrid({ rs, dialect = "mssql" }: { rs: ResultSet; dialect?:
         <div className="grid-header" style={{ width: totalW }}>
           <div className="grid-cell grid-rownum" style={{ width: rowNumW }} />
           {rs.columns.map((c, i) => (
-            <div key={i} className="grid-cell grid-head" style={{ width: widths[i] }} title={`${c.name} ${c.typeName}`}>
+            <div
+              key={i}
+              className="grid-cell grid-head"
+              style={{ width: widths[i] }}
+              title={`${c.name} ${c.typeName} — click to sort`}
+              onClick={() => toggleSort(i)}
+            >
               {c.name || <i>(No column name)</i>}
+              {sort?.col === i && <span className="sort-mark">{sort.desc ? " ▼" : " ▲"}</span>}
               <span className="grid-resize" onMouseDown={(e) => startResize(e, i)} />
             </div>
           ))}
         </div>
-        <div style={{ height: rs.rows.length * ROW_H, width: totalW, position: "relative" }}>
-          {rs.rows.slice(first, last).map((row, k) => {
+        <div style={{ height: rows.length * ROW_H, width: totalW, position: "relative" }}>
+          {rows.slice(first, last).map((row, k) => {
             const i = first + k;
             return (
               <div

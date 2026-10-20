@@ -3,6 +3,7 @@ import { api, errorText, newId } from "./api";
 import { ConnectionDialog } from "./components/ConnectionDialog";
 import { ExplorerPanel } from "./components/ExplorerPanel";
 import { HistoryPanel } from "./components/HistoryPanel";
+import { MultiDbDialog } from "./components/MultiDbDialog";
 import { ResultsPanel } from "./components/ResultsPanel";
 import { SearchPanel } from "./components/SearchPanel";
 import { SettingsDialog } from "./components/SettingsDialog";
@@ -48,7 +49,7 @@ export default function App() {
   const [activeId, setActiveId] = useState<string>("");
   const [settings, setSettings] = useState<Settings | null>(null);
   const [connections, setConnections] = useState<SavedConnection[]>([]);
-  const [dialog, setDialog] = useState<"connect" | "settings" | null>(null);
+  const [dialog, setDialog] = useState<"connect" | "settings" | "multi" | null>(null);
   const [panel, setPanel] = useState<Panel>(null);
   const [resultsVisible, setResultsVisible] = useState(true);
   const [resultsHeight, setResultsHeight] = useState(280);
@@ -308,6 +309,39 @@ export default function App() {
     [patchTab, recordHistory, loadCatalog],
   );
 
+  /** Run the selection (or the whole tab) on several databases. */
+  const executeMulti = useCallback(
+    async (databases: string[]) => {
+      const id = activeRef.current;
+      const tab = tabsRef.current.find((t) => t.id === id);
+      const ed = editor.current;
+      const model = models.current.get(id);
+      if (!tab || !ed || !model || !tab.connected || tab.running) return;
+      const sel = ed.getSelection();
+      const sql = sel && !sel.isEmpty() ? model.getValueInRange(sel) : model.getValue();
+      if (!sql.trim()) return;
+      const warnings = await api.executionWarnings(sql, tab.dialect).catch(() => [] as string[]);
+      if (warnings.length > 0) {
+        const msgs = [...warnings, `This will run on ${databases.length} database(s).`];
+        const ok = await new Promise<boolean>((resolve) => setConfirmState({ messages: msgs, resolve }));
+        setConfirmState(null);
+        if (!ok) return;
+      }
+      recordHistory(id, "execute");
+      patchTab(id, { running: true });
+      setResultsVisible(true);
+      try {
+        const result = await api.executeMulti(id, sql, databases);
+        patchTab(id, { running: false, result, executedAt: Date.now() });
+        setStatus(`Ran on ${databases.length} database(s)`);
+      } catch (e) {
+        patchTab(id, { running: false });
+        setStatus(errorText(e));
+      }
+    },
+    [patchTab, recordHistory],
+  );
+
   const cancel = useCallback(() => {
     const id = activeRef.current;
     void api.cancelQuery(id);
@@ -409,8 +443,17 @@ export default function App() {
   };
 
   // keep the latest handlers reachable from Monaco commands registered once
-  const actions = useRef({ execute, cancel, format, closeTab, createTab, reopenClosed, refactor, goToDefinition });
-  actions.current = { execute, cancel, format, closeTab, createTab, reopenClosed, refactor, goToDefinition };
+  const openMulti = useCallback(() => {
+    const tab = tabsRef.current.find((t) => t.id === activeRef.current);
+    if (!tab?.connected) {
+      setDialog("connect");
+      return;
+    }
+    setDialog("multi");
+  }, []);
+
+  const actions = useRef({ execute, cancel, format, closeTab, createTab, reopenClosed, refactor, goToDefinition, openMulti });
+  actions.current = { execute, cancel, format, closeTab, createTab, reopenClosed, refactor, goToDefinition, openMulti };
 
   // -- startup ----------------------------------------------------------------
 
@@ -466,6 +509,7 @@ export default function App() {
     action("sqlq.definition", "Go to Definition (script object)", () => void actions.current.goToDefinition("create"), [KC.F12], "0_nav", 1);
     action("sqlq.alter", "Script as ALTER", () => void actions.current.goToDefinition("alter"), [KM.Alt | KC.F12], "0_nav", 2);
     action("sqlq.format", "Format SQL", () => actions.current.format(), [], "1_sqlq", 1);
+    action("sqlq.multi", "Run on Multiple Databases…", () => actions.current.openMulti(), [KM.CtrlCmd | KM.Shift | KC.F5], "0_nav", 3);
     action(
       "sqlq.expandWildcards",
       "Expand Wildcards",
@@ -664,6 +708,9 @@ export default function App() {
         <button onClick={() => execute("statement")} disabled={activeTab?.running} title="Execute current statement (Shift+F5)">
           ▷ Statement
         </button>
+        <button onClick={openMulti} disabled={activeTab?.running} title="Run on multiple databases (Ctrl+Shift+F5)">
+          ⧉ Multi-DB
+        </button>
         <button onClick={cancel} disabled={!activeTab?.running} title="Cancel (Alt+Break)">
           ■ Cancel
         </button>
@@ -766,7 +813,11 @@ export default function App() {
                   onOpenScript={(title, text) => void openText(title, text)}
                 />
               )}
-              {panel === "history" && <HistoryPanel onOpen={openHistory} onInsert={insertText} />}
+              {panel === "history" && <HistoryPanel
+                  onOpen={openHistory}
+                  onInsert={insertText}
+                  currentText={() => editor.current?.getModel()?.getValue() ?? ""}
+                />}
               {panel === "explorer" && (
                 <ExplorerPanel
                   connectionId={activeTab?.connected ? activeTab.connectionId : undefined}
@@ -839,6 +890,17 @@ export default function App() {
             </div>
           </div>
         </div>
+      )}
+      {dialog === "multi" && activeTab && (
+        <MultiDbDialog
+          databases={activeTab.databases}
+          current={activeTab.database}
+          onClose={() => setDialog(null)}
+          onRun={(dbs) => {
+            setDialog(null);
+            void executeMulti(dbs);
+          }}
+        />
       )}
       {dialog === "settings" && settings && (
         <SettingsDialog settings={settings} dialect={activeTab?.dialect ?? "mssql"} onClose={() => setDialog(null)} onSaved={setSettings} />

@@ -12,7 +12,7 @@ use sqlq_core::{Dialect, byte_to_utf16, refactor, script, utf16_to_byte};
 use sqlq_db::CatalogSnapshot;
 use tauri::State;
 
-use crate::commands::{CmdResult, no_panic};
+use crate::commands::{CmdResult, fetch_catalog, no_panic};
 use crate::state::AppState;
 
 #[derive(Deserialize)]
@@ -225,4 +225,57 @@ pub async fn script_object(
         },
         _ => definition.unwrap_or_else(|| script::create_table_script(obj, dialect)),
     })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenameDto {
+    kind: String,
+    name: String,
+    /// UTF-16 ranges of every occurrence.
+    ranges: Vec<(usize, usize)>,
+}
+
+/// The variable / alias / CTE under the cursor and all its occurrences.
+#[tauri::command]
+pub async fn rename_target(args: EditorArgs) -> CmdResult<Option<RenameDto>> {
+    let t = no_panic("rename", || {
+        sqlq_core::rename::rename_target(&args.text, args.byte_offset(), args.dialect)
+    })?;
+    Ok(t.map(|t| RenameDto {
+        kind: t.kind,
+        name: t.name,
+        ranges: t
+            .ranges
+            .into_iter()
+            .map(|(s, e)| (args.u16(s), args.u16(e)))
+            .collect(),
+    }))
+}
+
+/// Views, procedures, functions and triggers that reference missing tables
+/// or columns. Reloads the catalog first so the answer is current.
+#[tauri::command]
+pub async fn find_invalid_objects(
+    state: State<'_, AppState>,
+    connection_id: String,
+    database: String,
+    dialect: Dialect,
+) -> CmdResult<Vec<analysis::ObjectProblem>> {
+    let snap = fetch_catalog(&state, &connection_id, &database).await?;
+    no_panic("find invalid objects", || {
+        analysis::invalid_objects_in_definitions(&snap.definitions, dialect, &snap.catalog)
+    })
+}
+
+/// Write text to a file chosen by the user (CSV export).
+#[tauri::command]
+pub async fn save_text_file(path: String, contents: String) -> CmdResult<()> {
+    // Excel reads UTF-8 CSV correctly only with a BOM
+    let data = if path.to_ascii_lowercase().ends_with(".csv") {
+        format!("\u{feff}{contents}")
+    } else {
+        contents
+    };
+    std::fs::write(&path, data).map_err(|e| e.to_string())
 }

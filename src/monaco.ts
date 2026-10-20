@@ -210,6 +210,42 @@ export function registerProviders() {
       },
     });
 
+    // F2: rename a variable, table alias or CTE
+    monaco.languages.registerRenameProvider(lang, {
+      async resolveRenameLocation(model, position) {
+        const t = await api.renameTarget(editorArgs(model, position)).catch(() => null);
+        const off = model.getOffsetAt(position);
+        const here = t?.ranges.find(([s, e]) => s <= off && off <= e);
+        if (!t || !here) {
+          return {
+            range: new monaco.Range(position.lineNumber, position.column, position.lineNumber, position.column),
+            text: "",
+            rejectReason: "Only variables, table aliases and CTEs can be renamed",
+          };
+        }
+        const a = model.getPositionAt(here[0]);
+        const b = model.getPositionAt(here[1]);
+        const range = new monaco.Range(a.lineNumber, a.column, b.lineNumber, b.column);
+        return { range, text: model.getValueInRange(range) };
+      },
+      async provideRenameEdits(model, position, newName) {
+        const t = await api.renameTarget(editorArgs(model, position));
+        if (!t) return { edits: [], rejectReason: "Nothing to rename here" };
+        const name = t.kind === "variable" && !newName.startsWith("@") ? `@${newName}` : newName;
+        return {
+          edits: t.ranges.map(([s, e]) => {
+            const a = model.getPositionAt(s);
+            const b = model.getPositionAt(e);
+            return {
+              resource: model.uri,
+              versionId: model.getVersionId(),
+              textEdit: { range: new monaco.Range(a.lineNumber, a.column, b.lineNumber, b.column), text: name },
+            };
+          }),
+        };
+      },
+    });
+
     monaco.languages.registerDocumentFormattingEditProvider(lang, {
       async provideDocumentFormattingEdits(model) {
         const formatted = await api.formatSql(model.getValue(), contextOf(model).dialect);

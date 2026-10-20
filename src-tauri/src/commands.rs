@@ -186,10 +186,13 @@ pub async fn connect_tab(
         running: Mutex::new(None),
     });
     let old = state.sessions.lock().map_err(err)?.insert(tab_id, session);
-    if let Some(old) = old {
-        if let Some(c) = old.conn.lock().await.take() {
-            c.close().await;
-        }
+    if let Some(old) = old
+        && let Some(c) = old.conn.lock().await.take()
+    {
+        c.close().await;
+    }
+    if let Ok(mut map) = state.server_databases.write() {
+        map.insert(connection_id.clone(), databases.clone());
     }
     Ok(TabConnection {
         database: current,
@@ -205,10 +208,10 @@ pub async fn disconnect_tab(state: State<'_, AppState>, tab_id: String) -> CmdRe
         if let Some(r) = s.running.lock().map_err(err)?.take() {
             r.abort.abort();
         }
-        if let Ok(mut guard) = s.conn.try_lock() {
-            if let Some(c) = guard.take() {
-                c.close().await;
-            }
+        if let Ok(mut guard) = s.conn.try_lock()
+            && let Some(c) = guard.take()
+        {
+            c.close().await;
         }
     }
     Ok(())
@@ -261,17 +264,17 @@ pub async fn change_database(
 #[serde(rename_all = "camelCase")]
 pub struct BatchDto {
     /// UTF-16 offsets within the executed text.
-    start: usize,
-    end: usize,
-    output: BatchOutput,
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    pub(crate) output: BatchOutput,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecuteResult {
-    batches: Vec<BatchDto>,
-    database: String,
-    cancelled: bool,
+    pub(crate) batches: Vec<BatchDto>,
+    pub(crate) database: String,
+    pub(crate) cancelled: bool,
 }
 
 /// Run `sql` on the tab's connection. Runs in its own task so `cancel_query`
@@ -402,7 +405,7 @@ fn catalog_info(snap: &sqlq_db::CatalogSnapshot) -> CatalogInfo {
     }
 }
 
-async fn fetch_catalog(
+pub(crate) async fn fetch_catalog(
     state: &AppState,
     connection_id: &str,
     database: &str,
@@ -440,10 +443,8 @@ pub async fn load_catalog_cmd(
     database: String,
     refresh: bool,
 ) -> CmdResult<CatalogInfo> {
-    if !refresh {
-        if let Some(snap) = state.cached_catalog(&connection_id, &database) {
-            return Ok(catalog_info(&snap));
-        }
+    if !refresh && let Some(snap) = state.cached_catalog(&connection_id, &database) {
+        return Ok(catalog_info(&snap));
     }
     let snap = fetch_catalog(&state, &connection_id, &database).await?;
     Ok(catalog_info(&snap))
@@ -458,6 +459,33 @@ pub struct CompleteArgs {
     text: String,
     offset: usize,
     server: Option<String>,
+}
+
+/// Other databases named as `Db.` qualifiers in the text.
+fn referenced_databases(
+    text: &str,
+    dialect: Dialect,
+    databases: &[String],
+    current: &str,
+) -> Vec<String> {
+    let tokens: Vec<_> = sqlq_core::tokenize(text, dialect)
+        .into_iter()
+        .filter(|t| !t.is_trivia())
+        .collect();
+    let mut found: Vec<String> = Vec::new();
+    for w in tokens.windows(2) {
+        if w[0].is_name() && w[1].kind == sqlq_core::TokenKind::Dot {
+            let name = w[0].ident_value();
+            if let Some(db) = databases
+                .iter()
+                .find(|d| d.eq_ignore_ascii_case(&name) && !d.eq_ignore_ascii_case(current))
+                && !found.contains(db)
+            {
+                found.push(db.clone());
+            }
+        }
+    }
+    found
 }
 
 #[tauri::command]
@@ -485,13 +513,33 @@ pub async fn complete(
             args.server.clone().unwrap_or_default(),
         ),
     ]);
+    // three-part names: load the catalogs of other databases the text mentions
+    let mut others = Vec::new();
+    if let (Some(conn_id), Some(current)) = (&args.connection_id, &args.database) {
+        let databases = state
+            .server_databases
+            .read()
+            .ok()
+            .and_then(|m| m.get(conn_id).cloned())
+            .unwrap_or_default();
+        for db in referenced_databases(&args.text, args.dialect, &databases, current) {
+            let snap = match state.cached_catalog(conn_id, &db) {
+                Some(s) => Some(s),
+                None => fetch_catalog(&state, conn_id, &db).await.ok(),
+            };
+            others.extend(snap);
+        }
+        opts.databases = databases;
+    }
+    let other_catalogs: Vec<&sqlq_core::Catalog> = others.iter().map(|s| &s.catalog).collect();
     let offset = utf16_to_byte(&args.text, args.offset);
     let mut r = no_panic("completion", || {
-        sqlq_core::complete(
+        sqlq_core::completion::complete_with_others(
             &args.text,
             offset,
             args.dialect,
             catalog.as_ref().map(|c| &c.catalog),
+            &other_catalogs,
             &snippets,
             &opts,
         )

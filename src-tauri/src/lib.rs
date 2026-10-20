@@ -1,5 +1,6 @@
 mod commands;
 mod intel;
+mod multi;
 mod state;
 
 use tauri::Manager;
@@ -10,6 +11,7 @@ use crate::state::AppState;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let path = app.path().app_data_dir()?.join("sqlq.db");
             let store = sqlq_store::Store::open(&path)?;
@@ -65,6 +67,10 @@ pub fn run() {
             intel::refactor_text,
             intel::catalog_objects,
             intel::script_object,
+            intel::rename_target,
+            intel::find_invalid_objects,
+            intel::save_text_file,
+            multi::execute_multi,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

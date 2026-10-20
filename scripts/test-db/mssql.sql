@@ -24,3 +24,15 @@ END
 GO
 CREATE FUNCTION dbo.fnOrderCount (@CustomerId INT) RETURNS INT AS BEGIN RETURN (SELECT COUNT(*) FROM dbo.Orders WHERE CustomerId = @CustomerId) END
 GO
+-- references a table that does not exist (deferred name resolution allows it):
+-- found by "Find invalid objects"
+CREATE PROCEDURE dbo.pBroken AS SELECT x.Id FROM dbo.DroppedTable x;
+GO
+-- a second database for three-part-name completion and multi-database runs
+CREATE DATABASE Archive;
+GO
+USE Archive;
+GO
+CREATE TABLE dbo.OldOrders (Id INT PRIMARY KEY, Amount MONEY NOT NULL);
+INSERT INTO dbo.OldOrders VALUES (1, 10), (2, 20);
+GO

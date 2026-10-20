@@ -58,6 +58,8 @@ pub struct AppState {
     pub store: Arc<Store>,
     pub sessions: Mutex<HashMap<String, Arc<Session>>>,
     pub catalogs: RwLock<HashMap<String, Arc<CatalogSnapshot>>>,
+    /// Database names per saved connection, recorded when a tab connects.
+    pub server_databases: RwLock<HashMap<String, Vec<String>>>,
 }
 
 pub fn catalog_key(connection_id: &str, database: &str) -> String {
@@ -70,6 +72,7 @@ impl AppState {
             store: Arc::new(store),
             sessions: Mutex::new(HashMap::new()),
             catalogs: RwLock::new(HashMap::new()),
+            server_databases: RwLock::new(HashMap::new()),
         }
     }
 

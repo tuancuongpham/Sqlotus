@@ -234,3 +234,12 @@ export interface EditorArgs {
   text: string;
   offset?: number;
 }
+
+export interface ObjectProblem {
+  schema: string;
+  name: string;
+  kind: ObjectKind;
+  line: number;
+  code: string;
+  message: string;
+}

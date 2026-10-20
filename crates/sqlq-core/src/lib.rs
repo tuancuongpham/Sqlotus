@@ -10,6 +10,7 @@ pub mod format;
 pub mod keywords;
 pub mod lexer;
 pub mod refactor;
+pub mod rename;
 pub mod scope;
 pub mod script;
 pub mod search;

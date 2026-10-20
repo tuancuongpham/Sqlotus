@@ -325,11 +325,11 @@ fn pg_params(args: &str) -> Vec<Param> {
             };
             let mut words: Vec<&str> = p.split_whitespace().collect();
             let mut is_output = false;
-            if let Some(m) = words.first().map(|w| w.to_ascii_uppercase()) {
-                if matches!(m.as_str(), "IN" | "OUT" | "INOUT" | "VARIADIC") {
-                    is_output = m != "IN" && m != "VARIADIC";
-                    words.remove(0);
-                }
+            if let Some(m) = words.first().map(|w| w.to_ascii_uppercase())
+                && matches!(m.as_str(), "IN" | "OUT" | "INOUT" | "VARIADIC")
+            {
+                is_output = m != "IN" && m != "VARIADIC";
+                words.remove(0);
             }
             let (name, data_type) = if words.len() >= 2 {
                 (words[0].to_string(), words[1..].join(" "))

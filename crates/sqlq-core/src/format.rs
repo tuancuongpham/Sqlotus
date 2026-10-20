@@ -1341,6 +1341,8 @@ fn is_join(up: &str) -> bool {
     up == "JOIN" || up == "STRAIGHT_JOIN" || up.ends_with(" JOIN") || up.ends_with(" APPLY")
 }
 
+// TokenKind is Copy, so taking self by value is fine
+#[allow(clippy::wrong_self_convention)]
 trait NameLike {
     fn is_name_like(self) -> bool;
 }

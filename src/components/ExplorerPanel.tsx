@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, errorText } from "../api";
-import type { DbObject, Dialect, ObjectKind, ScriptKind } from "../types";
+import type { DbObject, Dialect, ObjectKind, ObjectProblem, ScriptKind } from "../types";
 
 const GROUPS: { kind: ObjectKind[]; label: string }[] = [
   { kind: ["table"], label: "Tables" },
@@ -39,6 +39,31 @@ export function ExplorerPanel({ connectionId, database, dialect, version, onOpen
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState<string>("");
   const [error, setError] = useState("");
+  const [problems, setProblems] = useState<ObjectProblem[] | null>(null);
+  const [checking, setChecking] = useState(false);
+
+  const findInvalid = async () => {
+    if (!connectionId || !database) return;
+    setChecking(true);
+    setError("");
+    try {
+      setProblems(await api.findInvalidObjects(connectionId, database, dialect));
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const openProblem = async (p: ObjectProblem) => {
+    if (!connectionId || !database) return;
+    try {
+      const text = await api.scriptObject(connectionId, database, p.schema, p.name, dialect, "create");
+      onOpenScript(`${p.name} (line ${p.line})`, text);
+    } catch (e) {
+      setError(errorText(e));
+    }
+  };
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => inputRef.current?.focus(), []);
@@ -89,8 +114,30 @@ export function ExplorerPanel({ connectionId, database, dialect, version, onOpen
         <button onClick={onRefresh} title="Reload objects">
           ⟳
         </button>
+        <button onClick={findInvalid} disabled={checking} title="Find views, procedures, functions and triggers that reference missing tables or columns">
+          {checking ? "Checking…" : "Find invalid objects"}
+        </button>
       </div>
       {error && <div className="status-error">{error}</div>}
+      {problems && (
+        <div className="problems">
+          <div className="problems-head">
+            <b>{problems.length === 0 ? "No invalid objects found" : `${problems.length} problem(s)`}</b>
+            <span className="spacer" />
+            <button onClick={() => setProblems(null)}>×</button>
+          </div>
+          {problems.map((p, i) => (
+            <div key={i} className="problem" onClick={() => openProblem(p)} title="Open the definition">
+              <span className="tree-icon">{ICON[p.kind]}</span>
+              <span>
+                <small>{p.schema}.</small>
+                {p.name} <small>line {p.line}</small>
+                <div className="problem-msg">{p.message}</div>
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="explorer-tree">
         {GROUPS.map((g) => {
           const items = visible.filter((o) => g.kind.includes(o.kind));

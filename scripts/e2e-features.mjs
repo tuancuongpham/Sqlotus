@@ -71,7 +71,7 @@ async function cursorOn(word) {
     const r = s.getBoundingClientRect();
     const i = s.textContent.indexOf(${JSON.stringify(word)});
     const w = r.width / Math.max(1, s.textContent.length);
-    return { x: r.x + (i + 1.5) * w, y: r.y + r.height / 2 };
+    return { x: r.x + (i + 0.5) * w, y: r.y + r.height / 2 };
   })()`);
   if (!box) return null;
   for (const t of ["mousePressed", "mouseReleased"]) {
@@ -209,6 +209,88 @@ await evaluate(`(() => { const s = document.querySelector(".copy-as"); s.value =
 await sleep(300);
 const clip = await evaluate(`window.__clip`);
 check("copy as INSERT", clip.startsWith("INSERT INTO #Results ([Id], [Name]") && clip.includes("N'Nguyễn Văn A'"), clip.split("\n")[0]);
+
+// 11. sort and filter the grid (Customers result is on screen)
+const gridCol = (c) => evaluate(`[...document.querySelectorAll(".grid-row")].map((r) => r.children[${c}].textContent)`);
+await evaluate(`[...document.querySelectorAll(".grid-head")].find((h) => h.textContent.startsWith("Name")).click()`);
+await sleep(200);
+const asc = await gridCol(2);
+await evaluate(`[...document.querySelectorAll(".grid-head")].find((h) => h.textContent.startsWith("Name")).click()`);
+await sleep(200);
+const desc = await gridCol(2);
+check("grid sort", JSON.stringify(asc) === JSON.stringify([...asc].sort()) && desc[0] === asc[asc.length - 1], `${asc} / ${desc}`);
+await click(".grid-filter");
+await type("John");
+await sleep(300);
+const filtered = await gridCol(2);
+check("grid filter", filtered.length === 1 && filtered[0] === "John Smith", JSON.stringify(filtered));
+
+// 12. CSV export writes a UTF-8 file with BOM (the save dialog itself is native)
+const csvPath = process.env.TEMP + "\\sqlq-e2e.csv";
+await ui.invoke("save_text_file", { path: csvPath, contents: "Name\r\nNguyễn Văn A" });
+const { readFileSync } = await import("node:fs");
+const csv = readFileSync(csvPath);
+check("CSV file with BOM", csv[0] === 0xef && csv[1] === 0xbb && csv.toString("utf8").includes("Nguyễn"), `${csv.length} bytes`);
+
+// 13. F2 renames an alias everywhere in the statement
+await setText("SELECT o.Id FROM dbo.Orders o WHERE o.Total > 1");
+await cursorOn("o");
+await press("F2");
+const renameBox = await until(() => evaluate(`!!document.querySelector(".rename-box input")`), 4000);
+if (renameBox) {
+  // the rename box opens with the old name selected
+  await until(() => evaluate(`document.activeElement?.closest(".rename-box") != null`), 3000);
+  await type("ord");
+  await press("Enter");
+  await sleep(500);
+}
+check("F2 rename alias", (await editorText()) === "SELECT ord.Id FROM dbo.Orders ord WHERE ord.Total > 1", JSON.stringify(await editorText()));
+
+// 14. three-part names: objects of another database
+await setText("SELECT * FROM Archive.dbo.", false);
+const xdb = await until(async () => {
+  const t = await suggestText();
+  return t.includes("OldOrders") ? t : null;
+}, 10000);
+check("cross-database completion", !!xdb, (xdb ?? "").split("\n").slice(0, 2).join(" | "));
+await press("Escape");
+
+// 15. run on multiple databases
+await setText("SELECT COUNT(*) AS objects FROM sys.tables");
+await press("Control+Shift+F5");
+await waitFor(".multi-modal");
+await evaluate(`[...document.querySelectorAll(".multi-modal label")].filter((l) => ["Archive", "Shop"].includes(l.childNodes[1]?.textContent)).forEach((l) => { const i = l.querySelector("input"); if (!i.checked) i.click(); })`);
+await sleep(200);
+await evaluate(`[...document.querySelectorAll(".multi-modal button")].find((b) => b.textContent.startsWith("Run on")).click()`);
+const multiRows = await until(async () => {
+  const head = await evaluate(`[...document.querySelectorAll(".grid-head")].map((h) => h.textContent)`);
+  if (!head[0]?.startsWith("Database")) return null;
+  return gridCol(1);
+}, 15000);
+await shot("f15-multi");
+check("multi-database run", JSON.stringify(multiRows) === JSON.stringify(["Archive", "Shop"]), JSON.stringify(multiRows));
+
+// 16. find invalid objects
+if (!(await evaluate(`!!document.querySelector(".explorer-panel")`))) await press("F8");
+await waitFor(".explorer-panel");
+await evaluate(`[...document.querySelectorAll(".explorer-panel button")].find((b) => b.textContent === "Find invalid objects").click()`);
+const problems = await until(() => evaluate(`document.querySelector(".problems")?.innerText ?? ""`), 15000);
+await shot("f16-invalid");
+check("find invalid objects", (problems ?? "").includes("pBroken") && (problems ?? "").includes("DroppedTable"), (problems ?? "").replace(/\n/g, " | ").slice(0, 120));
+
+// 17. history diff against the current tab
+await press("F8");
+await press("Control+Shift+H");
+await waitFor(".history-item");
+await sleep(400);
+await evaluate(`document.querySelector(".history-item").click()`);
+await sleep(200);
+await evaluate(`[...document.querySelectorAll(".search-preview button")].find((b) => b.textContent === "Diff current").click()`);
+const diffOk = await until(() => evaluate(`!!document.querySelector(".diff-modal .monaco-diff-editor")`), 5000);
+await shot("f17-diff");
+check("history diff", !!diffOk);
+await evaluate(`[...document.querySelectorAll(".diff-modal button")].find((b) => b.textContent === "Close").click()`);
+await press("Control+Shift+H");
 
 if (await evaluate(`!!document.querySelector(".explorer-panel")`)) await press("F8");
 await press("Control+W");

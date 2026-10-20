@@ -69,6 +69,9 @@ pub struct CompletionOptions {
     pub max_items: usize,
     /// Values for snippet variables `$USER$`, `$MACHINE$`, `$DBNAME$`, `$SERVER$`.
     pub snippet_vars: std::collections::HashMap<String, String>,
+    /// Databases on the server, offered as `Db.` qualifiers.
+    #[serde(skip)]
+    pub databases: Vec<String>,
 }
 
 impl Default for CompletionOptions {
@@ -79,6 +82,7 @@ impl Default for CompletionOptions {
             assign_aliases: true,
             max_items: 400,
             snippet_vars: Default::default(),
+            databases: Vec::new(),
         }
     }
 }
@@ -107,6 +111,8 @@ struct Ctx<'a> {
     src: &'a str,
     dialect: Dialect,
     catalog: Option<&'a Catalog>,
+    /// Catalogs of other databases on the same server (`Db.schema.object`).
+    others: &'a [&'a Catalog],
     opts: &'a CompletionOptions,
     scope: Scope,
     doc: DocSymbols,
@@ -124,6 +130,20 @@ pub fn complete(
     offset: usize,
     dialect: Dialect,
     catalog: Option<&Catalog>,
+    snippets: &[Snippet],
+    opts: &CompletionOptions,
+) -> CompletionResult {
+    complete_with_others(src, offset, dialect, catalog, &[], snippets, opts)
+}
+
+/// [`complete`] with the catalogs of other databases on the server, used for
+/// three-part names (`OtherDb.dbo.Table`).
+pub fn complete_with_others(
+    src: &str,
+    offset: usize,
+    dialect: Dialect,
+    catalog: Option<&Catalog>,
+    others: &[&Catalog],
     snippets: &[Snippet],
     opts: &CompletionOptions,
 ) -> CompletionResult {
@@ -197,6 +217,7 @@ pub fn complete(
         src,
         dialect,
         catalog,
+        others,
         opts,
         scope,
         doc: document_symbols(src, dialect),
@@ -578,6 +599,39 @@ impl<'a> Ctx<'a> {
         }
     }
 
+    /// The catalog of `database` (`None` or the current one: the main catalog).
+    fn catalog_for(&self, database: Option<&str>) -> Option<&'a Catalog> {
+        match database {
+            None => self.catalog,
+            Some(db)
+                if self
+                    .catalog
+                    .is_some_and(|c| c.database.eq_ignore_ascii_case(db)) =>
+            {
+                self.catalog
+            }
+            Some(db) => self
+                .others
+                .iter()
+                .copied()
+                .find(|c| c.database.eq_ignore_ascii_case(db)),
+        }
+    }
+
+    fn is_other_database(&self, name: &str) -> bool {
+        self.catalog
+            .is_none_or(|c| !c.database.eq_ignore_ascii_case(name))
+            && (self
+                .opts
+                .databases
+                .iter()
+                .any(|d| d.eq_ignore_ascii_case(name))
+                || self
+                    .others
+                    .iter()
+                    .any(|c| c.database.eq_ignore_ascii_case(name)))
+    }
+
     fn table_columns(&self, t: &TableRef) -> Vec<(String, String)> {
         if !t.columns.is_empty() {
             return t
@@ -610,7 +664,7 @@ impl<'a> Ctx<'a> {
                 .map(|c| (c.clone(), String::new()))
                 .collect();
         }
-        self.catalog
+        self.catalog_for(t.database.as_deref())
             .and_then(|cat| cat.find(t.schema.as_deref(), &t.name))
             .map(|o| {
                 o.columns
@@ -805,6 +859,17 @@ impl<'a> Ctx<'a> {
                     rank,
                 );
             }
+            for db in &self.opts.databases {
+                if !db.eq_ignore_ascii_case(&cat.database) {
+                    self.push(
+                        db.clone(),
+                        CompletionKind::Schema,
+                        "database",
+                        self.quote(db),
+                        5,
+                    );
+                }
+            }
             for s in &cat.schemas {
                 self.push(
                     s.clone(),
@@ -947,21 +1012,36 @@ impl<'a> Ctx<'a> {
 
         match parts.as_slice() {
             [q] => {
-                if !relation_ctx && !proc_ctx {
-                    if let Some(t) = self
+                if !relation_ctx
+                    && !proc_ctx
+                    && let Some(t) = self
                         .scope
                         .tables
                         .iter()
                         .find(|t| t.matches_qualifier(q))
                         .cloned()
-                    {
-                        self.columns(Some(&t));
-                        return;
+                {
+                    self.columns(Some(&t));
+                    return;
+                }
+                // `OtherDb.` -> its schemas
+                if self.is_other_database(q) {
+                    if let Some(other) = self.catalog_for(Some(q)) {
+                        for sch in &other.schemas {
+                            self.push(
+                                sch.clone(),
+                                CompletionKind::Schema,
+                                format!("schema in {q}"),
+                                self.quote(sch),
+                                0,
+                            );
+                        }
                     }
+                    return;
                 }
                 if let Some(cat) = self.catalog {
                     if cat.is_schema(q) {
-                        self.schema_objects(q, relation_ctx, proc_ctx, insert_ctx);
+                        self.schema_objects(cat, q, relation_ctx, proc_ctx, insert_ctx);
                         return;
                     }
                     if !relation_ctx {
@@ -979,11 +1059,12 @@ impl<'a> Ctx<'a> {
                 }
             }
             [a, b] => {
-                if let Some(cat) = self.catalog {
-                    if cat.database.eq_ignore_ascii_case(a) && cat.is_schema(b) {
-                        self.schema_objects(b, relation_ctx, proc_ctx, insert_ctx);
-                        return;
-                    }
+                if let Some(cat) = self.catalog_for(Some(a))
+                    && cat.is_schema(b)
+                    && (cat.database.eq_ignore_ascii_case(a) || self.is_other_database(a))
+                {
+                    self.schema_objects(cat, b, relation_ctx, proc_ctx, insert_ctx);
+                    return;
                 }
                 let t = TableRef {
                     schema: Some(a.clone()),
@@ -996,8 +1077,9 @@ impl<'a> Ctx<'a> {
                 };
                 self.columns(Some(&t));
             }
-            [_, s, t] => {
+            [db, s, t] => {
                 let t = TableRef {
+                    database: Some(db.clone()),
                     schema: Some(s.clone()),
                     name: t.clone(),
                     alias: None,
@@ -1014,12 +1096,12 @@ impl<'a> Ctx<'a> {
 
     fn schema_objects(
         &mut self,
+        cat: &'a Catalog,
         schema: &str,
         relation_ctx: bool,
         proc_ctx: bool,
         insert_ctx: bool,
     ) {
-        let Some(cat) = self.catalog else { return };
         let taken = self.existing_aliases();
         let alias = relation_ctx
             && self.opts.assign_aliases
@@ -1637,6 +1719,44 @@ VALUES
             &CompletionOptions::default(),
         );
         assert_eq!(r.items[0].insert_text, "sales.\"Regions\" r");
+    }
+
+    #[test]
+    fn other_database_objects_and_columns() {
+        let mut other = cat();
+        other.database = "Archive".into();
+        other.schemas = vec!["dbo".into(), "old".into()];
+        let main = cat();
+        let opts = CompletionOptions {
+            databases: vec!["Shop".into(), "Archive".into()],
+            ..Default::default()
+        };
+        let run = |src: &str| {
+            let offset = src.find('|').unwrap();
+            let src = src.replacen('|', "", 1);
+            complete_with_others(
+                &src,
+                offset,
+                Dialect::MsSql,
+                Some(&main),
+                &[&other],
+                &[],
+                &opts,
+            )
+        };
+        let r = run("SELECT * FROM Archive.|");
+        let labels: Vec<_> = r.items.iter().map(|i| i.label.as_str()).collect();
+        assert_eq!(labels, vec!["dbo", "old"]);
+        let r = run("SELECT * FROM Archive.dbo.Ord|");
+        assert_eq!(r.items[0].label, "Orders");
+        let r = run("SELECT a.| FROM Archive.dbo.Orders a");
+        assert!(r.items.iter().any(|i| i.label == "CustomerId"));
+        let r = run("SELECT * FROM Arch|");
+        assert!(
+            r.items
+                .iter()
+                .any(|i| i.label == "Archive" && i.detail == "database")
+        );
     }
 
     #[test]

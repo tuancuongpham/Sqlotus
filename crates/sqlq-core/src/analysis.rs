@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 
 use serde::Serialize;
 
-use crate::catalog::{Catalog, DbObject, ObjectKind};
+use crate::catalog::{Catalog, DbObject, ObjectDefinition, ObjectKind};
 use crate::lexer::{Token, TokenKind, tokenize};
 use crate::scope::{Scope, TableRef, analyze_statement, document_symbols};
 use crate::statements::{split_batches, split_statements};
@@ -502,6 +502,7 @@ fn invalid_objects(
                     || (dialect == Dialect::MySql && !cat.is_schema(s))
             })
             || lname.starts_with("pg_")
+            || (dialect == Dialect::MsSql && matches!(lname.as_str(), "inserted" | "deleted"))
             || lname.starts_with("sys")
             || ctes.contains(&lname)
             || aliases.contains(&lname)
@@ -572,6 +573,46 @@ fn invalid_columns(t: &[Token<'_>], scope: &Scope, cat: &Catalog, out: &mut Vec<
             ));
         }
     }
+}
+
+/// A problem found in a stored object's definition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ObjectProblem {
+    pub schema: String,
+    pub name: String,
+    pub kind: ObjectKind,
+    /// 1-based line in the definition.
+    pub line: usize,
+    pub code: String,
+    pub message: String,
+}
+
+/// "Find invalid objects": views, procedures, functions and triggers whose
+/// definitions reference tables or columns that no longer exist.
+pub fn invalid_objects_in_definitions(
+    definitions: &[ObjectDefinition],
+    dialect: Dialect,
+    catalog: &Catalog,
+) -> Vec<ObjectProblem> {
+    let mut out = Vec::new();
+    for d in definitions {
+        for diag in diagnostics(&d.definition, dialect, Some(catalog)) {
+            if diag.code != "SQ006" && diag.code != "SQ007" {
+                continue;
+            }
+            out.push(ObjectProblem {
+                schema: d.schema.clone(),
+                name: d.name.clone(),
+                kind: d.kind,
+                line: d.definition[..diag.start].matches('\n').count() + 1,
+                code: diag.code,
+                message: diag.message,
+            });
+        }
+    }
+    out.sort_by(|a, b| (&a.schema, &a.name, a.line).cmp(&(&b.schema, &b.name, b.line)));
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -781,30 +822,27 @@ pub fn hover(
         }
     }
     // qualified column: alias.column / table.column
-    if let Some(q) = quals.last() {
-        if let Some(r) = loc.scope.tables.iter().find(|r| r.matches_qualifier(q)) {
-            if let Some(o) = resolve(cat, r) {
-                if let Some(c) = o
-                    .columns
-                    .iter()
-                    .find(|c| c.name.eq_ignore_ascii_case(&name))
-                {
-                    return range(format!(
-                        "column **{}.{}.{}**\n\n`{}`{}{}",
-                        o.schema,
-                        o.name,
-                        c.name,
-                        c.data_type,
-                        if c.nullable { " null" } else { " not null" },
-                        if c.is_primary_key {
-                            " · primary key"
-                        } else {
-                            ""
-                        }
-                    ));
-                }
+    if let Some(q) = quals.last()
+        && let Some(r) = loc.scope.tables.iter().find(|r| r.matches_qualifier(q))
+        && let Some(o) = resolve(cat, r)
+        && let Some(c) = o
+            .columns
+            .iter()
+            .find(|c| c.name.eq_ignore_ascii_case(&name))
+    {
+        return range(format!(
+            "column **{}.{}.{}**\n\n`{}`{}{}",
+            o.schema,
+            o.name,
+            c.name,
+            c.data_type,
+            if c.nullable { " null" } else { " not null" },
+            if c.is_primary_key {
+                " · primary key"
+            } else {
+                ""
             }
-        }
+        ));
     }
     // object by (schema.)name
     let schema = quals.last().map(String::as_str);
@@ -814,17 +852,16 @@ pub fn hover(
     // unqualified column of a table in scope
     if quals.is_empty() {
         for r in &loc.scope.tables {
-            if let Some(o) = resolve(cat, r) {
-                if let Some(c) = o
+            if let Some(o) = resolve(cat, r)
+                && let Some(c) = o
                     .columns
                     .iter()
                     .find(|c| c.name.eq_ignore_ascii_case(&name))
-                {
-                    return range(format!(
-                        "column **{}.{}.{}**\n\n`{}`",
-                        o.schema, o.name, c.name, c.data_type
-                    ));
-                }
+            {
+                return range(format!(
+                    "column **{}.{}.{}**\n\n`{}`",
+                    o.schema, o.name, c.name, c.data_type
+                ));
             }
         }
     }
@@ -1125,6 +1162,38 @@ mod tests {
             codes("CREATE PROCEDURE p @x int, @y int AS SELECT @x"),
             vec!["SQ005"]
         );
+    }
+
+    #[test]
+    fn invalid_objects_in_database() {
+        let defs = vec![
+            ObjectDefinition {
+                schema: "dbo".into(),
+                name: "vOk".into(),
+                kind: ObjectKind::View,
+                definition: "CREATE VIEW dbo.vOk AS SELECT o.Total FROM dbo.Orders o".into(),
+            },
+            ObjectDefinition {
+                schema: "dbo".into(),
+                name: "pBroken".into(),
+                kind: ObjectKind::Procedure,
+                definition: "CREATE PROCEDURE dbo.pBroken AS
+SELECT o.Amount FROM dbo.Orders o
+SELECT 1 FROM dbo.Gone".into(),
+            },
+            ObjectDefinition {
+                schema: "dbo".into(),
+                name: "tr".into(),
+                kind: ObjectKind::Trigger,
+                definition: "CREATE TRIGGER dbo.tr ON dbo.Orders AFTER INSERT AS SELECT i.Id FROM inserted i".into(),
+            },
+        ];
+        let found = invalid_objects_in_definitions(&defs, Dialect::MsSql, &cat());
+        let got: Vec<_> = found
+            .iter()
+            .map(|p| (p.name.as_str(), p.line, p.code.as_str()))
+            .collect();
+        assert_eq!(got, vec![("pBroken", 2, "SQ007"), ("pBroken", 3, "SQ006")]);
     }
 
     #[test]

@@ -26,5 +26,6 @@ sqlq-core = { path = "../crates/sqlq-core" }
 sqlq-db = { path = "../crates/sqlq-db" }
 sqlq-store = { path = "../crates/sqlq-store" }
 tokio = { version = "1", features = ["sync", "time"] }
+tauri-plugin-dialog = "2"
 
 

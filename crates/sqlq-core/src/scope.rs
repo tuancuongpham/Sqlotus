@@ -153,15 +153,15 @@ pub fn analyze_statement(tokens: &[Token<'_>], dialect: Dialect) -> Scope {
     scope.tables.sort_by_key(|r| r.start);
     // CTE references resolve to the CTE's columns
     for r in &mut scope.tables {
-        if r.schema.is_none() && r.columns.is_empty() {
-            if let Some(c) = scope
+        if r.schema.is_none()
+            && r.columns.is_empty()
+            && let Some(c) = scope
                 .ctes
                 .iter()
                 .find(|c| c.name.eq_ignore_ascii_case(&r.name))
-            {
-                r.columns = c.columns.clone();
-                r.local = true;
-            }
+        {
+            r.columns = c.columns.clone();
+            r.local = true;
         }
     }
     scope
@@ -494,12 +494,12 @@ pub fn document_symbols(src: &str, dialect: Dialect) -> DocSymbols {
             } else {
                 None
             };
-        if let Some((name, open)) = table_def {
-            if t.get(open).is_some_and(|n| n.kind == TokenKind::LParen) {
-                let close = matching_paren(&t, open);
-                let columns = column_defs(&t[open + 1..close.min(t.len())]);
-                syms.local_tables.push(LocalTable { name, columns });
-            }
+        if let Some((name, open)) = table_def
+            && t.get(open).is_some_and(|n| n.kind == TokenKind::LParen)
+        {
+            let close = matching_paren(&t, open);
+            let columns = column_defs(&t[open + 1..close.min(t.len())]);
+            syms.local_tables.push(LocalTable { name, columns });
         }
         // SELECT ... INTO #t
         if is_word(Some(tok), "INTO") && t.get(i + 1).is_some_and(|n| n.text.starts_with('#')) {

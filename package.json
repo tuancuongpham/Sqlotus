@@ -1,5 +1,5 @@
 {
-  "name": "sqlq",
+  "name": "sqlsupportquery",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2.8.3",
     "@tauri-apps/plugin-opener": "^2",
     "monaco-editor": "^0.57.0",
     "react": "^19.1.0",
@@ -23,5 +24,7 @@
     "@vitejs/plugin-react": "^6.0.2",
     "typescript": "~6.0.3",
     "vite": "^8.0.16"
-  }
+  },
+  "license": "MIT",
+  "description": "Desktop SQL editor with SQL Prompt-style completion, formatting, search and history for SQL Server, PostgreSQL and MySQL"
 }

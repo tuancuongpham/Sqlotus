@@ -4,6 +4,7 @@ import type {
   DbObject,
   Diagnostic,
   EditorArgs,
+  ObjectProblem,
   RefactorAction,
   ScriptKind,
   SignatureInfo,
@@ -88,6 +89,13 @@ export const api = {
   catalogObjects: (connectionId: string, database: string) => invoke<DbObject[]>("catalog_objects", { connectionId, database }),
   scriptObject: (connectionId: string, database: string, schema: string, name: string, dialect: Dialect, kind: ScriptKind) =>
     invoke<string>("script_object", { connectionId, database, schema, name, dialect, kind }),
+  renameTarget: (args: EditorArgs) =>
+    invoke<{ kind: string; name: string; ranges: [number, number][] } | null>("rename_target", { args }),
+  findInvalidObjects: (connectionId: string, database: string, dialect: Dialect) =>
+    invoke<ObjectProblem[]>("find_invalid_objects", { connectionId, database, dialect }),
+  saveTextFile: (path: string, contents: string) => invoke<void>("save_text_file", { path, contents }),
+  executeMulti: (tabId: string, sql: string, databases: string[]) =>
+    invoke<ExecuteResult>("execute_multi", { tabId, sql, databases }),
 };
 
 export function errorText(e: unknown): string {

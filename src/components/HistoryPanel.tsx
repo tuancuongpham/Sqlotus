@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
-import type { HistoryEntry } from "../types";
+import { languageFor } from "../monaco";
+import type { Dialect, HistoryEntry } from "../types";
+import { DiffDialog } from "./DiffDialog";
 
 function when(ms: number) {
   const d = new Date(ms);
@@ -12,9 +14,32 @@ function when(ms: number) {
 interface Props {
   onOpen: (entry: HistoryEntry) => void;
   onInsert: (text: string) => void;
+  /** Text of the active editor tab, for "compare with current". */
+  currentText: () => string;
 }
 
-export function HistoryPanel({ onOpen, onInsert }: Props) {
+export function HistoryPanel({ onOpen, onInsert, currentText }: Props) {
+  const [diff, setDiff] = useState<{ title: string; a: string; b: string; aLabel: string; bLabel: string; dialect: string } | null>(null);
+  const [note, setNote] = useState("");
+
+  const compareWithPrevious = async (e: HistoryEntry) => {
+    const versions = await api.historyTab(e.tabId);
+    const prev = versions.filter((v) => v.id < e.id).sort((a, b) => b.id - a.id)[0];
+    if (!prev) {
+      setNote("This is the first version of that tab.");
+      return;
+    }
+    setNote("");
+    setDiff({
+      title: `${e.title}: previous version → selected`,
+      a: prev.text,
+      b: e.text,
+      aLabel: `${when(prev.updatedAt)} (${prev.kind})`,
+      bLabel: `${when(e.updatedAt)} (${e.kind})`,
+      dialect: e.dialect,
+    });
+  };
+
   const [query, setQuery] = useState("");
   const [mode, setMode] = useState<"all" | "closed">("all");
   const [items, setItems] = useState<HistoryEntry[]>([]);
@@ -85,6 +110,24 @@ export function HistoryPanel({ onOpen, onInsert }: Props) {
             <b>{selected.title}</b>
             <span className="spacer" />
             <button onClick={() => navigator.clipboard.writeText(selected.text)}>Copy</button>
+            <button onClick={() => compareWithPrevious(selected)} title="Diff against the version saved before it">
+              Diff previous
+            </button>
+            <button
+              onClick={() =>
+                setDiff({
+                  title: `${selected.title} → current tab`,
+                  a: selected.text,
+                  b: currentText(),
+                  aLabel: `history: ${when(selected.updatedAt)}`,
+                  bLabel: "current tab",
+                  dialect: selected.dialect,
+                })
+              }
+              title="Diff against the text in the current tab"
+            >
+              Diff current
+            </button>
             <button onClick={() => onInsert(selected.text)}>Insert at cursor</button>
             <button className="primary" onClick={() => onOpen(selected)}>
               Open in new tab
@@ -95,6 +138,18 @@ export function HistoryPanel({ onOpen, onInsert }: Props) {
           </div>
           <pre>{selected.text}</pre>
         </div>
+      )}
+      {note && <div className="panel-empty">{note}</div>}
+      {diff && (
+        <DiffDialog
+          title={diff.title}
+          original={diff.a}
+          modified={diff.b}
+          originalLabel={diff.aLabel}
+          modifiedLabel={diff.bLabel}
+          language={languageFor[(diff.dialect as Dialect) in languageFor ? (diff.dialect as Dialect) : "mssql"]}
+          onClose={() => setDiff(null)}
+        />
       )}
     </div>
   );

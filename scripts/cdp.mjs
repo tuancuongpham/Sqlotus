@@ -79,6 +79,7 @@ export async function attach(outDir) {
     Tab: 9,
     Delete: 46,
     Enter: 13,
+    F2: 113,
     F5: 116,
     F8: 119,
     F12: 123,
