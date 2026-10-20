@@ -49,6 +49,12 @@ pub fn save_settings(state: State<'_, AppState>, settings: Settings) -> CmdResul
     state.store.set_setting("settings", &settings).map_err(err)
 }
 
+/// A one-time message for the first window, if any.
+#[tauri::command]
+pub fn take_startup_notice(state: State<'_, AppState>) -> Option<String> {
+    state.startup_notice.lock().ok()?.take()
+}
+
 #[tauri::command]
 pub fn load_session(state: State<'_, AppState>) -> CmdResult<Option<serde_json::Value>> {
     state.store.get_setting("session").map_err(err)
@@ -275,6 +281,8 @@ pub struct ExecuteResult {
     pub(crate) batches: Vec<BatchDto>,
     pub(crate) database: String,
     pub(crate) cancelled: bool,
+    /// Transactions left open after the run (0 when none or unknown).
+    pub(crate) open_transactions: u32,
 }
 
 /// Run `sql` on the tab's connection. Runs in its own task so `cancel_query`
@@ -286,6 +294,15 @@ pub async fn execute(
     sql: String,
 ) -> CmdResult<ExecuteResult> {
     let session = state.session(&tab_id).ok_or("tab is not connected")?;
+    if session.config.read_only {
+        let blocked = sqlotus_core::analysis::modifying_statements(&sql, session.config.dialect);
+        if !blocked.is_empty() {
+            return Err(format!(
+                "This connection is read-only, so the script was not run. It contains: {}.                  Turn off \"Read-only\" in the connection settings to allow changes.",
+                blocked.join(", ")
+            ));
+        }
+    }
     let limits = Limits {
         max_rows: state.settings().editor.max_rows.max(1),
         ..Limits::default()
@@ -301,7 +318,8 @@ pub async fn execute(
         let batches = sqlotus_db::execute_script(conn, &script, &limits).await;
         // a USE statement may have switched database
         let db = conn.current_database().await.unwrap_or_default();
-        Ok::<_, String>((batches, db))
+        let open = conn.open_transactions().await.unwrap_or(0);
+        Ok::<_, String>((batches, db, open))
     });
     if let Ok(cancel) = cancel_rx.await {
         *session.running.lock().map_err(err)? = Some(Running {
@@ -312,7 +330,7 @@ pub async fn execute(
     let result = handle.await;
     session.running.lock().map_err(err)?.take();
     match result {
-        Ok(Ok((batches, db))) => {
+        Ok(Ok((batches, db, open_transactions))) => {
             if !db.is_empty() {
                 *session.database.lock().map_err(err)? = db.clone();
             }
@@ -328,6 +346,7 @@ pub async fn execute(
                 batches,
                 database: db,
                 cancelled: false,
+                open_transactions,
             })
         }
         Ok(Err(e)) => Err(e),
@@ -338,6 +357,7 @@ pub async fn execute(
                 batches: Vec::new(),
                 database: db,
                 cancelled: true,
+                open_transactions: 0,
             })
         }
     }

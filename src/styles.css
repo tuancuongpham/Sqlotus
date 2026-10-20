@@ -973,3 +973,188 @@ mark {
   flex-direction: column;
   gap: 4px;
 }
+
+/* notifications */
+.toaster {
+  position: fixed;
+  right: 14px;
+  bottom: 30px;
+  z-index: 300;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 380px;
+  max-width: calc(100vw - 28px);
+  pointer-events: none;
+}
+
+.toast {
+  pointer-events: auto;
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 10px 10px 12px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--accent);
+  border-radius: 6px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+  animation: toast-in 0.18s ease-out;
+}
+
+@keyframes toast-in {
+  from {
+    transform: translateY(8px);
+    opacity: 0;
+  }
+}
+
+.toast-success {
+  border-left-color: var(--ok);
+}
+
+.toast-warning {
+  border-left-color: #d7a12d;
+}
+
+.toast-error {
+  border-left-color: var(--error);
+}
+
+.toast-icon {
+  width: 16px;
+  text-align: center;
+  font-weight: 700;
+}
+
+.toast-success .toast-icon {
+  color: var(--ok);
+}
+
+.toast-warning .toast-icon {
+  color: #d7a12d;
+}
+
+.toast-error .toast-icon {
+  color: var(--error);
+}
+
+.toast-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.toast-title {
+  font-weight: 600;
+}
+
+.toast-message {
+  color: var(--fg-dim);
+  margin-top: 2px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.toast-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.toast-actions button {
+  padding: 1px 8px;
+}
+
+.toast-close {
+  border: none;
+  background: transparent;
+  padding: 0 4px;
+  color: var(--fg-dim);
+}
+
+/* connection doctor */
+.doctor-modal {
+  width: 680px;
+}
+
+.doctor-body {
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: auto;
+  max-height: 60vh;
+}
+
+.doctor-summary {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.finding {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 8px 10px;
+  border-radius: 5px;
+  background: var(--bg3);
+}
+
+.finding-icon {
+  width: 16px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.finding-ok .finding-icon {
+  color: var(--ok);
+}
+
+.finding-warning .finding-icon {
+  color: #d7a12d;
+}
+
+.finding-error .finding-icon {
+  color: var(--error);
+}
+
+.finding-text {
+  flex: 1;
+}
+
+.finding-title {
+  font-weight: 600;
+}
+
+.finding-detail {
+  color: var(--fg-dim);
+  margin-top: 2px;
+}
+
+.doctor-error pre {
+  white-space: pre-wrap;
+  font: 12px Consolas, monospace;
+  color: var(--fg-dim);
+}
+
+/* tab badges, grid ranges */
+.tab-badge {
+  font-size: 10px;
+  padding: 0 4px;
+  border-radius: 3px;
+}
+
+.tab-badge.tx {
+  background: #d7a12d;
+  color: #000;
+  font-weight: 700;
+}
+
+.grid-cell.in-range {
+  background: var(--selected);
+}
+
+.grid-aggregates {
+  color: var(--fg);
+  font-weight: 600;
+}

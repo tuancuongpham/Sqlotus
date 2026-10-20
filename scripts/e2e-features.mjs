@@ -292,7 +292,8 @@ check("history diff", !!diffOk);
 await evaluate(`[...document.querySelectorAll(".diff-modal button")].find((b) => b.textContent === "Close").click()`);
 await press("Control+Shift+H");
 
-if (await evaluate(`!!document.querySelector(".explorer-panel")`)) await press("F8");
+// leave the explorer open, as it is by default
+if (!(await evaluate(`!!document.querySelector(".explorer-panel")`))) await press("F8");
 await press("Control+W");
 await sleep(300);
 await press("Control+W");

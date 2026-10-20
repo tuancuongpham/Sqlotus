@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
+import { toast } from "../notify";
 import { languageFor } from "../monaco";
 import type { Dialect, HistoryEntry } from "../types";
 import { DiffDialog } from "./DiffDialog";
@@ -62,6 +63,7 @@ export function HistoryPanel({ onOpen, onInsert, currentText }: Props) {
   }, [query, mode]);
 
   const remove = async (e: HistoryEntry) => {
+    toast.success("History entry deleted", e.title);
     await api.historyDelete(e.id);
     setItems((xs) => xs.filter((x) => x.id !== e.id));
     if (selected?.id === e.id) setSelected(null);
@@ -109,7 +111,7 @@ export function HistoryPanel({ onOpen, onInsert, currentText }: Props) {
           <div className="preview-bar">
             <b>{selected.title}</b>
             <span className="spacer" />
-            <button onClick={() => navigator.clipboard.writeText(selected.text)}>Copy</button>
+            <button onClick={() => void navigator.clipboard.writeText(selected.text).then(() => toast.success("Query copied to the clipboard"))}>Copy</button>
             <button onClick={() => compareWithPrevious(selected)} title="Diff against the version saved before it">
               Diff previous
             </button>
@@ -128,7 +130,14 @@ export function HistoryPanel({ onOpen, onInsert, currentText }: Props) {
             >
               Diff current
             </button>
-            <button onClick={() => onInsert(selected.text)}>Insert at cursor</button>
+            <button
+              onClick={() => {
+                onInsert(selected.text);
+                toast.success("Inserted at the cursor", "Ctrl+Z undoes it.");
+              }}
+            >
+              Insert at cursor
+            </button>
             <button className="primary" onClick={() => onOpen(selected)}>
               Open in new tab
             </button>

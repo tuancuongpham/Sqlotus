@@ -2,6 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   CatalogInfo,
   DbObject,
+  Diagnosis,
+  Fix,
   Diagnostic,
   EditorArgs,
   ObjectProblem,
@@ -96,6 +98,10 @@ export const api = {
   saveTextFile: (path: string, contents: string) => invoke<void>("save_text_file", { path, contents }),
   executeMulti: (tabId: string, sql: string, databases: string[]) =>
     invoke<ExecuteResult>("execute_multi", { tabId, sql, databases }),
+  takeStartupNotice: () => invoke<string | null>("take_startup_notice"),
+  diagnoseConnection: (config: ConnectionConfig, error: string) => invoke<Diagnosis>("diagnose_connection", { config, error }),
+  applyFix: (fix: Fix, config: ConnectionConfig, password: string | null) =>
+    invoke<string>("apply_fix", { fix, config, password }),
 };
 
 export function errorText(e: unknown): string {

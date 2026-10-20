@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { api, errorText } from "../api";
+import { toast } from "../notify";
 import type { Dialect, ResultSet } from "../types";
 
 const ROW_H = 24;
@@ -77,6 +78,8 @@ export function ResultGrid({ rs, dialect = "mssql" }: { rs: ResultSet; dialect?:
   const [scrollTop, setScrollTop] = useState(0);
   const [height, setHeight] = useState(300);
   const [selected, setSelected] = useState<Cell | null>(null);
+  // Shift+click extends a range down/up the active column
+  const [rangeEnd, setRangeEnd] = useState<number | null>(null);
   const [selRows, setSelRows] = useState<Set<number>>(new Set());
   const [widths, setWidths] = useState<number[]>(() => columnWidths(rs));
   const [sort, setSort] = useState<{ col: number; desc: boolean } | null>(null);
@@ -105,8 +108,10 @@ export function ResultGrid({ rs, dialect = "mssql" }: { rs: ResultSet; dialect?:
       if (!path) return;
       await api.saveTextFile(path, toCsv(rs, targetRows()));
       setNote(`Saved ${targetRows().length} rows`);
+      toast.success(`Saved ${targetRows().length} rows as CSV`, path);
     } catch (e) {
       setNote(errorText(e));
+      toast.error("Could not save the CSV file", errorText(e));
     }
   };
   const ref = useRef<HTMLDivElement>(null);
@@ -125,16 +130,42 @@ export function ResultGrid({ rs, dialect = "mssql" }: { rs: ResultSet; dialect?:
   const first = Math.max(0, Math.floor(scrollTop / ROW_H) - OVERSCAN);
   const last = Math.min(rows.length, Math.ceil((scrollTop + height) / ROW_H) + OVERSCAN);
 
+  const range = selected && rangeEnd != null ? [Math.min(selected.row, rangeEnd), Math.max(selected.row, rangeEnd)] : null;
+  const inRange = (i: number, j: number) => !!range && selected?.col === j && i >= range[0] && i <= range[1];
+
+  // aggregates of the selected range (like SSMS add-ins' status bar totals)
+  const aggregates = useMemo(() => {
+    if (!range || !selected) return null;
+    const values = rows.slice(range[0], range[1] + 1).map((r) => r[selected.col]);
+    const nonNull = values.filter((v): v is string => v != null);
+    const nums = nonNull.map(Number).filter((n) => !Number.isNaN(n));
+    const fmt = (n: number) => (Number.isInteger(n) ? n.toLocaleString() : n.toLocaleString(undefined, { maximumFractionDigits: 4 }));
+    if (nums.length === nonNull.length && nums.length > 0) {
+      const sum = nums.reduce((a, b) => a + b, 0);
+      return `Count ${values.length} · Sum ${fmt(sum)} · Avg ${fmt(sum / nums.length)} · Min ${fmt(Math.min(...nums))} · Max ${fmt(Math.max(...nums))}`;
+    }
+    return `Count ${values.length} · Distinct ${new Set(values).size} · Null ${values.length - nonNull.length}`;
+  }, [range?.[0], range?.[1], selected?.col, rows]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const copy = (headers: boolean) => {
     let text: string;
-    if (selRows.size > 0) {
+    if (range && selected) {
+      text = rows
+        .slice(range[0], range[1] + 1)
+        .map((r) => r[selected.col] ?? "NULL")
+        .join("\r\n");
+    } else if (selRows.size > 0) {
       text = toTsv(rs, [...selRows].sort((a, b) => a - b).map((i) => rows[i]), headers);
     } else if (selected) {
       text = rows[selected.row]?.[selected.col] ?? "NULL";
     } else {
       text = toTsv(rs, rows, headers);
     }
-    void navigator.clipboard.writeText(text);
+    const what = range ? `${range[1] - range[0] + 1} cell(s)` : selRows.size > 0 ? `${selRows.size} row(s)` : selected ? "1 cell" : `${rows.length} row(s)`;
+    void navigator.clipboard.writeText(text).then(
+      () => toast.success(`Copied ${what}`, headers ? "With column headers" : undefined),
+      (e) => toast.error("Copy failed", String(e)),
+    );
   };
 
   const targetRows = () => (selRows.size > 0 ? [...selRows].sort((a, b) => a - b).map((i) => rows[i]) : rows);
@@ -148,7 +179,12 @@ export function ResultGrid({ rs, dialect = "mssql" }: { rs: ResultSet; dialect?:
       const values = [...new Set(targetRows().map((r) => r[col]))];
       text = `(${values.map((v) => sqlLiteral(v, rs.columns[col].typeName, dialect)).join(", ")})`;
     }
-    if (text) void navigator.clipboard.writeText(text);
+    const label = { insert: "as INSERT statements", csv: "as CSV", in: "as an IN (…) list" }[format] ?? "";
+    if (text)
+      void navigator.clipboard.writeText(text).then(
+        () => toast.success(`Copied ${format === "in" ? "column values" : `${targetRows().length} row(s)`} ${label}`),
+        (e) => toast.error("Copy failed", String(e)),
+      );
   };
 
   const onKeyDown = (e: React.KeyboardEvent) => {
@@ -223,6 +259,12 @@ export function ResultGrid({ rs, dialect = "mssql" }: { rs: ResultSet; dialect?:
         <span>
           {rows.length === rs.rows.length ? rows.length.toLocaleString() : `${rows.length.toLocaleString()} of ${rs.rows.length.toLocaleString()}`} rows
           {rs.truncated ? " (truncated)" : ""} · {rs.columns.length} columns {note && <small>· {note}</small>}
+          {aggregates && (
+            <b className="grid-aggregates" title="Selected range (Shift+click to extend)">
+              {" "}
+              · {aggregates}
+            </b>
+          )}
         </span>
         <input className="grid-filter" value={filter} placeholder="Filter rows…" onChange={(e) => setFilter(e.target.value)} />
         <button onClick={() => copy(false)} title="Ctrl+C">Copy</button>
@@ -285,9 +327,19 @@ export function ResultGrid({ rs, dialect = "mssql" }: { rs: ResultSet; dialect?:
                 {row.map((v, j) => (
                   <div
                     key={j}
-                    className={"grid-cell" + (selected?.row === i && selected.col === j ? " active" : "") + (v == null ? " null" : "")}
+                    className={
+                      "grid-cell" +
+                      (selected?.row === i && selected.col === j ? " active" : "") +
+                      (inRange(i, j) ? " in-range" : "") +
+                      (v == null ? " null" : "")
+                    }
                     style={{ width: widths[j] }}
-                    onMouseDown={() => {
+                    onMouseDown={(e) => {
+                      if (e.shiftKey && selected && selected.col === j) {
+                        setRangeEnd(i);
+                        return;
+                      }
+                      setRangeEnd(null);
                       setSelected({ row: i, col: j });
                       setSelRows(new Set());
                     }}

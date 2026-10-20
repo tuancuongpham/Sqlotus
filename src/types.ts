@@ -12,6 +12,7 @@ export interface ConnectionConfig {
   encrypt: boolean;
   trustServerCertificate: boolean;
   color?: string | null;
+  readOnly?: boolean;
 }
 
 export interface SavedConnection extends ConnectionConfig {
@@ -51,6 +52,7 @@ export interface ExecuteResult {
   batches: { start: number; end: number; output: BatchOutput }[];
   database: string;
   cancelled: boolean;
+  openTransactions?: number;
 }
 
 export type CompletionKind =
@@ -184,6 +186,8 @@ export interface Tab {
   running: boolean;
   result?: ExecuteResult;
   executedAt?: number;
+  /** Transactions left open after the last run. */
+  openTransactions?: number;
 }
 
 export interface Diagnostic {
@@ -242,4 +246,29 @@ export interface ObjectProblem {
   line: number;
   code: string;
   message: string;
+}
+
+export type Fix =
+  | { kind: "enableTcp"; instanceId: string; service: string }
+  | { kind: "startService"; service: string }
+  | { kind: "enableBrowser" }
+  | { kind: "enableMixedAuth"; instanceId: string; service: string }
+  | { kind: "usePort"; port: number }
+  | { kind: "useHost"; host: string }
+  | { kind: "useWindowsAuth" }
+  | { kind: "trustCertificate" }
+  | { kind: "useDatabase"; database: string | null };
+
+export interface Finding {
+  level: "ok" | "info" | "warning" | "error";
+  title: string;
+  detail: string;
+  fix: Fix | null;
+  fixLabel: string | null;
+  needsAdmin: boolean;
+}
+
+export interface Diagnosis {
+  summary: string;
+  findings: Finding[];
 }

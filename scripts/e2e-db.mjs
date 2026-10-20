@@ -73,6 +73,10 @@ async function execute() {
   });
 }
 
+// tabs that were open before the run are left alone
+const tabTitles = () => evaluate(`[...document.querySelectorAll(".tab")].map((t) => t.textContent)`);
+const before = new Set(await tabTitles());
+
 for (const s of servers) {
   const label = s.config.name;
   await invoke("save_connection", { config: s.config, password, forgetPassword: false });
@@ -214,6 +218,19 @@ await typeQuery("SELECT DB_NAME()");
 await execute();
 const db = await gridRows(1);
 check("MSSQL: change database", db?.[0]?.[0] === "master", JSON.stringify(db));
+
+// leave the explorer open, as it is by default
+if (!(await evaluate(`!!document.querySelector(".explorer-panel")`))) await press("F8");
+
+// close the tabs this run opened
+for (let i = 0; i < 10; i++) {
+  const own = (await tabTitles()).findIndex((t) => !before.has(t));
+  if (own < 0) break;
+  await evaluate(`document.querySelectorAll(".tab")[${own}].click()`);
+  await sleep(200);
+  await press("Control+W");
+  await sleep(300);
+}
 
 const failed = summary();
 ui.close();

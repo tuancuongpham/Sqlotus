@@ -55,6 +55,8 @@ pub struct ConnectionConfig {
     pub trust_server_certificate: bool,
     /// Tab colour, e.g. red for production.
     pub color: Option<String>,
+    /// Refuse statements that change data or schema.
+    pub read_only: bool,
 }
 
 impl ConnectionConfig {
@@ -240,6 +242,22 @@ impl Connection {
             .next()
             .map(|r| r.rows)
             .unwrap_or_default())
+    }
+
+    /// Number of transactions left open on this connection (0 when none).
+    pub async fn open_transactions(&mut self) -> Result<u32> {
+        let sql = match self.dialect() {
+            Dialect::MsSql => "SELECT @@TRANCOUNT",
+            // the check itself runs in its own transaction unless one is open
+            Dialect::Postgres => {
+                "SELECT CASE WHEN xact_start <> query_start THEN 1 ELSE 0 END FROM pg_stat_activity WHERE pid = pg_backend_pid()"
+            }
+            Dialect::MySql => {
+                "SELECT COUNT(*) FROM information_schema.innodb_trx WHERE trx_mysql_thread_id = CONNECTION_ID()"
+            }
+        };
+        let rows = self.query_strings(sql).await?;
+        Ok(rows.first().and_then(|r| r.first().cloned().flatten()).and_then(|v| v.parse().ok()).unwrap_or(0))
     }
 
     pub async fn current_database(&mut self) -> Result<String> {

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, errorText } from "../api";
+import { toast, update } from "../notify";
 import type { DbObject, Dialect, ObjectKind, ObjectProblem, ScriptKind } from "../types";
 
 const GROUPS: { kind: ObjectKind[]; label: string }[] = [
@@ -47,7 +48,14 @@ export function ExplorerPanel({ connectionId, database, dialect, version, onOpen
     setChecking(true);
     setError("");
     try {
-      setProblems(await api.findInvalidObjects(connectionId, database, dialect));
+      const id = toast.progress("Checking every view, procedure, function and trigger…", database);
+      const found = await api.findInvalidObjects(connectionId, database, dialect).catch((e) => {
+        update(id, "error", "Could not check the objects", errorText(e));
+        throw e;
+      });
+      setProblems(found);
+      if (found.length === 0) update(id, "success", "No invalid objects", `Every module in ${database} references existing tables and columns.`);
+      else update(id, "warning", `${found.length} problem(s) found`, "Click a problem to open the object's definition.");
     } catch (e) {
       setError(errorText(e));
     } finally {
@@ -91,8 +99,10 @@ export function ExplorerPanel({ connectionId, database, dialect, version, onOpen
     try {
       const text = await api.scriptObject(connectionId, database, o.schema, o.name, dialect, kind);
       onOpenScript(`${o.name} (${kind})`, text, run);
+      toast.success(run ? `Running SELECT on ${o.name}` : `Opened ${kind.toUpperCase()} script for ${o.name}`);
     } catch (e) {
       setError(errorText(e));
+      toast.error(`Could not script ${o.name}`, errorText(e));
     }
   };
 

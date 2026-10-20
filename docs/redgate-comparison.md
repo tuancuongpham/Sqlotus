@@ -88,6 +88,19 @@ Trạng thái: ✅ có · 🟡 có một phần · ❌ chưa có. Cột "Mới" 
 | Cảnh báo chuỗi tiếng Việt thiếu tiền tố `N` | Tránh dữ liệu bị lưu thành `?` |
 | Hỗ trợ PostgreSQL và MySQL | Redgate SQL Prompt chỉ hỗ trợ SQL Server |
 
+## An toàn & trải nghiệm (đợt Sqlotus)
+
+| Tính năng | Có ở | Sqlotus | Ghi chú |
+|---|---|---|---|
+| Connection Doctor: chẩn đoán + sửa lỗi kết nối (bật TCP/IP, service, SQL Browser, Mixed Mode, port) | — | ✅ | Không công cụ nào trong danh sách có |
+| Thông báo cho mọi thao tác/cài đặt | — | ✅ | Lỗi có nút Diagnose/Retry |
+| Kết nối read-only | DataGrip | ✅ | Chặn ở phía client trước khi gửi |
+| Nhắc transaction đang mở | dbForge SQL Complete | ✅ | Nhãn TRAN, Commit/Roll back, hỏi khi đóng tab |
+| Tổng/trung bình vùng chọn trên lưới | dbForge (trả phí), SSMSBoost | ✅ | Shift+click trong một cột |
+| Object Explorer mở sẵn | SSMS | ✅ | |
+
+Danh sách pain point và ứng viên tính năng: `docs/pain-points.md`.
+
 ## Ý tưởng tiếp theo
 
 1. **Rename object trong database**: sinh script `sp_rename` và cập nhật các view/proc tham chiếu.

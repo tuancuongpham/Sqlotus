@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, errorText, newId } from "../api";
+import { toast } from "../notify";
 import type { Dialect, Settings, Snippet } from "../types";
 
 const SAMPLE = `select o.Id, c.Name, sum(i.Qty * i.Price) as Total from dbo.Orders o inner join dbo.Customers c on c.Id = o.CustomerId left join dbo.OrderItems i on i.OrderId = o.Id where o.CreatedAt >= '2024-01-01' and (c.Country = 'VN' or c.Vip = 1) group by o.Id, c.Name having sum(i.Qty) > 1 order by Total desc`;
@@ -51,15 +52,18 @@ export function SettingsDialog({ settings, dialect, onClose, onSaved }: Props) {
     try {
       const n = await api.importRedgateSnippets(null);
       setNote(`Imported ${n} snippets from SQL Prompt.`);
+      toast.success(`Imported ${n} snippets from SQL Prompt`);
       await loadSnippets();
     } catch (err) {
       setNote(errorText(err));
+      toast.error("Could not import snippets", errorText(err));
     }
   };
 
   const saveSnip = async () => {
     if (!snip || !snip.prefix.trim()) return;
     await api.saveSnippet(snip);
+    toast.success(`Snippet "${snip.prefix}" saved`, "Type its prefix in the editor to use it.");
     await loadSnippets();
   };
 
@@ -204,6 +208,7 @@ export function SettingsDialog({ settings, dialect, onClose, onSaved }: Props) {
                     className="danger"
                     onClick={async () => {
                       await api.deleteSnippet(snip.id);
+                      toast.success(`Snippet "${snip.prefix}" deleted`);
                       setSnip(null);
                       await loadSnippets();
                     }}

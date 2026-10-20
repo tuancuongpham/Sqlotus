@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, errorText, newId } from "./api";
 import { ConnectionDialog } from "./components/ConnectionDialog";
+import { DoctorDialog } from "./components/DoctorDialog";
+import { Toaster } from "./components/Toaster";
+import { toast, update } from "./notify";
 import { ExplorerPanel } from "./components/ExplorerPanel";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { MultiDbDialog } from "./components/MultiDbDialog";
@@ -17,7 +20,7 @@ import {
   unbindModelContext,
   updateDiagnostics,
 } from "./monaco";
-import type { Dialect, HistoryEntry, RefactorAction, SavedConnection, Settings, Tab } from "./types";
+import type { ConnectionConfig, Dialect, HistoryEntry, RefactorAction, SavedConnection, Settings, Tab } from "./types";
 
 interface SessionTab {
   id: string;
@@ -41,6 +44,29 @@ interface ConfirmState {
   resolve: (ok: boolean) => void;
 }
 
+interface ChoiceState {
+  title: string;
+  message: string;
+  options: { label: string; value: string; kind?: "primary" | "danger" }[];
+  resolve: (value: string) => void;
+}
+
+interface DoctorState {
+  config: ConnectionConfig;
+  password: string | null;
+  error: string;
+  tabId: string;
+}
+
+const REFACTOR_DONE: Record<RefactorAction, string> = {
+  expandWildcards: "Wildcards expanded",
+  qualifyNames: "Object names qualified",
+  insertSemicolons: "Semicolons inserted",
+  removeBrackets: "Square brackets removed",
+  upperKeywords: "Keywords upper-cased",
+  lowerKeywords: "Keywords lower-cased",
+};
+
 let untitled = 0;
 const nextTitle = () => `SQLQuery${++untitled}.sql`;
 
@@ -50,13 +76,29 @@ export default function App() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [connections, setConnections] = useState<SavedConnection[]>([]);
   const [dialog, setDialog] = useState<"connect" | "settings" | "multi" | null>(null);
-  const [panel, setPanel] = useState<Panel>(null);
+  // the explorer is open by default: the database structure is always in view
+  const [panel, setPanel] = useState<Panel>("explorer");
   const [resultsVisible, setResultsVisible] = useState(true);
   const [resultsHeight, setResultsHeight] = useState(280);
   const [panelWidth, setPanelWidth] = useState(520);
   const [status, setStatus] = useState("");
   const [catalogVersion, setCatalogVersion] = useState(0);
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
+  const [choice, setChoice] = useState<ChoiceState | null>(null);
+  const [doctor, setDoctor] = useState<DoctorState | null>(null);
+
+  const askChoice = (title: string, message: string, options: ChoiceState["options"]) =>
+    new Promise<string>((resolve) =>
+      setChoice({
+        title,
+        message,
+        options,
+        resolve: (v) => {
+          setChoice(null);
+          resolve(v);
+        },
+      }),
+    );
   const [cursor, setCursor] = useState({ line: 1, col: 1 });
 
   const editorEl = useRef<HTMLDivElement>(null);
@@ -151,6 +193,29 @@ export default function App() {
 
   const closeTab = useCallback(
     async (id: string) => {
+      const closing = tabsRef.current.find((t) => t.id === id);
+      if (closing?.connected && (closing.openTransactions ?? 0) > 0) {
+        const answer = await askChoice(
+          "Open transaction",
+          `${closing.title} has an open transaction. Closing the tab without COMMIT rolls back its uncommitted changes.`,
+          [
+            { label: "Commit and close", value: "COMMIT", kind: "primary" },
+            { label: "Roll back and close", value: "ROLLBACK", kind: "danger" },
+            { label: "Cancel", value: "" },
+          ],
+        );
+        if (!answer) {
+          toast.info("Tab kept open", "The transaction is still open.");
+          return;
+        }
+        try {
+          await api.execute(id, answer);
+          toast.success(answer === "COMMIT" ? "Transaction committed" : "Transaction rolled back");
+        } catch (e) {
+          toast.error(`${answer} failed — the tab stays open`, errorText(e));
+          return;
+        }
+      }
       recordHistory(id, "autosave");
       api.historyMarkClosed(id).catch(() => undefined);
       api.disconnectTab(id).catch(() => undefined);
@@ -195,18 +260,24 @@ export default function App() {
     const name = connectionsRef.current.find((c) => c.id === tab.connectionId)?.name ?? "";
     const where = `${name} / ${tab.database}`;
     setStatus(`${where}: ${refresh ? "refreshing" : "loading"} objects…`);
+    const progress = refresh ? toast.progress("Reloading objects…", where) : null;
     try {
       const info = await api.loadCatalog(tab.connectionId, tab.database, refresh);
       setStatus(`${where}: ${info.objects} objects loaded`);
       setCatalogVersion((v) => v + 1);
+      if (progress) update(progress, "success", "Objects reloaded", `${where}: ${info.objects} objects`);
     } catch (e) {
       setStatus(`${where}: object load failed: ${errorText(e)}`);
+      const msg = "Completion, analysis and search will be limited until objects load.";
+      if (progress) update(progress, "error", "Could not load objects", `${errorText(e)}\n${msg}`);
+      else toast.warning(`Could not load objects of ${where}`, msg, [{ label: "Retry", run: () => void loadCatalog(tab, true) }]);
     }
   }, []);
 
   const connectTab = useCallback(
-    async (id: string, conn: SavedConnection, password: string | null, database?: string) => {
+    async (id: string, conn: SavedConnection, password: string | null, database?: string, interactive = false) => {
       patchTab(id, { connecting: true, connectionId: conn.id });
+      const progress = interactive ? toast.progress(`Connecting to ${conn.name}…`, conn.host) : null;
       try {
         const r = await api.connectTab(id, conn.id, database ?? conn.database ?? null, password);
         const tab = { ...tabsRef.current.find((t) => t.id === id)! };
@@ -222,10 +293,21 @@ export default function App() {
         const model = models.current.get(id);
         if (model) monaco.editor.setModelLanguage(model, languageFor[r.dialect]);
         setStatus(`Connected to ${conn.name}`);
+        if (progress) update(progress, "success", `Connected to ${conn.name}`, `Database: ${r.database}${conn.readOnly ? " · read-only" : ""}`);
         void loadCatalog(tab);
       } catch (e) {
         patchTab(id, { connecting: false, connected: false });
-        setStatus(`${conn.name}: ${errorText(e)}`);
+        const error = errorText(e);
+        setStatus(`${conn.name}: ${error}`);
+        const openDoctor = () => setDoctor({ config: conn, password, error, tabId: id });
+        if (progress) {
+          update(progress, "error", `Could not connect to ${conn.name}`, "The Connection Doctor is checking why.", [
+            { label: "Diagnose", run: openDoctor },
+          ]);
+          openDoctor();
+        } else {
+          toast.error(`Could not connect to ${conn.name}`, error.split("\n")[0], [{ label: "Diagnose", run: openDoctor }]);
+        }
         throw e;
       }
     },
@@ -237,13 +319,47 @@ export default function App() {
     try {
       const d = await api.changeDatabase(activeTab.id, db);
       patchTab(activeTab.id, { database: d });
+      toast.success(`Switched to database ${d}`);
       void loadCatalog({ ...activeTab, database: d });
     } catch (e) {
-      setStatus(errorText(e));
+      toast.error(`Could not switch to ${db}`, errorText(e));
     }
   };
 
   // -- execution ------------------------------------------------------------
+
+  /** Toast after a run: rows / errors / open transaction. */
+  const reportExecution = (result: import("./types").ExecuteResult, title: string, tabId: string) => {
+    if (result.cancelled) {
+      toast.info("Query cancelled", "The connection was reset; it reconnects on the next run.");
+      return;
+    }
+    const outs = result.batches.map((b) => b.output);
+    const failed = outs.some((o) => o.failed);
+    const rows = outs.reduce((n, o) => n + o.resultSets.reduce((m, r) => m + r.rows.length, 0), 0);
+    const secs = (outs.reduce((n, o) => n + o.elapsedMs, 0) / 1000).toFixed(2);
+    if (failed) {
+      const first = outs.flatMap((o) => o.messages).find((m) => m.kind === "error")?.text ?? "";
+      toast.error("The query finished with errors", first.split("\n").slice(-1)[0]);
+    } else {
+      toast.success(`Query finished in ${secs}s`, `${rows.toLocaleString()} row(s) in ${outs.reduce((n, o) => n + o.resultSets.length, 0)} result set(s)`);
+    }
+    if ((result.openTransactions ?? 0) > 0) {
+      const finish = (sql: string) => async () => {
+        try {
+          const r = await api.execute(tabId, sql);
+          patchTab(tabId, { openTransactions: r.openTransactions ?? 0 });
+          toast.success(sql === "COMMIT" ? "Transaction committed" : "Transaction rolled back");
+        } catch (e) {
+          toast.error(`${sql} failed`, errorText(e));
+        }
+      };
+      toast.warning(`${title}: transaction still open`, "Changes are not saved until COMMIT. Other sessions may be blocked meanwhile.", [
+        { label: "Commit", run: finish("COMMIT") },
+        { label: "Roll back", run: finish("ROLLBACK") },
+      ]);
+    }
+  };
 
   const execute = useCallback(
     async (mode: "auto" | "statement") => {
@@ -253,10 +369,14 @@ export default function App() {
       const model = models.current.get(id);
       if (!tab || !ed || !model) return;
       if (!tab.connected) {
+        toast.info("Connect first", "Choose a server for this tab, then run the query again.");
         setDialog("connect");
         return;
       }
-      if (tab.running) return;
+      if (tab.running) {
+        toast.info("A query is already running in this tab", "Wait for it or press Cancel.");
+        return;
+      }
       let sql = "";
       const sel = ed.getSelection();
       if (mode === "auto" && sel && !sel.isEmpty()) {
@@ -265,7 +385,10 @@ export default function App() {
         const pos = ed.getPosition();
         const text = model.getValue();
         const r = pos ? await api.statementAt(text, tab.dialect, model.getOffsetAt(pos)) : null;
-        if (!r) return;
+        if (!r) {
+          toast.info("No statement at the cursor");
+          return;
+        }
         sql = text.slice(r.start, r.end);
         const s = model.getPositionAt(r.start);
         const e = model.getPositionAt(r.end);
@@ -273,13 +396,19 @@ export default function App() {
       } else {
         sql = model.getValue();
       }
-      if (!sql.trim()) return;
+      if (!sql.trim()) {
+        toast.info("Nothing to run", "The editor is empty.");
+        return;
+      }
       // like SQL Prompt's execution warnings: confirm destructive statements
       const warnings = await api.executionWarnings(sql, tab.dialect).catch(() => [] as string[]);
       if (warnings.length > 0) {
         const ok = await new Promise<boolean>((resolve) => setConfirmState({ messages: warnings, resolve }));
         setConfirmState(null);
-        if (!ok) return;
+        if (!ok) {
+          toast.info("Execution cancelled", "Nothing was run.");
+          return;
+        }
       }
       recordHistory(id, "execute");
       patchTab(id, { running: true });
@@ -291,11 +420,14 @@ export default function App() {
           result,
           executedAt: Date.now(),
           database: result.database || tab.database,
+          openTransactions: result.openTransactions ?? 0,
         });
         if (result.database && result.database !== tab.database) {
           void loadCatalog({ ...tab, database: result.database });
         }
+        reportExecution(result, tab.title, id);
       } catch (e) {
+        toast.error("The query was not run", errorText(e));
         patchTab(id, {
           running: false,
           result: {
@@ -331,12 +463,17 @@ export default function App() {
       patchTab(id, { running: true });
       setResultsVisible(true);
       try {
-        const result = await api.executeMulti(id, sql, databases);
+        const progress = toast.progress(`Running on ${databases.length} database(s)…`);
+        const result = await api.executeMulti(id, sql, databases).catch((e) => {
+          update(progress, "error", "Multi-database run failed", errorText(e));
+          throw e;
+        });
         patchTab(id, { running: false, result, executedAt: Date.now() });
         setStatus(`Ran on ${databases.length} database(s)`);
-      } catch (e) {
+        const failed = result.batches.some((b) => b.output.failed);
+        update(progress, failed ? "warning" : "success", `Ran on ${databases.length} database(s)`, failed ? "Some databases reported errors — see Messages." : databases.join(", "));
+      } catch {
         patchTab(id, { running: false });
-        setStatus(errorText(e));
       }
     },
     [patchTab, recordHistory],
@@ -344,6 +481,11 @@ export default function App() {
 
   const cancel = useCallback(() => {
     const id = activeRef.current;
+    if (!tabsRef.current.find((t) => t.id === id)?.running) {
+      toast.info("Nothing is running in this tab");
+      return;
+    }
+    toast.info("Cancelling the query…", "The server is asked to stop; the connection is reset if it does not.");
     void api.cancelQuery(id);
   }, []);
 
@@ -351,8 +493,17 @@ export default function App() {
     const ed = editor.current;
     if (!ed) return;
     const sel = ed.getSelection();
-    const action = sel && !sel.isEmpty() ? "editor.action.formatSelection" : "editor.action.formatDocument";
-    void ed.getAction(action)?.run();
+    const selection = sel && !sel.isEmpty();
+    const action = selection ? "editor.action.formatSelection" : "editor.action.formatDocument";
+    const before = ed.getModel()?.getValue();
+    void ed
+      .getAction(action)
+      ?.run()
+      .then(() => {
+        const after = ed.getModel()?.getValue();
+        if (before === after) toast.info("Already formatted", "Nothing changed.");
+        else toast.success(selection ? "Selection formatted" : "Document formatted", "Ctrl+Z undoes it.");
+      });
   }, []);
 
   const openText = useCallback(
@@ -381,14 +532,15 @@ export default function App() {
     try {
       const text = await api.refactorText(editorArgs(model), action);
       if (text === model.getValue()) {
-        setStatus("Nothing to change");
+        toast.info(`${REFACTOR_DONE[action]}: nothing to change`);
         return;
       }
       ed.pushUndoStop();
       ed.executeEdits("refactor", [{ range: model.getFullModelRange(), text }]);
       ed.pushUndoStop();
+      toast.success(REFACTOR_DONE[action], "Ctrl+Z undoes it.");
     } catch (e) {
-      setStatus(errorText(e));
+      toast.error("Could not apply the change", errorText(e));
     }
   }, []);
 
@@ -400,19 +552,19 @@ export default function App() {
       const pos = ed?.getPosition();
       const tab = tabsRef.current.find((t) => t.id === activeRef.current);
       if (!ed || !model || !pos || !tab?.connected || !tab.connectionId || !tab.database) {
-        setStatus("Connect the tab to open object definitions");
+        toast.info("Connect the tab first", "Object definitions come from the connected database.");
         return;
       }
       try {
         const obj = await api.objectAt(editorArgs(model, pos));
         if (!obj) {
-          setStatus("No database object under the cursor");
+          toast.info("No database object under the cursor", "Put the cursor on a table, view, procedure or function name.");
           return;
         }
         const text = await api.scriptObject(tab.connectionId, tab.database, obj.schema, obj.name, tab.dialect, kind);
         await openText(`${obj.name}${kind === "alter" ? " (alter)" : ""}`, text);
       } catch (e) {
-        setStatus(errorText(e));
+        toast.error("Could not open the definition", errorText(e));
       }
     },
     [openText],
@@ -422,12 +574,17 @@ export default function App() {
     const conn = connections.find((c) => c.name === e.connectionName);
     const dialect = (["mssql", "postgres", "mysql"].includes(e.dialect) ? e.dialect : "mssql") as Dialect;
     const tab = createTab({ title: e.title, text: e.text, dialect, connectionId: conn?.id, database: e.database ?? undefined });
+    toast.success(`Opened "${e.title}" from history`, conn ? `Reconnecting to ${conn.name}…` : "Not connected — choose a server to run it.");
     if (conn) connectTab(tab.id, conn, null, e.database ?? undefined).catch(() => undefined);
   };
 
   const reopenClosed = useCallback(async () => {
     const [last] = await api.historyRecentlyClosed(1);
-    if (!last) return;
+    if (!last) {
+      toast.info("No recently closed tab to reopen");
+      return;
+    }
+    toast.success(`Reopened "${last.title}"`);
     const conn = connectionsRef.current.find((c) => c.name === last.connectionName);
     const tab = createTab({ title: last.title, text: last.text, dialect: last.dialect as Dialect, connectionId: conn?.id });
     await api.historyDelete(last.id).catch(() => undefined);
@@ -550,10 +707,13 @@ export default function App() {
       connectionsRef.current = conns;
       const session = (await api.loadSession().catch(() => null)) as { tabs: SessionTab[]; active?: string } | null;
       const saved = session?.tabs ?? [];
+      const notice = await api.takeStartupNotice().catch(() => null);
+      if (notice) toast.success("Welcome to Sqlotus", notice);
       if (saved.length === 0) {
         createTab();
         return;
       }
+      toast.info(`Restored ${saved.length} tab(s) from your last session`, "Saved connections reconnect automatically.");
       for (const t of saved) {
         const m = /^SQLQuery(\d+)\.sql$/.exec(t.title);
         if (m) untitled = Math.max(untitled, Number(m[1]));
@@ -763,6 +923,16 @@ export default function App() {
               title={c ? `${c.name} / ${t.database ?? ""}` : "Not connected"}
             >
               {t.running && <span className="spinner" />}
+              {(t.openTransactions ?? 0) > 0 && (
+                <span className="tab-badge tx" title="Open transaction — COMMIT or ROLLBACK">
+                  TRAN
+                </span>
+              )}
+              {c?.readOnly && (
+                <span className="tab-badge ro" title="Read-only connection">
+                  🔒
+                </span>
+              )}
               <span className="tab-title">{t.title}</span>
               {c && <small className="tab-db">{t.database}</small>}
               <span
@@ -863,12 +1033,48 @@ export default function App() {
             setDialog(null);
             const id = activeRef.current || createTab().id;
             // failures are reported in the status bar by connectTab
-            connectTab(id, c, pw).catch(() => undefined);
+            connectTab(id, c, pw, undefined, true).catch(() => undefined);
             // back to typing right away
             window.setTimeout(() => editor.current?.focus(), 0);
           }}
         />
       )}
+      {doctor && (
+        <DoctorDialog
+          config={doctor.config}
+          password={doctor.password}
+          error={doctor.error}
+          onClose={() => setDoctor(null)}
+          onRetry={async (cfg) => {
+            const conns = await api.listConnections();
+            setConnections(conns);
+            connectionsRef.current = conns;
+            const saved = conns.find((c) => c.id === cfg.id);
+            if (!saved) return;
+            setDoctor(null);
+            connectTab(doctor.tabId, saved, doctor.password, cfg.database ?? undefined, true).catch(() => undefined);
+          }}
+        />
+      )}
+      {choice && (
+        <div className="modal-backdrop">
+          <div className="modal confirm-modal" onKeyDown={(e) => e.key === "Escape" && choice.resolve("")}>
+            <div className="modal-title">{choice.title}</div>
+            <div className="confirm-body">
+              <p>{choice.message}</p>
+            </div>
+            <div className="modal-actions">
+              <span className="spacer" />
+              {choice.options.map((o) => (
+                <button key={o.label} className={o.kind ?? ""} autoFocus={o.value === ""} onClick={() => choice.resolve(o.value)}>
+                  {o.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+      <Toaster />
       {confirmState && (
         <div className="modal-backdrop">
           <div className="modal confirm-modal" onKeyDown={(e) => e.key === "Escape" && confirmState.resolve(false)}>
@@ -903,7 +1109,15 @@ export default function App() {
         />
       )}
       {dialog === "settings" && settings && (
-        <SettingsDialog settings={settings} dialect={activeTab?.dialect ?? "mssql"} onClose={() => setDialog(null)} onSaved={setSettings} />
+        <SettingsDialog
+          settings={settings}
+          dialect={activeTab?.dialect ?? "mssql"}
+          onClose={() => setDialog(null)}
+          onSaved={(s) => {
+            setSettings(s);
+            toast.success("Settings saved", "Formatting, completion and editor options are applied.");
+          }}
+        />
       )}
     </div>
   );

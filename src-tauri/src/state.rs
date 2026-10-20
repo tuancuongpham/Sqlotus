@@ -58,6 +58,8 @@ pub struct AppState {
     pub store: Arc<Store>,
     pub sessions: Mutex<HashMap<String, Arc<Session>>>,
     pub catalogs: RwLock<HashMap<String, Arc<CatalogSnapshot>>>,
+    /// One-time message for the first window (e.g. data migrated from the old name).
+    pub startup_notice: Mutex<Option<String>>,
     /// Database names per saved connection, recorded when a tab connects.
     pub server_databases: RwLock<HashMap<String, Vec<String>>>,
 }
@@ -73,6 +75,7 @@ impl AppState {
             sessions: Mutex::new(HashMap::new()),
             catalogs: RwLock::new(HashMap::new()),
             server_databases: RwLock::new(HashMap::new()),
+            startup_notice: Mutex::new(None),
         }
     }
 

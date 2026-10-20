@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { api, errorText, newId } from "../api";
+import { toast, update } from "../notify";
 import type { ConnectionConfig, Dialect, SavedConnection } from "../types";
+import { DoctorDialog } from "./DoctorDialog";
 
 const empty = (): ConnectionConfig => ({
   id: newId(),
@@ -52,22 +54,36 @@ export function ConnectionDialog({ onClose, onConnect }: Props) {
     auth: cfg.dialect === "mssql" ? cfg.auth : "sql",
   });
 
-  const save = async () => {
+  const [doctorError, setDoctorError] = useState<string | null>(null);
+
+  const save = async (announce = false) => {
     const c = normalized();
     await api.saveConnection(c, savePassword && password ? password : null, !savePassword);
     setCfg(c);
     await reload();
+    if (announce) {
+      const pw = c.auth === "windows" ? "" : savePassword ? (password ? " Password saved in Windows Credential Manager." : "") : " Password not saved.";
+      toast.success(`Connection "${c.name}" saved`, pw.trim() || undefined);
+    }
     return c;
   };
 
   const test = async () => {
     setBusy(true);
     setStatus(null);
+    const c = normalized();
+    const id = toast.progress(`Testing ${c.name}…`, c.host);
     try {
-      const dbs = await api.testConnection(normalized(), password || null);
+      const dbs = await api.testConnection(c, password || null);
       setStatus({ ok: true, text: `Connected. ${dbs.length} databases.` });
+      update(id, "success", "Connection works", `${dbs.length} database(s) available`);
     } catch (e) {
-      setStatus({ ok: false, text: errorText(e) });
+      const err = errorText(e);
+      setStatus({ ok: false, text: err });
+      update(id, "error", "Connection failed", "The Connection Doctor shows why and how to fix it.", [
+        { label: "Diagnose", run: () => setDoctorError(err) },
+      ]);
+      setDoctorError(err);
     } finally {
       setBusy(false);
     }
@@ -88,10 +104,18 @@ export function ConnectionDialog({ onClose, onConnect }: Props) {
 
   const remove = async () => {
     if (!list.some((x) => x.id === cfg.id)) return;
-    if (!confirm(`Delete connection "${cfg.name}"?`)) return;
-    await api.deleteConnection(cfg.id);
-    setCfg(empty());
-    await reload();
+    if (!confirm(`Delete connection "${cfg.name}"?`)) {
+      toast.info("Connection kept");
+      return;
+    }
+    try {
+      await api.deleteConnection(cfg.id);
+      toast.success(`Connection "${cfg.name}" deleted`, "Its saved password was removed too.");
+      setCfg(empty());
+      await reload();
+    } catch (e) {
+      toast.error("Could not delete the connection", errorText(e));
+    }
   };
 
   const isSaved = list.some((x) => x.id === cfg.id);
@@ -200,6 +224,10 @@ export function ConnectionDialog({ onClose, onConnect }: Props) {
                 Trust server certificate
               </label>
             </div>
+            <label className="check" title="Block INSERT/UPDATE/DELETE/DDL on this connection — useful for production">
+              <input type="checkbox" checked={!!cfg.readOnly} onChange={(e) => set("readOnly", e.target.checked)} />
+              Read-only (block data and schema changes)
+            </label>
             <label>
               Tab colour
               <div className="colors">
@@ -215,6 +243,11 @@ export function ConnectionDialog({ onClose, onConnect }: Props) {
               </div>
             </label>
             {status && <div className={status.ok ? "status-ok" : "status-error"}>{status.text}</div>}
+            {status && !status.ok && (
+              <button className="primary" onClick={() => setDoctorError(status.text)}>
+                🩺 Diagnose this error
+              </button>
+            )}
           </div>
         </div>
         <div className="modal-actions">
@@ -227,7 +260,15 @@ export function ConnectionDialog({ onClose, onConnect }: Props) {
           <button onClick={test} disabled={busy}>
             Test
           </button>
-          <button onClick={() => save().catch((e) => setStatus({ ok: false, text: errorText(e) }))} disabled={busy}>
+          <button
+            onClick={() =>
+              save(true).catch((e) => {
+                setStatus({ ok: false, text: errorText(e) });
+                toast.error("Could not save the connection", errorText(e));
+              })
+            }
+            disabled={busy}
+          >
             Save
           </button>
           <button className="primary" onClick={connect} disabled={busy}>
@@ -236,6 +277,31 @@ export function ConnectionDialog({ onClose, onConnect }: Props) {
           <button onClick={onClose}>Close</button>
         </div>
       </div>
+      {doctorError && (
+        <DoctorDialog
+          config={normalized()}
+          password={password || null}
+          error={doctorError}
+          onClose={() => setDoctorError(null)}
+          onRetry={async (next) => {
+            setDoctorError(null);
+            setCfg(next);
+            await reload();
+            setBusy(true);
+            const id = toast.progress(`Testing ${next.name}…`);
+            try {
+              const dbs = await api.testConnection(next, password || null);
+              setStatus({ ok: true, text: `Connected. ${dbs.length} databases.` });
+              update(id, "success", "Connection works now", "Press Connect to open it in the tab.");
+            } catch (e) {
+              setStatus({ ok: false, text: errorText(e) });
+              update(id, "error", "Still failing", errorText(e).split(String.fromCharCode(10))[0], [{ label: "Diagnose", run: () => setDoctorError(errorText(e)) }]);
+            } finally {
+              setBusy(false);
+            }
+          }}
+        />
+      )}
     </div>
   );
 }

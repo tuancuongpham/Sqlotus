@@ -124,6 +124,62 @@ fn unfiltered_modifications(t: &[Token<'_>]) -> Vec<usize> {
     found
 }
 
+/// Statements that would change data or schema, as `KEYWORD target`
+/// strings — used to enforce read-only connections.
+pub fn modifying_statements(sql: &str, dialect: Dialect) -> Vec<String> {
+    const MODIFYING: &[&str] = &[
+        "INSERT", "UPDATE", "DELETE", "MERGE", "TRUNCATE", "DROP", "ALTER", "CREATE", "GRANT", "REVOKE", "DENY",
+        "RENAME", "REPLACE", "UPSERT",
+    ];
+    let tokens = tokenize(sql, dialect);
+    let t = sig(&tokens);
+    let mut out = Vec::new();
+    for (i, tok) in t.iter().enumerate() {
+        let u = word(Some(tok));
+        let prev = if i > 0 { word(t.get(i - 1)) } else { String::new() };
+        let prev_kind = i.checked_sub(1).map(|p| t[p].kind);
+        // keywords used as parts of other statements, not statements themselves
+        let part_of_other = matches!(prev.as_str(), "ON" | "OF" | "AFTER" | "FOR" | "INSTEAD" | "GRANT" | "DENY" | "REVOKE" | "KEY")
+            || matches!(prev_kind, Some(TokenKind::Dot | TokenKind::Comma | TokenKind::LParen))
+            || t.get(i + 1).is_some_and(|n| n.kind == TokenKind::LParen && u != "INSERT");
+        if MODIFYING.contains(&u.as_str()) && !part_of_other && !(u == "REPLACE" && dialect != Dialect::MySql) {
+            out.push(format!("{u} {}", statement_target(&t[i + 1..])).trim().to_string());
+        }
+        // SELECT ... INTO new_table creates a table
+        if u == "INTO" && prev != "INSERT" && prev != "MERGE" && t[..i].iter().any(|x| word(Some(x)) == "SELECT") {
+            out.push("SELECT INTO".into());
+        }
+    }
+    out
+}
+
+/// The words naming what a statement changes, e.g. `FROM dbo.Orders` or
+/// `TABLE [Sales].[Archive]`: leading keywords plus one qualified name.
+fn statement_target(rest: &[Token<'_>]) -> String {
+    const LEAD: &[&str] = &[
+        "FROM", "INTO", "TOP", "TABLE", "VIEW", "PROCEDURE", "PROC", "FUNCTION", "TRIGGER", "INDEX", "DATABASE",
+        "SCHEMA", "LOGIN", "USER", "ROLE", "SEQUENCE", "TYPE", "SYNONYM", "OR", "UNIQUE", "CLUSTERED", "NONCLUSTERED",
+        "IF", "EXISTS", "NOT", "TEMPORARY", "TEMP",
+    ];
+    let mut words: Vec<String> = Vec::new();
+    let mut name = String::new();
+    for x in rest {
+        if x.kind == TokenKind::Dot && !name.is_empty() {
+            name.push('.');
+        } else if x.is_name() && (name.is_empty() || name.ends_with('.')) {
+            if name.is_empty() && x.kind == TokenKind::Word && LEAD.contains(&x.upper().as_str()) {
+                words.push(x.upper());
+            } else {
+                name.push_str(x.text);
+            }
+        } else {
+            break;
+        }
+    }
+    words.push(name);
+    words.join(" ").trim().to_string()
+}
+
 /// Warnings to confirm before executing `sql`: UPDATE/DELETE without WHERE,
 /// TRUNCATE, DROP TABLE/DATABASE.
 pub fn execution_warnings(sql: &str, dialect: Dialect) -> Vec<String> {
@@ -1100,6 +1156,20 @@ mod tests {
             execution_warnings("TRUNCATE TABLE t; DROP TABLE t", Dialect::MsSql).len(),
             2
         );
+    }
+
+    #[test]
+    fn read_only_classification() {
+        let m = |s: &str| modifying_statements(s, Dialect::MsSql);
+        assert!(m("SELECT * FROM t WHERE x IN (SELECT y FROM u)").is_empty());
+        assert!(m("SELECT REPLACE(a, 'x', 'y'), LEFT(b, 1) FROM t").is_empty());
+        assert_eq!(m("UPDATE dbo.t SET a = 1"), vec!["UPDATE dbo.t"]);
+        assert_eq!(m("DELETE FROM [Sales].Orders WHERE 1 = 0"), vec!["DELETE FROM [Sales].Orders"]);
+        assert_eq!(m("DROP TABLE IF EXISTS dbo.Old"), vec!["DROP TABLE IF EXISTS dbo.Old"]);
+        assert_eq!(m("DELETE FROM t; INSERT INTO t VALUES (1)").len(), 2);
+        assert_eq!(m("SELECT a INTO #x FROM t"), vec!["SELECT INTO"]);
+        assert_eq!(m("CREATE TABLE t (a int REFERENCES u(a) ON DELETE CASCADE)").len(), 1);
+        assert!(modifying_statements("SELECT 1; -- delete from t", Dialect::MsSql).is_empty());
     }
 
     #[test]

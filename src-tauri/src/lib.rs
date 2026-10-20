@@ -1,4 +1,5 @@
 mod commands;
+mod doctor;
 mod intel;
 mod multi;
 mod state;
@@ -40,9 +41,9 @@ pub fn run() {
             let path = dir.join("sqlotus.db");
             let migrated = migrate_legacy_data(&dir, &path);
             let store = sqlotus_store::Store::open(&path)?;
-            if migrated {
-                let _ = store.set_setting("migratedFrom", &"SqlSupportQuery");
-            }
+            let notice = migrated.then(|| {
+                "Your connections, query history and snippets from SqlSupportQuery were moved over.".to_string()
+            });
             // First run: the user's SQL Prompt snippets if present, else built-ins.
             if store.snippet_count()? == 0 {
                 let imported = commands::redgate_snippets_dir()
@@ -54,7 +55,11 @@ pub fn run() {
                     }
                 }
             }
-            app.manage(AppState::new(store));
+            let state = AppState::new(store);
+            if let Ok(mut n) = state.startup_notice.lock() {
+                *n = notice;
+            }
+            app.manage(state);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -99,6 +104,9 @@ pub fn run() {
             intel::find_invalid_objects,
             intel::save_text_file,
             multi::execute_multi,
+            doctor::diagnose_connection,
+            doctor::apply_fix,
+            commands::take_startup_notice,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

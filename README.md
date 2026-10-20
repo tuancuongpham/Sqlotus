@@ -42,7 +42,22 @@ formatter, completion, code analysis, refactorings) is a pure-Rust library with 
   unused variables, unknown objects and columns, and Unicode literals without the `N` prefix
   (`'Nguyễn'` would be stored as `Nguy?n`).
 - **Execution warnings**: confirmation before running UPDATE/DELETE without WHERE, TRUNCATE or DROP.
+- **Read-only connections**: block INSERT/UPDATE/DELETE/MERGE/DDL/GRANT on a connection (e.g. production)
+  while still running queries; such tabs show a 🔒.
+- **Open transaction reminder**: when a run leaves a transaction open (SQL Server, PostgreSQL, MySQL) the tab
+  shows **TRAN** and a notification offers Commit / Roll back; closing the tab asks what to do.
 - **Find invalid objects**: views, procedures, functions and triggers that reference missing tables or columns.
+
+### Connection Doctor and notifications
+- When a connection fails, the **Connection Doctor** explains why: server refused, timeout, unknown host or
+  instance, login failed, certificate, database, Windows authentication. For a SQL Server on this computer it
+  checks the service, TCP/IP, listening ports, SQL Server Browser and the authentication mode.
+- One-click fixes: enable TCP/IP, start the service, start SQL Server Browser, enable SQL Server
+  authentication (these ask Windows for administrator permission), use the right port or host, switch to
+  Windows authentication, trust the certificate, pick another database. It reconnects afterwards and reports
+  the result.
+- Every action and setting shows a notification: connecting, query finished (time and rows), errors with
+  **Diagnose** / **Retry**, format and refactor, copy, CSV export, saving connections and options, restored tabs.
 
 ### Search, history, explorer
 - **SQL Search** (Ctrl+Alt+D): find objects by name, column name or definition text in one or all databases,
@@ -50,7 +65,7 @@ formatter, completion, code analysis, refactorings) is a pure-Rust library with 
 - **SQL History** (Ctrl+Shift+H): every tab is versioned automatically (periodically and on each execute),
   full-text search, reopen closed tabs (Ctrl+Shift+T), diff against the previous version or the current tab.
   Open tabs are restored on restart.
-- **Object Explorer** (F8): filter objects and columns, Select top 100, script
+- **Object Explorer** (F8, open by default): filter objects and columns, Select top 100, script
   SELECT/INSERT/UPDATE/DELETE/EXEC/CREATE/ALTER.
 
 ### Running queries
@@ -59,7 +74,7 @@ formatter, completion, code analysis, refactorings) is a pure-Rust library with 
 - **Run on multiple databases** (Ctrl+Shift+F5): every row gets a `Database` column; results with the same
   shape are combined.
 - Virtualized result grid: sort by column, filter, copy (with headers), **copy as INSERT statements / CSV /
-  IN (…) list**, save as CSV.
+  IN (…) list**, save as CSV. Shift+click a range in a column to see Count / Sum / Avg / Min / Max.
 - Per-connection tab colours (e.g. red for production). Passwords are stored in the Windows Credential Manager.
 
 ## Keyboard shortcuts
@@ -113,6 +128,7 @@ npx tauri build
 - `scripts/` — UI tests over WebView2's DevTools Protocol (`ui-smoke.mjs`, `e2e-db.mjs`, `e2e-features.mjs`)
   and Docker test databases (`test-db/`).
 - `docs/redgate-comparison.md` — feature comparison with Redgate and ideas (Vietnamese).
+- `docs/pain-points.md` — common SQL tool pain points, which paid tools address them, and candidate features (Vietnamese).
 
 ### Testing against real databases
 

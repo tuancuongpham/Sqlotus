@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, errorText } from "../api";
+import { toast } from "../notify";
 import type { Dialect, ObjectKind, SearchHit, SearchOptions } from "../types";
 
 const KINDS: { kind: ObjectKind; label: string }[] = [
@@ -87,9 +88,12 @@ export function SearchPanel({ connectionId, database, databases, dialect, onOpen
       const dbs = allDbs ? databases : database ? [database] : [];
       const r = await api.searchObjects(connectionId, dbs, query, opts);
       setHits(r);
+      if (r.length === 0) toast.info("No matches", `Nothing in ${allDbs ? "any database" : database} matches "${query}".`);
+      else toast.success(`${r.length} match(es) found`);
       setSelected(r[0] ?? null);
     } catch (e) {
       setError(errorText(e));
+      toast.error("Search failed", errorText(e));
     } finally {
       setBusy(false);
     }
@@ -202,7 +206,7 @@ export function SearchPanel({ connectionId, database, databases, dialect, onOpen
               {selected.schema}.{selected.name}
             </b>
             <span className="spacer" />
-            <button onClick={() => navigator.clipboard.writeText(script)}>Copy</button>
+            <button onClick={() => void navigator.clipboard.writeText(script).then(() => toast.success("Definition copied"))}>Copy</button>
             <button onClick={() => onOpenScript(`${selected.schema}.${selected.name}`, script)}>Open in new tab</button>
           </div>
           <pre ref={previewRef}>

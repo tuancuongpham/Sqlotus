@@ -18,9 +18,17 @@ Rust (Tauri 2) + React/TypeScript + Monaco Editor.
 - **Hover** xem cột/kiểu của bảng, cột, biến; **gợi ý tham số** khi gõ hàm/proc.
 - **Phân tích code** (gạch chân khi gõ): UPDATE/DELETE thiếu WHERE, `SELECT *`, `= NULL`, kiểu deprecated, biến không dùng,
   object/cột không tồn tại, chuỗi tiếng Việt thiếu tiền tố `N`. **Cảnh báo trước khi chạy** UPDATE/DELETE không WHERE, TRUNCATE, DROP.
+- **Kết nối read-only**: chặn INSERT/UPDATE/DELETE/MERGE/DDL/GRANT, vẫn chạy được SELECT (tab có 🔒).
+  **Nhắc transaction đang mở**: tab hiện **TRAN**, thông báo có nút Commit / Roll back, đóng tab sẽ hỏi.
+- **Connection Doctor**: khi kết nối lỗi tự giải thích nguyên nhân (từ chối kết nối, timeout, sai host/instance,
+  sai đăng nhập, chứng chỉ, database, Windows Auth); với SQL Server trên máy này kiểm tra service, TCP/IP, port,
+  SQL Browser, chế độ xác thực. Sửa một chạm: bật TCP/IP, khởi động service, bật SQL Browser, bật Mixed Mode
+  (Windows hỏi quyền Administrator), dùng đúng port/host, chuyển Windows Auth, tin chứng chỉ; sửa xong tự kết nối lại.
+- **Thông báo cho mọi thao tác và cài đặt**: đang kết nối/đã kết nối, chạy xong (thời gian, số dòng),
+  lỗi kèm nút Diagnose/Retry, format, copy, lưu CSV, lưu kết nối, lưu cài đặt, khôi phục tab.
 - **Thao tác** (chuột phải hoặc F1): Expand wildcards, Qualify object names, Insert semicolons, Remove square brackets,
   Uppercase/Lowercase keywords; **F12** mở định nghĩa object, **Alt+F12** script ALTER.
-- **Object Explorer** (F8): lọc object/cột, Select top 100, script SELECT/INSERT/UPDATE/DELETE/EXEC/CREATE/ALTER,
+- **Object Explorer** (F8, mở sẵn khi khởi động): lọc object/cột, Select top 100, script SELECT/INSERT/UPDATE/DELETE/EXEC/CREATE/ALTER,
   **Find invalid objects** (view/proc/function/trigger tham chiếu tới bảng/cột không còn tồn tại).
 - **Đổi tên** (F2) biến, alias, CTE ở mọi chỗ dùng.
 - **Gợi ý xuyên database**: `OtherDb.` → schema, `OtherDb.dbo.` → bảng, cột của bảng ở database khác.
@@ -35,7 +43,7 @@ Rust (Tauri 2) + React/TypeScript + Monaco Editor.
   Các tab đang mở được khôi phục khi mở lại app.
 - Chạy query: F5 / Ctrl+E (vùng chọn hoặc cả tab), Shift+F5 (câu lệnh tại con trỏ), tách batch `GO` / `GO n`,
   huỷ query, lưới kết quả ảo hoá (sắp xếp theo cột, lọc, copy Ctrl+C / Ctrl+Shift+C kèm header;
-  Copy as INSERT / CSV / IN list; lưu file CSV), tab Messages.
+  Copy as INSERT / CSV / IN list; lưu file CSV; Shift+click chọn vùng trong một cột để xem Count/Sum/Avg/Min/Max), tab Messages.
 - Màu tab theo kết nối (ví dụ đỏ cho production). Mật khẩu lưu trong Windows Credential Manager.
 
 ## Phím tắt
