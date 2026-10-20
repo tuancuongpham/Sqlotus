@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 export async function attach(outDir) {
   const targets = await (await fetch("http://127.0.0.1:9222/json/list")).json();
-  const target = targets.find((t) => t.type === "page" && t.url.includes("localhost:1420") && t.title === "SqlSupportQuery");
+  const target = targets.find((t) => t.type === "page" && t.title === "SqlSupportQuery");
   if (!target) throw new Error("app page not found");
 
   const ws = new WebSocket(target.webSocketDebuggerUrl);
