@@ -1,7 +1,7 @@
 //! Pure SQL tooling: tokenizer, formatter, completion and snippets.
 //!
 //! Nothing in this crate performs IO; database metadata comes in through
-//! [`catalog::Catalog`], which the `sqlq-db` crate fills.
+//! [`catalog::Catalog`], which the `sqlotus-db` crate fills.
 
 pub mod analysis;
 pub mod catalog;

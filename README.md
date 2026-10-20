@@ -1,4 +1,4 @@
-# SqlSupportQuery
+# Sqlotus
 
 **English** · [Tiếng Việt](README.vi.md)
 
@@ -104,10 +104,10 @@ npx tauri build
 
 ### Layout
 
-- `crates/sqlq-core` — fault-tolerant tokenizer, formatter, completion, scope analysis, code analysis,
+- `crates/sqlotus-core` — fault-tolerant tokenizer, formatter, completion, scope analysis, code analysis,
   refactorings, rename, snippets, search. No IO.
-- `crates/sqlq-db` — connections and query execution (tiberius / tokio-postgres / mysql_async), metadata loading.
-- `crates/sqlq-store` — SQLite storage: connections, settings, snippets, history (FTS5 trigram), catalog cache.
+- `crates/sqlotus-db` — connections and query execution (tiberius / tokio-postgres / mysql_async), metadata loading.
+- `crates/sqlotus-store` — SQLite storage: connections, settings, snippets, history (FTS5 trigram), catalog cache.
 - `src-tauri` — Tauri commands, per-tab database sessions.
 - `src` — React + Monaco UI.
 - `scripts/` — UI tests over WebView2's DevTools Protocol (`ui-smoke.mjs`, `e2e-db.mjs`, `e2e-features.mjs`)
@@ -117,8 +117,8 @@ npx tauri build
 ### Testing against real databases
 
 `scripts/test-db/README.md` starts SQL Server, PostgreSQL and MySQL in Docker with a sample schema. Then set
-`SQLQ_TEST_MSSQL` / `SQLQ_TEST_PG` / `SQLQ_TEST_MYSQL` (see `crates/sqlq-db/tests/live.rs`) and run
-`cargo test -p sqlq-db --test live`. The UI scripts need the app running with
+`SQLOTUS_TEST_MSSQL` / `SQLOTUS_TEST_PG` / `SQLOTUS_TEST_MYSQL` (see `crates/sqlotus-db/tests/live.rs`) and run
+`cargo test -p sqlotus-db --test live`. The UI scripts need the app running with
 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222`.
 
 ## Known limitations

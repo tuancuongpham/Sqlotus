@@ -2,9 +2,9 @@
 //! environment variable holds a JSON `ConnectionConfig` (plus optional
 //! `password` field), e.g.
 //!
-//! SQLQ_TEST_MSSQL='{"dialect":"mssql","host":"localhost","user":"sa","password":"...","database":"Shop"}'
-//! SQLQ_TEST_PG='{"dialect":"postgres","host":"localhost","user":"postgres","password":"...","database":"shop"}'
-//! SQLQ_TEST_MYSQL='{"dialect":"mysql","host":"localhost","user":"root","password":"...","database":"shop"}'
+//! SQLOTUS_TEST_MSSQL='{"dialect":"mssql","host":"localhost","user":"sa","password":"...","database":"Shop"}'
+//! SQLOTUS_TEST_PG='{"dialect":"postgres","host":"localhost","user":"postgres","password":"...","database":"shop"}'
+//! SQLOTUS_TEST_MYSQL='{"dialect":"mysql","host":"localhost","user":"root","password":"...","database":"shop"}'
 //!
 //! The deeper checks expect the sample schema from `scripts/test-db/` (tables
 //! customers/orders with a foreign key, a view, a procedure, a function).
@@ -12,10 +12,10 @@
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
-use sqlq_core::catalog::ObjectKind;
-use sqlq_core::search::{MatchIn, SearchOptions, search};
-use sqlq_core::{CompletionKind, CompletionOptions, complete};
-use sqlq_db::{
+use sqlotus_core::catalog::ObjectKind;
+use sqlotus_core::search::{MatchIn, SearchOptions, search};
+use sqlotus_core::{CompletionKind, CompletionOptions, complete};
+use sqlotus_db::{
     BatchOutput, Connection, ConnectionConfig, Limits, MessageKind, execute_script, load_catalog,
 };
 
@@ -37,7 +37,7 @@ async fn connect(e: &Env) -> Connection {
         .expect("connect")
 }
 
-fn errors(out: &[sqlq_db::ScriptBatch]) -> Vec<String> {
+fn errors(out: &[sqlotus_db::ScriptBatch]) -> Vec<String> {
     out.iter()
         .flat_map(|b| &b.output.messages)
         .filter(|m| m.kind == MessageKind::Error)
@@ -224,7 +224,7 @@ struct Names {
 #[tokio::test]
 async fn mssql() {
     exercise(
-        "SQLQ_TEST_MSSQL",
+        "SQLOTUS_TEST_MSSQL",
         "SELECT 1 AS a, N'ä' AS b, CAST(1.5 AS decimal(5,2)) AS c, GETDATE() AS d, NEWID() AS e, CAST(NULL AS int) AS f, \
          CAST(0x0A0B AS varbinary(2)) AS g, CAST('2024-01-02T03:04:05.1234567' AS datetime2) AS h, CAST(1 AS bit) AS i\n\
          GO\nDECLARE @t TABLE (id int); INSERT INTO @t VALUES (1),(2); SELECT * FROM @t\nGO 2\n\
@@ -243,7 +243,7 @@ async fn mssql() {
 
 #[tokio::test]
 async fn mssql_value_rendering_and_use() {
-    let Some(e) = env("SQLQ_TEST_MSSQL") else {
+    let Some(e) = env("SQLOTUS_TEST_MSSQL") else {
         return;
     };
     let mut conn = connect(&e).await;
@@ -269,7 +269,7 @@ async fn mssql_value_rendering_and_use() {
 
 #[tokio::test]
 async fn mssql_cancel_by_abort() {
-    let Some(e) = env("SQLQ_TEST_MSSQL") else {
+    let Some(e) = env("SQLOTUS_TEST_MSSQL") else {
         return;
     };
     let conn = connect(&e).await;
@@ -288,7 +288,7 @@ async fn mssql_cancel_by_abort() {
 #[tokio::test]
 async fn postgres() {
     exercise(
-        "SQLQ_TEST_PG",
+        "SQLOTUS_TEST_PG",
         "SELECT 1 AS a, 'x'::text AS b, now() AS c; CREATE TEMP TABLE t(id int); INSERT INTO t VALUES (1); SELECT * FROM t; \
          SELECT order_count(1);",
         3,
@@ -299,7 +299,9 @@ async fn postgres() {
 
 #[tokio::test]
 async fn postgres_notice_and_cancel() {
-    let Some(e) = env("SQLQ_TEST_PG") else { return };
+    let Some(e) = env("SQLOTUS_TEST_PG") else {
+        return;
+    };
     let mut conn = connect(&e).await;
     let out = conn
         .execute("CALL touch_customer(1)", &Limits::default())
@@ -337,7 +339,7 @@ async fn postgres_notice_and_cancel() {
 #[tokio::test]
 async fn mysql() {
     exercise(
-        "SQLQ_TEST_MYSQL",
+        "SQLOTUS_TEST_MYSQL",
         "SELECT 1 AS a, NOW() AS b; CREATE TEMPORARY TABLE t(id int); INSERT INTO t VALUES (1); SELECT * FROM t; \
          CALL get_customer_orders(1);",
         3,
@@ -348,7 +350,7 @@ async fn mysql() {
 
 #[tokio::test]
 async fn mysql_cancel() {
-    let Some(e) = env("SQLQ_TEST_MYSQL") else {
+    let Some(e) = env("SQLOTUS_TEST_MYSQL") else {
         return;
     };
     let mut conn = connect(&e).await;

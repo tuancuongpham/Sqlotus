@@ -4,7 +4,7 @@ Trạng thái: ✅ có · 🟡 có một phần · ❌ chưa có. Cột "Mới" 
 
 ## Gõ nhanh (SQL Prompt – code completion)
 
-| Tính năng Redgate | SqlSupportQuery | Mới | Ghi chú |
+| Tính năng Redgate | Sqlotus | Mới | Ghi chú |
 |---|---|---|---|
 | Gợi ý keyword, schema, bảng, view, cột, proc, function | ✅ | | |
 | Hiểu alias, CTE, derived table, `#temp`, `@table` | ✅ | | |
@@ -23,7 +23,7 @@ Trạng thái: ✅ có · 🟡 có một phần · ❌ chưa có. Cột "Mới" 
 
 ## Format & thao tác trên code
 
-| Tính năng Redgate | SqlSupportQuery | Mới | Ghi chú |
+| Tính năng Redgate | Sqlotus | Mới | Ghi chú |
 |---|---|---|---|
 | Format SQL theo style | 🟡 | | Có các tuỳ chọn chính; Redgate có hàng trăm tuỳ chỉnh |
 | Apply casing (chữ hoa/thường keyword) | ✅ | ✅ | Không đổi bố cục |
@@ -38,7 +38,7 @@ Trạng thái: ✅ có · 🟡 có một phần · ❌ chưa có. Cột "Mới" 
 
 ## Phân tích code & an toàn
 
-| Tính năng Redgate | SqlSupportQuery | Mới | Ghi chú |
+| Tính năng Redgate | Sqlotus | Mới | Ghi chú |
 |---|---|---|---|
 | Gạch chân object/cột không tồn tại | ✅ | ✅ | SQ006, SQ007 |
 | Code analysis rules | 🟡 | ✅ | 8 luật: UPDATE/DELETE thiếu WHERE, `SELECT *`, `= NULL`, kiểu deprecated, biến không dùng, object/cột sai, chuỗi Unicode thiếu `N` (luật riêng cho tiếng Việt). Redgate có ~100 luật |
@@ -47,7 +47,7 @@ Trạng thái: ✅ có · 🟡 có một phần · ❌ chưa có. Cột "Mới" 
 
 ## Điều hướng & object
 
-| Tính năng Redgate/SSMS | SqlSupportQuery | Mới | Ghi chú |
+| Tính năng Redgate/SSMS | Sqlotus | Mới | Ghi chú |
 |---|---|---|---|
 | Go to definition / Script as ALTER | ✅ | ✅ | F12 / Alt+F12 |
 | Object Explorer | 🟡 | ✅ | F8: lọc, xem cột, Select top 100, script SELECT/INSERT/UPDATE/DELETE/EXEC/CREATE/ALTER |
@@ -55,7 +55,7 @@ Trạng thái: ✅ có · 🟡 có một phần · ❌ chưa có. Cột "Mới" 
 
 ## Lưới kết quả
 
-| Tính năng | SqlSupportQuery | Mới | Ghi chú |
+| Tính năng | Sqlotus | Mới | Ghi chú |
 |---|---|---|---|
 | Script as INSERT từ kết quả | ✅ | ✅ | `INSERT INTO #Results …`, chia lô 1000 dòng |
 | Copy as IN (…) list, CSV | ✅ | ✅ | |
@@ -65,7 +65,7 @@ Trạng thái: ✅ có · 🟡 có một phần · ❌ chưa có. Cột "Mới" 
 
 ## SQL Search
 
-| Tính năng | SqlSupportQuery | Ghi chú |
+| Tính năng | Sqlotus | Ghi chú |
 |---|---|---|
 | Tìm theo tên, cột, nội dung định nghĩa | ✅ | |
 | Nhiều database, exact match, match case, lọc loại object | ✅ | |
@@ -74,7 +74,7 @@ Trạng thái: ✅ có · 🟡 có một phần · ❌ chưa có. Cột "Mới" 
 
 ## SQL History
 
-| Tính năng | SqlSupportQuery | Ghi chú |
+| Tính năng | Sqlotus | Ghi chú |
 |---|---|---|
 | Tự lưu phiên bản (định kỳ + khi Execute), tìm full-text | ✅ | |
 | Khôi phục tab đã đóng, tab mở lại khi khởi động | ✅ | |

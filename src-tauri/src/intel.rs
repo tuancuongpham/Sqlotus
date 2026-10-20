@@ -5,11 +5,11 @@
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use sqlq_core::analysis::{self, ObjectAt, Severity, SignatureInfo};
-use sqlq_core::catalog::DbObject;
-use sqlq_core::format::KeywordCase;
-use sqlq_core::{Dialect, byte_to_utf16, refactor, script, utf16_to_byte};
-use sqlq_db::CatalogSnapshot;
+use sqlotus_core::analysis::{self, ObjectAt, Severity, SignatureInfo};
+use sqlotus_core::catalog::DbObject;
+use sqlotus_core::format::KeywordCase;
+use sqlotus_core::{Dialect, byte_to_utf16, refactor, script, utf16_to_byte};
+use sqlotus_db::CatalogSnapshot;
 use tauri::State;
 
 use crate::commands::{CmdResult, fetch_catalog, no_panic};
@@ -240,7 +240,7 @@ pub struct RenameDto {
 #[tauri::command]
 pub async fn rename_target(args: EditorArgs) -> CmdResult<Option<RenameDto>> {
     let t = no_panic("rename", || {
-        sqlq_core::rename::rename_target(&args.text, args.byte_offset(), args.dialect)
+        sqlotus_core::rename::rename_target(&args.text, args.byte_offset(), args.dialect)
     })?;
     Ok(t.map(|t| RenameDto {
         kind: t.kind,

@@ -66,7 +66,7 @@ export async function updateDiagnostics(model: monaco.editor.ITextModel) {
     if (model.isDisposed() || model.getVersionId() !== version) return;
     monaco.editor.setModelMarkers(
       model,
-      "sqlq",
+      "sqlotus",
       found.map((d) => {
         const s = model.getPositionAt(d.start);
         const e = model.getPositionAt(d.end);
@@ -78,7 +78,7 @@ export async function updateDiagnostics(model: monaco.editor.ITextModel) {
           severity: severityMap[d.severity],
           message: d.message,
           code: d.code,
-          source: "SqlSupportQuery",
+          source: "Sqlotus",
         };
       }),
     );

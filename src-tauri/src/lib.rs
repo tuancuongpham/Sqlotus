@@ -7,21 +7,49 @@ use tauri::Manager;
 
 use crate::state::AppState;
 
+/// Copy the database of the app's previous name (SqlSupportQuery) on the
+/// first start of Sqlotus, so connections, history and snippets carry over.
+fn migrate_legacy_data(dir: &std::path::Path, path: &std::path::Path) -> bool {
+    if path.exists() {
+        return false;
+    }
+    let Some(old_dir) = dir.parent().map(|p| p.join("com.sqlsupportquery.app")) else {
+        return false;
+    };
+    let old = old_dir.join("sqlq.db");
+    if !old.exists() || std::fs::create_dir_all(dir).is_err() {
+        return false;
+    }
+    // the database and its write-ahead log belong together
+    for suffix in ["", "-wal", "-shm"] {
+        let from = old_dir.join(format!("sqlq.db{suffix}"));
+        if from.exists() && std::fs::copy(&from, dir.join(format!("sqlotus.db{suffix}"))).is_err() {
+            return false;
+        }
+    }
+    true
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let path = app.path().app_data_dir()?.join("sqlq.db");
-            let store = sqlq_store::Store::open(&path)?;
+            let dir = app.path().app_data_dir()?;
+            let path = dir.join("sqlotus.db");
+            let migrated = migrate_legacy_data(&dir, &path);
+            let store = sqlotus_store::Store::open(&path)?;
+            if migrated {
+                let _ = store.set_setting("migratedFrom", &"SqlSupportQuery");
+            }
             // First run: the user's SQL Prompt snippets if present, else built-ins.
             if store.snippet_count()? == 0 {
                 let imported = commands::redgate_snippets_dir()
                     .and_then(|dir| store.import_redgate_snippets(&dir).ok())
                     .unwrap_or(0);
                 if imported == 0 {
-                    for s in sqlq_core::snippet::builtin_snippets() {
+                    for s in sqlotus_core::snippet::builtin_snippets() {
                         store.save_snippet(&s)?;
                     }
                 }

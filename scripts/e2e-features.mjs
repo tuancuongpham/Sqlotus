@@ -226,7 +226,7 @@ const filtered = await gridCol(2);
 check("grid filter", filtered.length === 1 && filtered[0] === "John Smith", JSON.stringify(filtered));
 
 // 12. CSV export writes a UTF-8 file with BOM (the save dialog itself is native)
-const csvPath = process.env.TEMP + "\\sqlq-e2e.csv";
+const csvPath = process.env.TEMP + "\\sqlotus-e2e.csv";
 await ui.invoke("save_text_file", { path: csvPath, contents: "Name\r\nNguyễn Văn A" });
 const { readFileSync } = await import("node:fs");
 const csv = readFileSync(csvPath);

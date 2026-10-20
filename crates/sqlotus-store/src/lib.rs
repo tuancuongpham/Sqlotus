@@ -9,8 +9,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use sqlq_core::snippet::Snippet;
-use sqlq_db::{CatalogSnapshot, ConnectionConfig};
+use sqlotus_core::snippet::Snippet;
+use sqlotus_db::{CatalogSnapshot, ConnectionConfig};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -26,7 +26,9 @@ pub enum StoreError {
 
 pub type Result<T, E = StoreError> = std::result::Result<T, E>;
 
-const KEYRING_SERVICE: &str = "SqlSupportQuery";
+const KEYRING_SERVICE: &str = "Sqlotus";
+/// Credential-store service used before the rename to Sqlotus.
+const LEGACY_KEYRING_SERVICE: &str = "SqlSupportQuery";
 /// Autosaves of the same tab within this window update one history entry.
 const AUTOSAVE_COALESCE_MS: i64 = 10 * 60 * 1000;
 
@@ -244,13 +246,27 @@ impl Store {
     }
 
     pub fn get_password(&self, connection_id: &str) -> Result<Option<String>> {
-        let entry = keyring::Entry::new(KEYRING_SERVICE, connection_id)
-            .map_err(|e| StoreError::Keyring(e.to_string()))?;
-        match entry.get_password() {
-            Ok(p) => Ok(Some(p)),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => Err(StoreError::Keyring(e.to_string())),
+        let read = |service: &str| -> Result<Option<String>> {
+            let entry = keyring::Entry::new(service, connection_id)
+                .map_err(|e| StoreError::Keyring(e.to_string()))?;
+            match entry.get_password() {
+                Ok(p) => Ok(Some(p)),
+                Err(keyring::Error::NoEntry) => Ok(None),
+                Err(e) => Err(StoreError::Keyring(e.to_string())),
+            }
+        };
+        if let Some(p) = read(KEYRING_SERVICE)? {
+            return Ok(Some(p));
         }
+        // saved before the rename: move it under the new service name
+        let legacy = read(LEGACY_KEYRING_SERVICE)?;
+        if let Some(p) = &legacy {
+            self.set_password(connection_id, Some(p))?;
+            if let Ok(old) = keyring::Entry::new(LEGACY_KEYRING_SERVICE, connection_id) {
+                let _ = old.delete_credential();
+            }
+        }
+        Ok(legacy)
     }
 
     // -- settings ---------------------------------------------------------
@@ -576,10 +592,10 @@ mod tests {
     #[test]
     fn settings_roundtrip() {
         let s = Store::open_in_memory().unwrap();
-        s.set_setting("format", &sqlq_core::FormatOptions::default())
+        s.set_setting("format", &sqlotus_core::FormatOptions::default())
             .unwrap();
-        let back: sqlq_core::FormatOptions = s.get_setting("format").unwrap().unwrap();
-        assert_eq!(back, sqlq_core::FormatOptions::default());
+        let back: sqlotus_core::FormatOptions = s.get_setting("format").unwrap().unwrap();
+        assert_eq!(back, sqlotus_core::FormatOptions::default());
         assert!(s.get_setting::<String>("missing").unwrap().is_none());
     }
 
@@ -640,7 +656,7 @@ mod tests {
 
     #[test]
     fn imports_redgate_snippets() {
-        let dir = std::env::temp_dir().join(format!("sqlq-snip-{}", now_ms()));
+        let dir = std::env::temp_dir().join(format!("sqlotus-snip-{}", now_ms()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("ssf-1.json"),

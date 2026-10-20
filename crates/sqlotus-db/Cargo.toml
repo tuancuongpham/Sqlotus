@@ -1,12 +1,12 @@
 [package]
-name = "sqlq-db"
+name = "sqlotus-db"
 description = "Database connections, query execution and metadata loading"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-sqlq-core = { path = "../sqlq-core" }
+sqlotus-core = { path = "../sqlotus-core" }
 serde.workspace = true
 thiserror.workspace = true
 tokio = { version = "1", features = ["net", "time", "rt", "macros", "sync"] }

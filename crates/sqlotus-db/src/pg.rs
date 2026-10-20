@@ -55,7 +55,7 @@ impl PgConn {
                     .filter(|d| !d.is_empty())
                     .unwrap_or("postgres"),
             )
-            .application_name("SqlSupportQuery")
+            .application_name("Sqlotus")
             .ssl_mode(if cfg.encrypt {
                 SslMode::Require
             } else {

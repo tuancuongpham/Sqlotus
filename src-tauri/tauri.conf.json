@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "SqlSupportQuery",
+  "productName": "Sqlotus",
   "version": "0.1.0",
-  "identifier": "com.sqlsupportquery.app",
+  "identifier": "com.sqlotus.app",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "SqlSupportQuery",
+        "title": "Sqlotus",
         "width": 1400,
         "height": 900,
         "minWidth": 800,

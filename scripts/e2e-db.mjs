@@ -1,14 +1,14 @@
 // End-to-end test through the app UI against the Docker test databases
 // (see scripts/test-db/README.md). Saves three connections named "E2E ...".
 //
-//   $env:SQLQ_E2E_PASSWORD="..."; node scripts/e2e-db.mjs [screenshot-dir]
+//   $env:SQLOTUS_E2E_PASSWORD="..."; node scripts/e2e-db.mjs [screenshot-dir]
 import { mkdirSync } from "node:fs";
 import { attach, checker } from "./cdp.mjs";
 
 const outDir = process.argv[2] ?? "e2e-out";
 mkdirSync(outDir, { recursive: true });
-const password = process.env.SQLQ_E2E_PASSWORD;
-if (!password) throw new Error("set SQLQ_E2E_PASSWORD");
+const password = process.env.SQLOTUS_E2E_PASSWORD;
+if (!password) throw new Error("set SQLOTUS_E2E_PASSWORD");
 
 const ui = await attach(outDir);
 const { sleep, evaluate, waitFor, click, press, type, shot, editorText, invoke } = ui;

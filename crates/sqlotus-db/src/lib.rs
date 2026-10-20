@@ -9,11 +9,11 @@ mod pg;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use sqlq_core::Dialect;
-use sqlq_core::catalog::ObjectKind;
+use sqlotus_core::Dialect;
+use sqlotus_core::catalog::ObjectKind;
 
 pub use metadata::{CatalogSnapshot, load_catalog};
-pub use sqlq_core::catalog::ObjectDefinition;
+pub use sqlotus_core::catalog::ObjectDefinition;
 
 #[derive(Debug, thiserror::Error)]
 pub enum DbError {
@@ -313,7 +313,7 @@ pub async fn execute_script(
     limits: &Limits,
 ) -> Vec<ScriptBatch> {
     let mut results = Vec::new();
-    for batch in sqlq_core::statements::split_batches(script, conn.dialect()) {
+    for batch in sqlotus_core::statements::split_batches(script, conn.dialect()) {
         let text = batch.span.text(script);
         for _ in 0..batch.repeat {
             let output = conn.execute(text, limits).await;

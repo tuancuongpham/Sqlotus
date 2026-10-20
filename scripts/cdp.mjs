@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 export async function attach(outDir) {
   const targets = await (await fetch("http://127.0.0.1:9222/json/list")).json();
-  const target = targets.find((t) => t.type === "page" && t.title === "SqlSupportQuery");
+  const target = targets.find((t) => t.type === "page" && t.title === "Sqlotus");
   if (!target) throw new Error("app page not found");
 
   const ws = new WebSocket(target.webSocketDebuggerUrl);
@@ -23,7 +23,7 @@ export async function attach(outDir) {
       msg.error ? reject(new Error(msg.error.message)) : resolve(msg.result);
     }
   };
-  const debug = !!process.env.SQLQ_CDP_DEBUG;
+  const debug = !!process.env.SQLOTUS_CDP_DEBUG;
   // A CDP call that never answers means the page is frozen: fail loudly.
   const send = (method, params = {}) =>
     new Promise((resolve, reject) => {

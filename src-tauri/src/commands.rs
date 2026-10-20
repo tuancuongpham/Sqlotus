@@ -6,12 +6,12 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
-use sqlq_core::catalog::ObjectKind;
-use sqlq_core::search::{SearchHit, SearchOptions};
-use sqlq_core::snippet::Snippet;
-use sqlq_core::{CompletionResult, Dialect, byte_to_utf16, utf16_to_byte};
-use sqlq_db::{BatchOutput, Connection, ConnectionConfig, Limits, load_catalog};
-use sqlq_store::{HistoryEntry, NewHistory};
+use sqlotus_core::catalog::ObjectKind;
+use sqlotus_core::search::{SearchHit, SearchOptions};
+use sqlotus_core::snippet::Snippet;
+use sqlotus_core::{CompletionResult, Dialect, byte_to_utf16, utf16_to_byte};
+use sqlotus_db::{BatchOutput, Connection, ConnectionConfig, Limits, load_catalog};
+use sqlotus_store::{HistoryEntry, NewHistory};
 use tauri::State;
 
 use crate::state::{AppState, Running, Session, Settings};
@@ -298,7 +298,7 @@ pub async fn execute(
         ensure_connected(&task_session, &mut guard).await?;
         let conn = guard.as_mut().expect("connected");
         let _ = cancel_tx.send(conn.cancel_handle());
-        let batches = sqlq_db::execute_script(conn, &script, &limits).await;
+        let batches = sqlotus_db::execute_script(conn, &script, &limits).await;
         // a USE statement may have switched database
         let db = conn.current_database().await.unwrap_or_default();
         Ok::<_, String>((batches, db))
@@ -351,7 +351,7 @@ pub async fn cancel_query(state: State<'_, AppState>, tab_id: String) -> CmdResu
     let running = session.running.lock().map_err(err)?.take();
     if let Some(r) = running {
         match r.cancel {
-            sqlq_db::CancelHandle::None => r.abort.abort(),
+            sqlotus_db::CancelHandle::None => r.abort.abort(),
             ref c => {
                 // ask the server first; abort if it does not stop soon
                 let _ = c.cancel().await;
@@ -387,7 +387,7 @@ pub struct ObjectRef {
     kind: ObjectKind,
 }
 
-fn catalog_info(snap: &sqlq_db::CatalogSnapshot) -> CatalogInfo {
+fn catalog_info(snap: &sqlotus_db::CatalogSnapshot) -> CatalogInfo {
     CatalogInfo {
         objects: snap.catalog.objects.len(),
         definitions: snap.definitions.len(),
@@ -409,7 +409,7 @@ pub(crate) async fn fetch_catalog(
     state: &AppState,
     connection_id: &str,
     database: &str,
-) -> CmdResult<Arc<sqlq_db::CatalogSnapshot>> {
+) -> CmdResult<Arc<sqlotus_db::CatalogSnapshot>> {
     let mut config = state
         .store
         .get_connection(connection_id)
@@ -468,13 +468,13 @@ fn referenced_databases(
     databases: &[String],
     current: &str,
 ) -> Vec<String> {
-    let tokens: Vec<_> = sqlq_core::tokenize(text, dialect)
+    let tokens: Vec<_> = sqlotus_core::tokenize(text, dialect)
         .into_iter()
         .filter(|t| !t.is_trivia())
         .collect();
     let mut found: Vec<String> = Vec::new();
     for w in tokens.windows(2) {
-        if w[0].is_name() && w[1].kind == sqlq_core::TokenKind::Dot {
+        if w[0].is_name() && w[1].kind == sqlotus_core::TokenKind::Dot {
             let name = w[0].ident_value();
             if let Some(db) = databases
                 .iter()
@@ -531,10 +531,10 @@ pub async fn complete(
         }
         opts.databases = databases;
     }
-    let other_catalogs: Vec<&sqlq_core::Catalog> = others.iter().map(|s| &s.catalog).collect();
+    let other_catalogs: Vec<&sqlotus_core::Catalog> = others.iter().map(|s| &s.catalog).collect();
     let offset = utf16_to_byte(&args.text, args.offset);
     let mut r = no_panic("completion", || {
-        sqlq_core::completion::complete_with_others(
+        sqlotus_core::completion::complete_with_others(
             &args.text,
             offset,
             args.dialect,
@@ -558,7 +558,9 @@ pub async fn complete(
 #[tauri::command]
 pub fn format_sql(state: State<'_, AppState>, text: String, dialect: Dialect) -> CmdResult<String> {
     let opts = state.settings().format;
-    no_panic("formatter", || sqlq_core::format_sql(&text, dialect, &opts))
+    no_panic("formatter", || {
+        sqlotus_core::format_sql(&text, dialect, &opts)
+    })
 }
 
 #[derive(Serialize)]
@@ -571,7 +573,7 @@ pub struct Range {
 #[tauri::command]
 pub fn statement_at(text: String, dialect: Dialect, offset: usize) -> CmdResult<Option<Range>> {
     let span = no_panic("statement split", || {
-        sqlq_core::statements::statement_at(&text, dialect, utf16_to_byte(&text, offset))
+        sqlotus_core::statements::statement_at(&text, dialect, utf16_to_byte(&text, offset))
     })?;
     Ok(span.map(|span| Range {
         start: byte_to_utf16(&text, span.start),
@@ -603,7 +605,7 @@ pub async fn search_objects(
             snap.catalog.database.clone()
         };
         hits.extend(no_panic("search", || {
-            sqlq_core::search::search(&query, &name, &snap.catalog, &snap.definitions, &options)
+            sqlotus_core::search::search(&query, &name, &snap.catalog, &snap.definitions, &options)
         })?);
     }
     hits.truncate(options.max_results.max(1));
@@ -635,7 +637,7 @@ pub fn object_script(
         .catalog
         .find(Some(&schema), &name)
         .ok_or("object not found")?;
-    Ok(sqlq_core::script::create_table_script(obj, dialect))
+    Ok(sqlotus_core::script::create_table_script(obj, dialect))
 }
 
 // ---------------------------------------------------------------------------

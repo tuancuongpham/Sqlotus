@@ -1,4 +1,4 @@
-# SqlSupportQuery
+# Sqlotus
 
 [English](README.md) · **Tiếng Việt**
 
@@ -79,16 +79,16 @@ npx tauri build
 
 Cấu trúc:
 
-- `crates/sqlq-core` — lexer chịu lỗi, formatter, completion, phân tích scope, snippet, search (không IO).
-- `crates/sqlq-db` — kết nối & chạy query (tiberius / tokio-postgres / mysql_async), nạp metadata.
-- `crates/sqlq-store` — SQLite: kết nối, cài đặt, snippet, history (FTS5 trigram), cache catalog.
+- `crates/sqlotus-core` — lexer chịu lỗi, formatter, completion, phân tích scope, snippet, search (không IO).
+- `crates/sqlotus-db` — kết nối & chạy query (tiberius / tokio-postgres / mysql_async), nạp metadata.
+- `crates/sqlotus-store` — SQLite: kết nối, cài đặt, snippet, history (FTS5 trigram), cache catalog.
 - `src-tauri` — Tauri commands, phiên kết nối theo tab.
 - `src` — giao diện React + Monaco.
 - `scripts/ui-smoke.mjs`, `scripts/e2e-db.mjs`, `scripts/e2e-features.mjs` — test UI qua DevTools Protocol của WebView2.
 - `docs/redgate-comparison.md` — so sánh với Redgate và các ý tưởng tiếp theo.
 
-Test với database thật: đặt biến môi trường `SQLQ_TEST_MSSQL` / `SQLQ_TEST_PG` / `SQLQ_TEST_MYSQL`
-(xem `crates/sqlq-db/tests/live.rs`).
+Test với database thật: đặt biến môi trường `SQLOTUS_TEST_MSSQL` / `SQLOTUS_TEST_PG` / `SQLOTUS_TEST_MYSQL`
+(xem `crates/sqlotus-db/tests/live.rs`).
 
 ## Giới hạn hiện tại
 

@@ -1,8 +1,8 @@
 //! Run one script against several databases of the same server
 //! (multi-tenant setups), tagging every row with its database.
 
-use sqlq_core::byte_to_utf16;
-use sqlq_db::{
+use sqlotus_core::byte_to_utf16;
+use sqlotus_db::{
     BatchOutput, Connection, Limits, Message, MessageKind, ResultColumn, ResultSet, execute_script,
 };
 use tauri::State;

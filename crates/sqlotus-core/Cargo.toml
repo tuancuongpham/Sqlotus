@@ -1,5 +1,5 @@
 [package]
-name = "sqlq-core"
+name = "sqlotus-core"
 description = "SQL lexer, formatter, completion and snippet engine (no IO)"
 version.workspace = true
 edition.workspace = true

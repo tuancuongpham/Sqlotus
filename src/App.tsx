@@ -503,33 +503,33 @@ export default function App() {
       label: string,
       run: () => void,
       keybindings: number[] = [],
-      group = "1_sqlq",
+      group = "1_sqlotus",
       order = 1,
     ) => ed.addAction({ id, label, keybindings, contextMenuGroupId: group, contextMenuOrder: order, run });
-    action("sqlq.definition", "Go to Definition (script object)", () => void actions.current.goToDefinition("create"), [KC.F12], "0_nav", 1);
-    action("sqlq.alter", "Script as ALTER", () => void actions.current.goToDefinition("alter"), [KM.Alt | KC.F12], "0_nav", 2);
-    action("sqlq.format", "Format SQL", () => actions.current.format(), [], "1_sqlq", 1);
-    action("sqlq.multi", "Run on Multiple Databases…", () => actions.current.openMulti(), [KM.CtrlCmd | KM.Shift | KC.F5], "0_nav", 3);
+    action("sqlotus.definition", "Go to Definition (script object)", () => void actions.current.goToDefinition("create"), [KC.F12], "0_nav", 1);
+    action("sqlotus.alter", "Script as ALTER", () => void actions.current.goToDefinition("alter"), [KM.Alt | KC.F12], "0_nav", 2);
+    action("sqlotus.format", "Format SQL", () => actions.current.format(), [], "1_sqlotus", 1);
+    action("sqlotus.multi", "Run on Multiple Databases…", () => actions.current.openMulti(), [KM.CtrlCmd | KM.Shift | KC.F5], "0_nav", 3);
     action(
-      "sqlq.expandWildcards",
+      "sqlotus.expandWildcards",
       "Expand Wildcards",
       () => void actions.current.refactor("expandWildcards"),
       [KM.chord(KM.CtrlCmd | KC.KeyB, KM.CtrlCmd | KC.KeyW)],
-      "1_sqlq",
+      "1_sqlotus",
       2,
     );
     action(
-      "sqlq.qualify",
+      "sqlotus.qualify",
       "Qualify Object Names",
       () => void actions.current.refactor("qualifyNames"),
       [KM.chord(KM.CtrlCmd | KC.KeyB, KM.CtrlCmd | KC.KeyQ)],
-      "1_sqlq",
+      "1_sqlotus",
       3,
     );
-    action("sqlq.semicolons", "Insert Semicolons", () => void actions.current.refactor("insertSemicolons"), [], "1_sqlq", 4);
-    action("sqlq.brackets", "Remove Square Brackets", () => void actions.current.refactor("removeBrackets"), [], "1_sqlq", 5);
-    action("sqlq.upper", "Uppercase Keywords", () => void actions.current.refactor("upperKeywords"), [], "1_sqlq", 6);
-    action("sqlq.lower", "Lowercase Keywords", () => void actions.current.refactor("lowerKeywords"), [], "1_sqlq", 7);
+    action("sqlotus.semicolons", "Insert Semicolons", () => void actions.current.refactor("insertSemicolons"), [], "1_sqlotus", 4);
+    action("sqlotus.brackets", "Remove Square Brackets", () => void actions.current.refactor("removeBrackets"), [], "1_sqlotus", 5);
+    action("sqlotus.upper", "Uppercase Keywords", () => void actions.current.refactor("upperKeywords"), [], "1_sqlotus", 6);
+    action("sqlotus.lower", "Lowercase Keywords", () => void actions.current.refactor("lowerKeywords"), [], "1_sqlotus", 7);
 
     // code analysis while typing
     let timer: number | undefined;

@@ -4062,14 +4062,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "sqlq"
+name = "sqlotus"
 version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
- "sqlq-core",
- "sqlq-db",
- "sqlq-store",
+ "sqlotus-core",
+ "sqlotus-db",
+ "sqlotus-store",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
@@ -4078,7 +4078,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "sqlq-core"
+name = "sqlotus-core"
 version = "0.1.0"
 dependencies = [
  "serde",
@@ -4086,7 +4086,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "sqlq-db"
+name = "sqlotus-db"
 version = "0.1.0"
 dependencies = [
  "chrono",
@@ -4096,7 +4096,7 @@ dependencies = [
  "postgres-native-tls",
  "serde",
  "serde_json",
- "sqlq-core",
+ "sqlotus-core",
  "thiserror 2.0.21",
  "tiberius",
  "tokio",
@@ -4105,15 +4105,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "sqlq-store"
+name = "sqlotus-store"
 version = "0.1.0"
 dependencies = [
  "keyring",
  "rusqlite",
  "serde",
  "serde_json",
- "sqlq-core",
- "sqlq-db",
+ "sqlotus-core",
+ "sqlotus-db",
  "thiserror 2.0.21",
 ]
 

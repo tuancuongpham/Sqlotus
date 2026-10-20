@@ -1,8 +1,8 @@
 [package]
-name = "sqlq"
+name = "sqlotus"
 version = "0.1.0"
 description = "SQL editor with completion, formatting, object search and query history"
-authors = ["SqlSupportQuery"]
+authors = ["Sqlotus"]
 edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -11,7 +11,7 @@ edition = "2024"
 # The `_lib` suffix may seem redundant but it is necessary
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
-name = "sqlq_lib"
+name = "sqlotus_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -22,9 +22,9 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sqlq-core = { path = "../crates/sqlq-core" }
-sqlq-db = { path = "../crates/sqlq-db" }
-sqlq-store = { path = "../crates/sqlq-store" }
+sqlotus-core = { path = "../crates/sqlotus-core" }
+sqlotus-db = { path = "../crates/sqlotus-db" }
+sqlotus-store = { path = "../crates/sqlotus-store" }
 tokio = { version = "1", features = ["sync", "time"] }
 tauri-plugin-dialog = "2"
 

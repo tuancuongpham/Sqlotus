@@ -50,7 +50,7 @@ impl MssqlConn {
         if let Some(db) = cfg.database.as_deref().filter(|d| !d.is_empty()) {
             config.database(db);
         }
-        config.application_name("SqlSupportQuery");
+        config.application_name("Sqlotus");
         match cfg.auth {
             AuthKind::Windows => config.authentication(AuthMethod::Integrated),
             AuthKind::Sql => config.authentication(AuthMethod::sql_server(

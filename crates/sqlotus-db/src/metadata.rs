@@ -2,8 +2,8 @@
 //! source of programmable objects for SQL Search.
 
 use serde::{Deserialize, Serialize};
-use sqlq_core::Dialect;
-use sqlq_core::catalog::{
+use sqlotus_core::Dialect;
+use sqlotus_core::catalog::{
     Catalog, Column, DbObject, ForeignKey, ObjectDefinition, ObjectKind, Param,
 };
 
@@ -259,8 +259,8 @@ async fn load_mssql(conn: &mut Connection) -> Result<CatalogSnapshot> {
 /// Parameters with a default value in a T-SQL CREATE PROCEDURE/FUNCTION
 /// header: `@name type = value` before the body's `AS`.
 fn tsql_parameter_defaults(definition: &str) -> Vec<String> {
-    use sqlq_core::lexer::{TokenKind, tokenize};
-    let tokens: Vec<_> = tokenize(definition, sqlq_core::Dialect::MsSql)
+    use sqlotus_core::lexer::{TokenKind, tokenize};
+    let tokens: Vec<_> = tokenize(definition, sqlotus_core::Dialect::MsSql)
         .into_iter()
         .filter(|t| !t.is_trivia())
         .collect();

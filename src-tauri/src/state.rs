@@ -5,9 +5,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
 use serde::{Deserialize, Serialize};
-use sqlq_core::{CompletionOptions, FormatOptions};
-use sqlq_db::{CancelHandle, CatalogSnapshot, Connection, ConnectionConfig};
-use sqlq_store::Store;
+use sqlotus_core::{CompletionOptions, FormatOptions};
+use sqlotus_db::{CancelHandle, CatalogSnapshot, Connection, ConnectionConfig};
+use sqlotus_store::Store;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]

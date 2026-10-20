@@ -1,4 +1,4 @@
-//! Database metadata model used by completion. Filled by `sqlq-db`.
+//! Database metadata model used by completion. Filled by `sqlotus-db`.
 
 use serde::{Deserialize, Serialize};
 
