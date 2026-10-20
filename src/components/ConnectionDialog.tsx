@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, errorText, newId } from "../api";
 import { toast, update } from "../notify";
-import type { ConnectionConfig, Dialect, SavedConnection } from "../types";
+import type { ConnectionConfig, Dialect, Environment, SavedConnection } from "../types";
 import { DoctorDialog } from "./DoctorDialog";
 
 const empty = (): ConnectionConfig => ({
@@ -19,6 +19,14 @@ const empty = (): ConnectionConfig => ({
 });
 
 const COLORS = ["", "#c0392b", "#d35400", "#27ae60", "#2980b9", "#8e44ad"];
+
+const ENVIRONMENTS: { value: Environment; label: string; color: string }[] = [
+  { value: "dev", label: "Development", color: "#27ae60" },
+  { value: "test", label: "Test", color: "#2980b9" },
+  { value: "staging", label: "Staging", color: "#d35400" },
+  { value: "prod", label: "Production", color: "#c0392b" },
+];
+const ENV_ORDER = ["prod", "staging", "test", "dev", ""];
 
 interface Props {
   onClose: () => void;
@@ -130,22 +138,33 @@ export function ConnectionDialog({ onClose, onConnect }: Props) {
             <button className="conn-new" onClick={() => select({ ...empty(), hasPassword: false })}>
               + New connection
             </button>
-            {list.map((c) => (
-              <div
-                key={c.id}
-                className={"conn-item" + (c.id === cfg.id ? " active" : "")}
-                onClick={() => select(c)}
-                onDoubleClick={() => onConnect(c, null)}
-              >
-                <span className="dot" style={{ background: c.color || "transparent" }} />
-                <div>
-                  <div>{c.name}</div>
-                  <small>
-                    {c.dialect} · {c.host}
-                  </small>
+            {ENV_ORDER.map((env) => {
+              const group = list.filter((c) => (c.environment ?? "") === env);
+              if (group.length === 0) return null;
+              const label = ENVIRONMENTS.find((e) => e.value === env)?.label;
+              return (
+                <div key={env || "none"}>
+                  {label && list.some((c) => c.environment) && <div className={`conn-group env-${env}`}>{label}</div>}
+                  {!label && list.some((c) => c.environment) && <div className="conn-group">Other</div>}
+                  {group.map((c) => (
+                    <div
+                      key={c.id}
+                      className={"conn-item" + (c.id === cfg.id ? " active" : "")}
+                      onClick={() => select(c)}
+                      onDoubleClick={() => onConnect(c, null)}
+                    >
+                      <span className="dot" style={{ background: c.color || "transparent" }} />
+                      <div>
+                        <div>{c.name}</div>
+                        <small>
+                          {c.dialect} · {c.host}
+                        </small>
+                      </div>
+                    </div>
+                  ))}
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
           <div className="conn-form">
             <label>
@@ -224,6 +243,31 @@ export function ConnectionDialog({ onClose, onConnect }: Props) {
                 Trust server certificate
               </label>
             </div>
+            <label>
+              Environment
+              <select
+                value={cfg.environment ?? ""}
+                onChange={(e) => {
+                  const env = (e.target.value || null) as Environment | null;
+                  const preset = ENVIRONMENTS.find((x) => x.value === env);
+                  setCfg((c) => ({
+                    ...c,
+                    environment: env,
+                    color: preset?.color ?? c.color,
+                    // production: changes wait for an explicit Commit
+                    manualCommit: env === "prod" ? true : c.manualCommit,
+                  }));
+                  if (env === "prod") toast.info("Production safety on", "Red tab colour, manual commit, and a confirmation before every change. Turn on Read-only too if you only read.");
+                }}
+              >
+                <option value="">(none)</option>
+                {ENVIRONMENTS.map((e) => (
+                  <option key={e.value} value={e.value}>
+                    {e.label}
+                  </option>
+                ))}
+              </select>
+            </label>
             <label className="check" title="Block INSERT/UPDATE/DELETE/DDL on this connection — useful for production">
               <input type="checkbox" checked={!!cfg.readOnly} onChange={(e) => set("readOnly", e.target.checked)} />
               Read-only (block data and schema changes)

@@ -6,7 +6,10 @@
 pub mod analysis;
 pub mod catalog;
 pub mod completion;
+pub mod deps;
+pub mod editing;
 pub mod format;
+pub mod indexes;
 pub mod keywords;
 pub mod lexer;
 pub mod plan;

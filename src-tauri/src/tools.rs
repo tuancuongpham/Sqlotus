@@ -5,6 +5,7 @@ use std::sync::Arc;
 use serde::Serialize;
 use sqlotus_core::Dialect;
 use sqlotus_core::catalog::{DbObject, ForeignKey, ObjectKind};
+use sqlotus_core::editing::{EditPlan, EditSource, RowEdit};
 use sqlotus_core::testdata::{self, ColumnPlan, DataContext, Generator, TestDataOptions};
 use sqlotus_db::CatalogSnapshot;
 use tauri::State;
@@ -143,4 +144,132 @@ pub async fn test_data_script(
         conn.close().await;
     }
     no_panic("test data", || testdata::insert_script(&table, &plans, &fks, &ctx, &options, dialect))?
+}
+
+// ---------------------------------------------------------------------------
+// dependencies
+// ---------------------------------------------------------------------------
+
+/// Views, procedures, functions, triggers and foreign keys that use a table,
+/// a column or a module.
+#[tauri::command]
+pub async fn object_references(
+    state: State<'_, AppState>,
+    connection_id: String,
+    database: String,
+    schema: String,
+    name: String,
+    column: Option<String>,
+    dialect: Dialect,
+) -> CmdResult<Vec<sqlotus_core::deps::Reference>> {
+    let snap = snapshot(&state, &connection_id, &database).await?;
+    no_panic("dependencies", || {
+        sqlotus_core::deps::find_references(&snap.definitions, &snap.catalog, dialect, &schema, &name, column.as_deref())
+    })
+}
+
+/// Statements that change data or schema (for the production confirmation).
+#[tauri::command]
+pub fn modifying_statements(text: String, dialect: Dialect) -> CmdResult<Vec<String>> {
+    no_panic("analysis", || sqlotus_core::analysis::modifying_statements(&text, dialect))
+}
+
+// ---------------------------------------------------------------------------
+// editing results
+// ---------------------------------------------------------------------------
+
+/// The table behind a result, if its rows can be edited.
+#[tauri::command]
+pub async fn editable_source(
+    state: State<'_, AppState>,
+    connection_id: String,
+    database: String,
+    dialect: Dialect,
+    sql: String,
+    result_columns: Vec<String>,
+) -> CmdResult<EditSource> {
+    let snap = snapshot(&state, &connection_id, &database).await?;
+    no_panic("editing", || sqlotus_core::editing::editable_source(&sql, dialect, &snap.catalog, &result_columns))?
+}
+
+/// The statements that saving the edits would run, and any invalid values.
+#[tauri::command]
+pub fn edit_preview(source: EditSource, edits: Vec<RowEdit>, dialect: Dialect) -> CmdResult<EditPlan> {
+    no_panic("editing", || sqlotus_core::editing::edit_statements(&source, &edits, dialect))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EditResult {
+    applied: usize,
+    committed: bool,
+    /// Transactions left open (manual commit, or one the user had open).
+    open_transactions: u32,
+    notice: String,
+}
+
+/// Save edits on the tab's connection: all statements in one transaction,
+/// each must change exactly the row it was meant for, else nothing is kept.
+#[tauri::command]
+pub async fn apply_edits(state: State<'_, AppState>, tab_id: String, source: EditSource, edits: Vec<RowEdit>) -> CmdResult<EditResult> {
+    let session = state.session(&tab_id).ok_or("tab is not connected")?;
+    if session.config.read_only {
+        return Err("This connection is read-only, so the changes were not saved.".into());
+    }
+    let dialect = session.config.dialect;
+    let plan = sqlotus_core::editing::edit_statements(&source, &edits, dialect);
+    if !plan.problems.is_empty() {
+        return Err(format!("Nothing was saved:\n{}", plan.problems.join("\n")));
+    }
+    let mut guard = session.conn.lock().await;
+    crate::commands::ensure_connected(&session, &mut guard).await?;
+    let conn = guard.as_mut().expect("connected");
+    let limits = sqlotus_db::Limits::default();
+    let was_open = conn.open_transactions().await.unwrap_or(0) > 0;
+    if !was_open && conn.execute(conn.begin_statement(), &limits).await.failed {
+        return Err("Could not start a transaction; nothing was saved.".into());
+    }
+    for (i, stmt) in plan.statements.iter().enumerate() {
+        let out = conn.execute_counted(stmt, &limits).await;
+        let problem = if out.failed {
+            Some(out.messages.iter().filter(|m| m.kind == sqlotus_db::MessageKind::Error).map(|m| m.text.clone()).collect::<Vec<_>>().join("\n"))
+        } else if out.rows_affected == 0 {
+            Some("the row was changed or deleted by someone else since it was loaded (0 rows matched)".to_string())
+        } else {
+            None
+        };
+        if let Some(p) = problem {
+            if !was_open {
+                let _ = conn.execute("ROLLBACK", &limits).await;
+            }
+            let msg = format!(
+                "Change {} of {} failed: {p}\n{stmt}\n{}",
+                i + 1,
+                plan.statements.len(),
+                if was_open { "Your open transaction is still open; roll it back to undo the earlier changes." } else { "Nothing was saved." }
+            );
+            return Err(msg);
+        }
+    }
+    let keep_open = was_open || session.config.manual_commit;
+    let mut committed = false;
+    if !keep_open {
+        let c = conn.execute("COMMIT", &limits).await;
+        if c.failed {
+            return Err(format!("COMMIT failed: {}", c.messages.iter().map(|m| m.text.as_str()).collect::<Vec<_>>().join(" ")));
+        }
+        committed = true;
+    }
+    let open = conn.open_transactions().await.unwrap_or(0);
+    let n = plan.statements.len();
+    Ok(EditResult {
+        applied: n,
+        committed,
+        open_transactions: open,
+        notice: if committed {
+            format!("{n} change(s) saved.")
+        } else {
+            format!("{n} change(s) applied inside the open transaction; Commit to keep them.")
+        },
+    })
 }

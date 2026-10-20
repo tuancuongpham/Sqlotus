@@ -15,7 +15,11 @@ export interface ConnectionConfig {
   readOnly?: boolean;
   /** Changes wait in an open transaction until the user commits. */
   manualCommit?: boolean;
+  /** Groups connections; production asks before every change. */
+  environment?: Environment | null;
 }
+
+export type Environment = "dev" | "test" | "staging" | "prod";
 
 export interface SavedConnection extends ConnectionConfig {
   hasPassword: boolean;
@@ -231,6 +235,84 @@ export interface Tab {
   plan?: ExplainOutput;
   /** Which results view to show: rows or the plan. */
   view?: "results" | "plan";
+  /** The SQL of the last run (to know which table an edited result comes from). */
+  lastSql?: string;
+}
+
+export interface Reference {
+  schema: string;
+  name: string;
+  kind: ObjectKind;
+  line: number;
+  text: string;
+  how: "reads" | "changes" | "calls" | "trigger" | "mentions" | "foreign key";
+}
+
+export interface IndexFinding {
+  kind: "missing" | "duplicate" | "overlapping" | "unused" | "scans" | "heap";
+  schema: string;
+  table: string;
+  index: string | null;
+  detail: string;
+  score: number;
+  script: string | null;
+}
+
+export interface IndexHealth {
+  findings: IndexFinding[];
+  notes: string[];
+  errors: string[];
+}
+
+export interface SessionInfo {
+  id: number;
+  blockedBy: number;
+  blocking: number;
+  login: string;
+  host: string;
+  program: string;
+  database: string;
+  status: string;
+  command: string;
+  wait: string;
+  elapsedMs: number;
+  cpuMs: number | null;
+  reads: number | null;
+  openTransaction: boolean;
+  sql: string;
+  running: boolean;
+  isSelf: boolean;
+}
+
+export interface EditColumn {
+  column: string | null;
+  dataType: string;
+  nullable: boolean;
+  isKey: boolean;
+  readOnly: boolean;
+}
+
+export interface EditSource {
+  schema: string;
+  table: string;
+  columns: EditColumn[];
+}
+
+export type RowEdit =
+  | { kind: "update"; original: Record<string, string | null>; values: Record<string, string | null> }
+  | { kind: "insert"; values: Record<string, string | null> }
+  | { kind: "delete"; original: Record<string, string | null> };
+
+/** What a results grid needs to know to edit rows. */
+export interface EditContext {
+  tabId: string;
+  connectionId: string;
+  database: string;
+  dialect: Dialect;
+  sql: string;
+  readOnly: boolean;
+  /** Run the query again after saving. */
+  onSaved: () => void;
 }
 
 export interface Diagnostic {

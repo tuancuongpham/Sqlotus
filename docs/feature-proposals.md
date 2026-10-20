@@ -1,7 +1,9 @@
 # Đề xuất tính năng mới — đánh giá triển vọng (chờ xác nhận)
 
-Tổng hợp tháng 10/2026 từ khảo sát người dùng, diễn đàn và tài liệu sản phẩm (nguồn ở cuối). Các mục dưới đây
-**chưa được làm**; bạn chọn mục nào thì mới implement.
+Tổng hợp tháng 10/2026 từ khảo sát người dùng, diễn đàn và tài liệu sản phẩm (nguồn ở cuối).
+
+**Đã làm trong v0.2.1:** #1 sửa dữ liệu trên lưới, #2 theo dõi phiên & blocking, #3 phụ thuộc (Used by), #4 sức khoẻ
+index, #6 copy Markdown/JSON/HTML, #12 môi trường kết nối. Các mục còn lại chờ xác nhận.
 
 Cách chấm: **Triển vọng** = mức đau của người dùng × số người gặp × chưa có công cụ miễn phí tốt.
 **Công sức**: Thấp (≤ 1 ngày), TB (2–4 ngày), Cao (≥ 1 tuần). **Rủi ro**: khả năng làm sai dữ liệu hoặc khó đúng

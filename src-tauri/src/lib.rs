@@ -1,6 +1,8 @@
+mod activity;
 mod commands;
 mod doctor;
 mod excel;
+mod health;
 mod intel;
 mod multi;
 mod state;
@@ -114,6 +116,15 @@ pub fn run() {
             tools::diagram_model,
             tools::test_data_plan,
             tools::test_data_script,
+            tools::object_references,
+            tools::modifying_statements,
+            tools::editable_source,
+            tools::edit_preview,
+            tools::apply_edits,
+            health::index_health,
+            activity::server_activity,
+            activity::kill_session,
+            activity::close_activity,
             commands::take_startup_notice,
         ])
         .run(tauri::generate_context!())

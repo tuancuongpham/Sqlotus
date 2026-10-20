@@ -3,6 +3,11 @@ import type {
   CatalogInfo,
   ColumnPlan,
   DbObject,
+  EditSource,
+  IndexHealth,
+  Reference,
+  RowEdit,
+  SessionInfo,
   DiagramModel,
   Diagnosis,
   TestDataOptions,
@@ -115,6 +120,21 @@ export const api = {
     invoke<ColumnPlan[]>("test_data_plan", { connectionId, database, schema, name, dialect }),
   testDataScript: (connectionId: string, database: string, schema: string, name: string, dialect: Dialect, options: TestDataOptions) =>
     invoke<string>("test_data_script", { connectionId, database, schema, name, dialect, options }),
+  objectReferences: (connectionId: string, database: string, schema: string, name: string, column: string | null, dialect: Dialect) =>
+    invoke<Reference[]>("object_references", { connectionId, database, schema, name, column, dialect }),
+  modifyingStatements: (text: string, dialect: Dialect) => invoke<string[]>("modifying_statements", { text, dialect }),
+  indexHealth: (connectionId: string, database: string, dialect: Dialect) => invoke<IndexHealth>("index_health", { connectionId, database, dialect }),
+  serverActivity: (connectionId: string, database: string, dialect: Dialect) =>
+    invoke<{ sessions: SessionInfo[]; note: string | null }>("server_activity", { connectionId, database, dialect }),
+  killSession: (connectionId: string, database: string, dialect: Dialect, id: number, wholeSession: boolean) =>
+    invoke<string>("kill_session", { connectionId, database, dialect, id, wholeSession }),
+  closeActivity: (connectionId: string, database: string) => invoke<void>("close_activity", { connectionId, database }),
+  editableSource: (connectionId: string, database: string, dialect: Dialect, sql: string, resultColumns: string[]) =>
+    invoke<EditSource>("editable_source", { connectionId, database, dialect, sql, resultColumns }),
+  editPreview: (source: EditSource, edits: RowEdit[], dialect: Dialect) =>
+    invoke<{ statements: string[]; problems: string[] }>("edit_preview", { source, edits, dialect }),
+  applyEdits: (tabId: string, source: EditSource, edits: RowEdit[]) =>
+    invoke<{ applied: number; committed: boolean; openTransactions: number; notice: string }>("apply_edits", { tabId, source, edits }),
   takeStartupNotice: () => invoke<string | null>("take_startup_notice"),
   diagnoseConnection: (config: ConnectionConfig, error: string) => invoke<Diagnosis>("diagnose_connection", { config, error }),
   applyFix: (fix: Fix, config: ConnectionConfig, password: string | null) =>

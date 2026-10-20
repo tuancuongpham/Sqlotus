@@ -3,7 +3,7 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { api, errorText } from "../api";
 import { toast, update } from "../notify";
 import { pin, unpin, usePinned } from "../pinned";
-import type { Dialect, ResultSet } from "../types";
+import type { Dialect, EditContext, EditSource, ResultSet, RowEdit } from "../types";
 import { ChartDialog } from "./ChartDialog";
 import { CompareDialog } from "./CompareDialog";
 
@@ -57,6 +57,34 @@ function toInsert(rs: ResultSet, rows: (string | null)[][], dialect: Dialect): s
   return parts.join("\n\n");
 }
 
+function toMarkdown(rs: ResultSet, rows: (string | null)[][]): string {
+  const esc = (v: string | null) => (v == null ? "NULL" : v.replace(/\|/g, "\\|").replace(/\r?\n/g, "<br>"));
+  const head = `| ${rs.columns.map((c) => esc(c.name)).join(" | ")} |`;
+  const numeric = rs.columns.map((c) => NUMERIC.test(c.typeName));
+  const sep = `| ${numeric.map((n) => (n ? "---:" : "---")).join(" | ")} |`;
+  return [head, sep, ...rows.map((r) => `| ${r.map(esc).join(" | ")} |`)].join("\n");
+}
+
+function toJson(rs: ResultSet, rows: (string | null)[][]): string {
+  const numeric = rs.columns.map((c) => NUMERIC.test(c.typeName) && !/^bit$/i.test(c.typeName));
+  const objects = rows.map((r) =>
+    Object.fromEntries(
+      r.map((v, j) => {
+        const n = v != null && numeric[j] && /^-?\d+(\.\d+)?$/.test(v) && Math.abs(Number(v)) <= Number.MAX_SAFE_INTEGER ? Number(v) : v;
+        return [rs.columns[j].name || `column${j + 1}`, n];
+      }),
+    ),
+  );
+  return JSON.stringify(objects, null, 2);
+}
+
+function toHtml(rs: ResultSet, rows: (string | null)[][]): string {
+  const esc = (v: string | null) => (v == null ? "<i>NULL</i>" : v.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"));
+  const head = rs.columns.map((c) => `<th>${esc(c.name)}</th>`).join("");
+  const body = rows.map((r) => `<tr>${r.map((v) => `<td>${esc(v)}</td>`).join("")}</tr>`).join("\n");
+  return `<table border="1" cellspacing="0" cellpadding="4">\n<thead><tr>${head}</tr></thead>\n<tbody>\n${body}\n</tbody>\n</table>`;
+}
+
 function toCsv(rs: ResultSet, rows: (string | null)[][]): string {
   const esc = (v: string | null) => (v == null ? "" : /[",\r\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
   return [rs.columns.map((c) => esc(c.name)).join(","), ...rows.map((r) => r.map(esc).join(","))].join("\r\n");
@@ -77,8 +105,31 @@ interface Cell {
   col: number;
 }
 
-export function ResultGrid({ rs, dialect = "mssql", label = "Results" }: { rs: ResultSet; dialect?: Dialect; label?: string }) {
-  const [dialog, setDialog] = useState<"chart" | "compare" | null>(null);
+/** Pending edits of a result: changed cells, deleted and new rows. */
+interface EditState {
+  source: EditSource;
+  /** Changed values per row (row arrays are compared by identity). */
+  changes: Map<Row, Map<number, string | null>>;
+  deleted: Set<Row>;
+  inserted: Row[];
+}
+
+export function ResultGrid({
+  rs,
+  dialect = "mssql",
+  label = "Results",
+  edit: editContext,
+}: {
+  rs: ResultSet;
+  dialect?: Dialect;
+  label?: string;
+  edit?: EditContext;
+}) {
+  const [dialog, setDialog] = useState<"chart" | "compare" | "script" | null>(null);
+  const [edit, setEdit] = useState<EditState | null>(null);
+  const [cellEdit, setCellEdit] = useState<{ row: Row; col: number; value: string } | null>(null);
+  const [preview, setPreview] = useState<{ statements: string[]; problems: string[] } | null>(null);
+  const [saving, setSaving] = useState(false);
   const pinned = usePinned();
   const isPinned = pinned?.rs === rs;
   const [scrollTop, setScrollTop] = useState(0);
@@ -94,13 +145,179 @@ export function ResultGrid({ rs, dialect = "mssql", label = "Results" }: { rs: R
 
   // filtered + sorted view of the rows; selections index into it
   const rows: Row[] = useMemo(() => {
+    if (edit) return [...rs.rows, ...edit.inserted]; // no sort or filter while editing
     const f = filter.trim().toLowerCase();
     let out = f ? rs.rows.filter((r) => r.some((v) => (v ?? "null").toLowerCase().includes(f))) : rs.rows;
     if (sort) {
       out = [...out].sort((a, b) => compareCells(a[sort.col], b[sort.col]) * (sort.desc ? -1 : 1));
     }
     return out;
-  }, [rs, filter, sort]);
+  }, [rs, filter, sort, edit]);
+
+  // -- editing ---------------------------------------------------------------
+
+  const valueOf = (row: Row, j: number): string | null | undefined => {
+    const changed = edit?.changes.get(row);
+    if (changed?.has(j)) return changed.get(j);
+    if (edit?.inserted.includes(row)) return undefined; // not set: the column default
+    return row[j];
+  };
+  const editableCol = (j: number) => !!edit && !!edit.source.columns[j]?.column && !edit.source.columns[j].readOnly;
+  const pending = edit
+    ? [...edit.changes.entries()].filter(([r, m]) => m.size > 0 && !edit.deleted.has(r) && !edit.inserted.includes(r)).length +
+      edit.deleted.size -
+      edit.inserted.filter((r) => edit.deleted.has(r)).length +
+      edit.inserted.filter((r) => !edit.deleted.has(r)).length
+    : 0;
+
+  const startEditing = async () => {
+    if (!editContext) {
+      toast.info("Run the query in a connected tab to edit its rows");
+      return;
+    }
+    if (editContext.readOnly) {
+      toast.info("This connection is read-only", "Turn off Read-only in the connection settings to edit rows.");
+      return;
+    }
+    try {
+      const source = await api.editableSource(
+        editContext.connectionId,
+        editContext.database,
+        editContext.dialect,
+        editContext.sql,
+        rs.columns.map((c) => c.name),
+      );
+      setSort(null);
+      setFilter("");
+      setSelRows(new Set());
+      setRangeEnd(null);
+      setEdit({ source, changes: new Map(), deleted: new Set(), inserted: [] });
+      const readOnlyCols = source.columns.filter((c) => !c.column || c.readOnly).length;
+      toast.info(
+        `Editing ${source.schema}.${source.table}`,
+        `Double-click a cell to change it.${readOnlyCols ? ` ${readOnlyCols} column(s) are read-only (keys set by the server, expressions).` : ""} Nothing is saved until you press Save.`,
+      );
+    } catch (e) {
+      toast.warning("These rows cannot be edited", errorText(e));
+    }
+  };
+
+  const setCell = (row: Row, col: number, value: string | null) => {
+    setEdit((ed) => {
+      if (!ed) return ed;
+      const changes = new Map(ed.changes);
+      const m = new Map(changes.get(row) ?? []);
+      const isNew = ed.inserted.includes(row);
+      if (!isNew && value === row[col]) m.delete(col);
+      else m.set(col, value);
+      changes.set(row, m);
+      return { ...ed, changes };
+    });
+  };
+
+  const commitCell = () => {
+    if (!cellEdit) return;
+    setCell(cellEdit.row, cellEdit.col, cellEdit.value);
+    setCellEdit(null);
+  };
+
+  const beginCell = (i: number, j: number) => {
+    const row = rows[i];
+    if (!edit || !row || edit.deleted.has(row)) return;
+    if (!editableCol(j)) {
+      toast.info("This column cannot be changed here", edit.source.columns[j]?.column ? "It is set by the server." : "It is calculated by the query.");
+      return;
+    }
+    const v = valueOf(row, j);
+    setCellEdit({ row, col: j, value: v ?? "" });
+  };
+
+  const addRow = () => {
+    if (!edit) return;
+    const row: Row = rs.columns.map(() => null);
+    setEdit({ ...edit, inserted: [...edit.inserted, row] });
+    setSelected({ row: rs.rows.length + edit.inserted.length, col: edit.source.columns.findIndex((c, j) => editableCol(j) && c) });
+    window.setTimeout(() => ref.current && (ref.current.scrollTop = ref.current.scrollHeight), 0);
+  };
+
+  const toggleDelete = () => {
+    if (!edit) return;
+    const targets = selRows.size > 0 ? [...selRows].map((i) => rows[i]) : selected ? [rows[selected.row]] : [];
+    if (targets.length === 0) {
+      toast.info("Select a row first", "Click a cell or a row number.");
+      return;
+    }
+    const deleted = new Set(edit.deleted);
+    for (const r of targets) {
+      if (deleted.has(r)) deleted.delete(r);
+      else deleted.add(r);
+    }
+    setEdit({ ...edit, deleted });
+  };
+
+  const setNull = () => {
+    if (!edit || !selected) return;
+    const row = rows[selected.row];
+    if (!editableCol(selected.col)) return;
+    if (edit.source.columns[selected.col].nullable === false) {
+      toast.info(`${edit.source.columns[selected.col].column} cannot be NULL`);
+      return;
+    }
+    setCell(row, selected.col, null);
+  };
+
+  const buildEdits = (): RowEdit[] => {
+    if (!edit) return [];
+    const cols = edit.source.columns;
+    const original = (row: Row) => Object.fromEntries(cols.flatMap((c, j) => (c.column ? [[c.column, row[j]]] : [])));
+    const values = (m: Map<number, string | null> | undefined) =>
+      Object.fromEntries([...(m ?? new Map<number, string | null>()).entries()].flatMap(([j, v]) => (cols[j]?.column ? [[cols[j].column!, v]] : [])));
+    const out: RowEdit[] = [];
+    for (const row of rs.rows) {
+      if (edit.deleted.has(row)) out.push({ kind: "delete", original: original(row) });
+      else if ((edit.changes.get(row)?.size ?? 0) > 0) out.push({ kind: "update", original: original(row), values: values(edit.changes.get(row)) });
+    }
+    for (const row of edit.inserted) if (!edit.deleted.has(row)) out.push({ kind: "insert", values: values(edit.changes.get(row)) });
+    return out;
+  };
+
+  const showScript = async () => {
+    if (!edit) return;
+    try {
+      setPreview(await api.editPreview(edit.source, buildEdits(), dialect));
+      setDialog("script");
+    } catch (e) {
+      toast.error("Could not build the script", errorText(e));
+    }
+  };
+
+  const saveEdits = async () => {
+    if (!edit || !editContext) return;
+    commitCell();
+    const edits = buildEdits();
+    if (edits.length === 0) {
+      toast.info("Nothing to save");
+      return;
+    }
+    setSaving(true);
+    try {
+      const r = await api.applyEdits(editContext.tabId, edit.source, edits);
+      setEdit(null);
+      if (r.committed) toast.success(r.notice, `${edit.source.schema}.${edit.source.table}`);
+      else toast.warning(r.notice, "The tab's transaction is still open.");
+      editContext.onSaved();
+    } catch (e) {
+      toast.error("The changes were not saved", errorText(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const cancelEditing = () => {
+    setEdit(null);
+    setCellEdit(null);
+    toast.info(pending ? `${pending} change(s) discarded` : "Editing ended");
+  };
 
   const toggleSort = (col: number) => {
     setSelRows(new Set());
@@ -206,12 +423,16 @@ export function ResultGrid({ rs, dialect = "mssql", label = "Results" }: { rs: R
     let text = "";
     if (format === "insert") text = toInsert(rs, targetRows(), dialect);
     else if (format === "csv") text = toCsv(rs, targetRows());
+    else if (format === "markdown") text = toMarkdown(rs, targetRows());
+    else if (format === "json") text = toJson(rs, targetRows());
+    else if (format === "html") text = toHtml(rs, targetRows());
     else if (format === "in") {
       const col = selected?.col ?? 0;
       const values = [...new Set(targetRows().map((r) => r[col]))];
       text = `(${values.map((v) => sqlLiteral(v, rs.columns[col].typeName, dialect)).join(", ")})`;
     }
-    const label = { insert: "as INSERT statements", csv: "as CSV", in: "as an IN (…) list" }[format] ?? "";
+    const label =
+      { insert: "as INSERT statements", csv: "as CSV", in: "as an IN (…) list", markdown: "as a Markdown table", json: "as JSON", html: "as an HTML table" }[format] ?? "";
     if (text)
       void navigator.clipboard.writeText(text).then(
         () => toast.success(`Copied ${format === "in" ? "column values" : `${targetRows().length} row(s)`} ${label}`),
@@ -231,6 +452,16 @@ export function ResultGrid({ rs, dialect = "mssql", label = "Results" }: { rs: R
       return;
     }
     if (!selected) return;
+    if (edit && (e.key === "Enter" || e.key === "F2")) {
+      e.preventDefault();
+      beginCell(selected.row, selected.col);
+      return;
+    }
+    if (edit && e.ctrlKey && e.key === "0") {
+      e.preventDefault();
+      setNull();
+      return;
+    }
     const moves: Record<string, [number, number]> = {
       ArrowUp: [-1, 0],
       ArrowDown: [1, 0],
@@ -298,7 +529,45 @@ export function ResultGrid({ rs, dialect = "mssql", label = "Results" }: { rs: R
             </b>
           )}
         </span>
-        <input className="grid-filter" value={filter} placeholder="Filter rows…" onChange={(e) => setFilter(e.target.value)} />
+        {edit ? (
+          <span className="grid-edit-bar">
+            <b>
+              ✎ {edit.source.schema}.{edit.source.table}
+            </b>
+            <button onClick={addRow} title="Add a row (columns you leave empty get their default)">
+              ＋ Row
+            </button>
+            <button onClick={toggleDelete} title="Mark the selected row(s) for deletion (again to undo)">
+              Delete row
+            </button>
+            <button onClick={setNull} disabled={!selected} title="Set the selected cell to NULL (Ctrl+0)">
+              Set NULL
+            </button>
+            <button
+              onClick={() => setEdit({ ...edit, changes: new Map(), deleted: new Set(), inserted: [] })}
+              disabled={pending === 0}
+              title="Undo every change"
+            >
+              Revert
+            </button>
+            <button onClick={() => void showScript()} disabled={pending === 0}>
+              Script…
+            </button>
+            <button className="primary" onClick={() => void saveEdits()} disabled={pending === 0 || saving}>
+              {saving ? "Saving…" : `Save (${pending})`}
+            </button>
+            <button onClick={cancelEditing}>Done</button>
+          </span>
+        ) : (
+          <>
+            <input className="grid-filter" value={filter} placeholder="Filter rows…" onChange={(e) => setFilter(e.target.value)} />
+            {editContext && (
+              <button onClick={() => void startEditing()} title="Edit, add or delete rows of the table this result comes from">
+                ✎ Edit
+              </button>
+            )}
+          </>
+        )}
         <button onClick={() => copy(false)} title="Ctrl+C">Copy</button>
         <button onClick={() => copy(true)} title="Ctrl+Shift+C">Copy with headers</button>
         <select
@@ -316,6 +585,9 @@ export function ResultGrid({ rs, dialect = "mssql", label = "Results" }: { rs: R
           <option value="insert">INSERT statements</option>
           <option value="csv">CSV</option>
           <option value="in">IN (…) list of the column</option>
+          <option value="markdown">Markdown table</option>
+          <option value="json">JSON</option>
+          <option value="html">HTML table</option>
         </select>
         <button onClick={saveCsv} title="Save the selected rows (or all rows) as a CSV file">
           Save CSV…
@@ -344,6 +616,31 @@ export function ResultGrid({ rs, dialect = "mssql", label = "Results" }: { rs: R
       {dialog === "compare" && pinned && (
         <CompareDialog before={pinned.rs} beforeLabel={pinned.label} after={rs} onClose={() => setDialog(null)} />
       )}
+      {dialog === "script" && preview && (
+        <div className="modal-backdrop" onMouseDown={() => setDialog(null)}>
+          <div className="modal edit-script-modal" onMouseDown={(e) => e.stopPropagation()}>
+            <div className="modal-title">Statements Save will run ({preview.statements.length})</div>
+            {preview.problems.length > 0 && (
+              <div className="confirm-body">
+                {preview.problems.map((p, i) => (
+                  <div key={i}>⚠ {p}</div>
+                ))}
+              </div>
+            )}
+            <pre className="edit-script">{preview.statements.join("\n")}</pre>
+            <div className="modal-actions">
+              <small>All of them run in one transaction; if any row was changed by someone else meanwhile, nothing is saved.</small>
+              <span className="spacer" />
+              <button onClick={() => void navigator.clipboard.writeText(preview.statements.join("\n")).then(() => toast.success("Script copied"))}>
+                Copy
+              </button>
+              <button className="primary" onClick={() => setDialog(null)}>
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <div
         className="grid"
         ref={ref}
@@ -358,9 +655,10 @@ export function ResultGrid({ rs, dialect = "mssql", label = "Results" }: { rs: R
               key={i}
               className="grid-cell grid-head"
               style={{ width: widths[i] }}
-              title={`${c.name} ${c.typeName} — click to sort`}
-              onClick={() => toggleSort(i)}
+              title={edit ? `${c.name} ${c.typeName}${editableCol(i) ? "" : " (read-only)"}` : `${c.name} ${c.typeName} — click to sort`}
+              onClick={() => !edit && toggleSort(i)}
             >
+              {edit && !editableCol(i) && <span className="grid-lock">🔒 </span>}
               {c.name || <i>(No column name)</i>}
               {sort?.col === i && <span className="sort-mark">{sort.desc ? " ▼" : " ▲"}</span>}
               <span className="grid-resize" onMouseDown={(e) => startResize(e, i)} />
@@ -373,22 +671,56 @@ export function ResultGrid({ rs, dialect = "mssql", label = "Results" }: { rs: R
             return (
               <div
                 key={i}
-                className={"grid-row" + (selRows.has(i) ? " selected" : "")}
+                className={
+                  "grid-row" +
+                  (selRows.has(i) ? " selected" : "") +
+                  (edit?.deleted.has(row) ? " row-deleted" : "") +
+                  (edit?.inserted.includes(row) ? " row-inserted" : "")
+                }
                 style={{ top: i * ROW_H, width: totalW }}
               >
                 <div className="grid-cell grid-rownum" style={{ width: rowNumW }} onClick={(e) => clickRowNumber(i, e)}>
                   {i + 1}
                 </div>
-                {row.map((v, j) => (
+                {row.map((raw, j) => {
+                  const v = edit ? valueOf(row, j) : raw;
+                  const changed = !!edit?.changes.get(row)?.has(j);
+                  if (cellEdit && cellEdit.row === row && cellEdit.col === j) {
+                    return (
+                      <div key={j} className="grid-cell cell-editing" style={{ width: widths[j] }}>
+                        <input
+                          autoFocus
+                          value={cellEdit.value}
+                          onChange={(e) => setCellEdit({ ...cellEdit, value: e.target.value })}
+                          onBlur={commitCell}
+                          onKeyDown={(e) => {
+                            e.stopPropagation();
+                            if (e.key === "Enter" || e.key === "Tab") {
+                              e.preventDefault();
+                              commitCell();
+                              if (e.key === "Tab") setSelected({ row: i, col: Math.min(rs.columns.length - 1, j + 1) });
+                              ref.current?.focus();
+                            } else if (e.key === "Escape") {
+                              setCellEdit(null);
+                              ref.current?.focus();
+                            }
+                          }}
+                        />
+                      </div>
+                    );
+                  }
+                  return (
                   <div
                     key={j}
                     className={
                       "grid-cell" +
                       (selected?.row === i && selected.col === j ? " active" : "") +
                       (inRange(i, j) ? " in-range" : "") +
-                      (v == null ? " null" : "")
+                      (v == null ? " null" : "") +
+                      (changed ? " cell-changed" : "")
                     }
                     style={{ width: widths[j] }}
+                    onDoubleClick={() => edit && beginCell(i, j)}
                     onMouseDown={(e) => {
                       if (e.shiftKey && selected && selected.col === j) {
                         setRangeEnd(i);
@@ -400,9 +732,10 @@ export function ResultGrid({ rs, dialect = "mssql", label = "Results" }: { rs: R
                     }}
                     title={v != null && v.length > 40 ? v.slice(0, 2000) : undefined}
                   >
-                    {v == null ? "NULL" : v}
+                    {v === undefined ? <i className="cell-default">default</i> : v == null ? "NULL" : v}
                   </div>
-                ))}
+                  );
+                })}
               </div>
             );
           })}

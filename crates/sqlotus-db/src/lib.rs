@@ -62,6 +62,9 @@ pub struct ConnectionConfig {
     /// Start a transaction before changes and leave it open until the user
     /// commits or rolls back.
     pub manual_commit: bool,
+    /// `dev`, `test`, `staging` or `prod`: groups connections and sets
+    /// safety defaults (production asks before every change).
+    pub environment: Option<String>,
 }
 
 impl ConnectionConfig {

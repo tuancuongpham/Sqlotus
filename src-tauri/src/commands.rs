@@ -224,7 +224,7 @@ pub async fn disconnect_tab(state: State<'_, AppState>, tab_id: String) -> CmdRe
     Ok(())
 }
 
-async fn ensure_connected(session: &Session, guard: &mut Option<Connection>) -> CmdResult<()> {
+pub(crate) async fn ensure_connected(session: &Session, guard: &mut Option<Connection>) -> CmdResult<()> {
     if guard.is_none() {
         let mut config = session.config.clone();
         let db = session.database.lock().map_err(err)?.clone();
@@ -416,6 +416,21 @@ pub async fn execute(
                 notice = Some("Manual commit is on for this connection: the changes stay in an open transaction until you commit or roll back.".into());
             }
             _ => {}
+        }
+        // after an error, check the connection is still alive (the server may
+        // have ended the session): a dead one is dropped so the next run reconnects
+        let dead = failed
+            && matches!(conn.query_strings("SELECT 1").await, Err(e) if !e.to_string().contains("current transaction is aborted"));
+        if dead {
+            if let Some(c) = guard.take() {
+                c.close().await;
+            }
+            let notice = Some(
+                "The server closed this connection (session ended or network error). Any open transaction was rolled back; the next run reconnects."
+                    .to_string(),
+            );
+            let db = task_session.database.lock().map(|d| d.clone()).unwrap_or_default();
+            return Ok::<_, String>((batches, db, 0, None, None, notice));
         }
         // a USE statement may have switched database
         let db = conn.current_database().await.unwrap_or_default();

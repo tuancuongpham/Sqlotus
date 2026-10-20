@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, errorText, newId } from "./api";
+import { ActivityDialog } from "./components/ActivityDialog";
 import { ConnectionDialog } from "./components/ConnectionDialog";
 import { DoctorDialog } from "./components/DoctorDialog";
 import { Toaster } from "./components/Toaster";
@@ -92,7 +93,7 @@ export default function App() {
   const [activeId, setActiveId] = useState<string>("");
   const [settings, setSettings] = useState<Settings | null>(null);
   const [connections, setConnections] = useState<SavedConnection[]>([]);
-  const [dialog, setDialog] = useState<"connect" | "settings" | "multi" | null>(null);
+  const [dialog, setDialog] = useState<"connect" | "settings" | "multi" | "activity" | null>(null);
   // the explorer is open by default: the database structure is always in view
   const [panel, setPanel] = useState<Panel>("explorer");
   const [resultsVisible, setResultsVisible] = useState(true);
@@ -356,6 +357,12 @@ export default function App() {
       try {
         const r = await api.execute(tabId, sql);
         patchTab(tabId, { openTransactions: r.openTransactions ?? 0 });
+        const failure = r.batches.flatMap((b) => b.output.messages).find((m) => m.kind === "error");
+        if (failure) {
+          toast.error(`${sql} failed`, r.notice ? `${failure.text}
+${r.notice}` : failure.text);
+          return;
+        }
         const reminder = txReminders.current.get(tabId);
         if (reminder && !r.openTransactions) {
           dismiss(reminder);
@@ -471,6 +478,25 @@ export default function App() {
           return;
         }
       }
+      // production: confirm every change, naming the server and database
+      const tabConn = connectionsRef.current.find((c) => c.id === tab.connectionId);
+      if (tabConn?.environment === "prod") {
+        const changes = await api.modifyingStatements(sql, tab.dialect).catch(() => [] as string[]);
+        if (changes.length > 0) {
+          const answer = await askChoice(
+            "Change PRODUCTION?",
+            `${tabConn.name} (${tabConn.host} / ${tab.database}) is a production connection. This script changes it: ${changes.slice(0, 5).join(", ")}${changes.length > 5 ? ", …" : ""}.`,
+            [
+              { label: "Run on production", value: "run", kind: "danger" },
+              { label: "Cancel", value: "" },
+            ],
+          );
+          if (answer !== "run") {
+            toast.info("Execution cancelled", "Nothing was run.");
+            return;
+          }
+        }
+      }
       // values for variables the script uses without declaring them
       let values: VariableValue[] | null = null;
       if (settingsRef.current?.safety?.promptVariables ?? true) {
@@ -492,6 +518,7 @@ export default function App() {
         patchTab(id, {
           running: false,
           result,
+          lastSql: sql,
           executedAt: Date.now(),
           database: result.database || tab.database,
           openTransactions: result.openTransactions ?? 0,
@@ -513,6 +540,21 @@ export default function App() {
       }
     },
     [patchTab, recordHistory, loadCatalog],
+  );
+
+  /** Run the last query of a tab again (after its rows were edited). */
+  const refreshResult = useCallback(
+    async (id: string) => {
+      const tab = tabsRef.current.find((t) => t.id === id);
+      if (!tab?.lastSql) return;
+      try {
+        const result = await api.execute(id, tab.lastSql);
+        patchTab(id, { result, openTransactions: result.openTransactions ?? 0 });
+      } catch (e) {
+        toast.error("Could not reload the rows", errorText(e));
+      }
+    },
+    [patchTab],
   );
 
   /** Estimated execution plan of the selection or the whole tab. */
@@ -985,6 +1027,12 @@ export default function App() {
         <button onClick={() => void explain()} disabled={activeTab?.running} title="Estimated execution plan (Ctrl+L) — the query is not run">
           ◇ Plan
         </button>
+        <button
+          onClick={() => (activeTab?.connected ? setDialog("activity") : toast.info("Connect first", "The activity monitor shows the sessions of the tab's server."))}
+          title="Sessions, running queries and blocking on this server"
+        >
+          Activity
+        </button>
         {activeTab?.connected && (activeTab.openTransactions ?? 0) > 0 && (
           <>
             <button className="tx-commit" onClick={() => void finishTransaction(activeTab.id, "COMMIT")} title="COMMIT the open transaction">
@@ -1054,6 +1102,11 @@ export default function App() {
                   🔒
                 </span>
               )}
+              {c?.environment === "prod" && (
+                <span className="tab-badge prod" title="Production connection: every change asks first">
+                  PROD
+                </span>
+              )}
               <span className="tab-title">{t.title}</span>
               {c && <small className="tab-db">{t.database}</small>}
               <span
@@ -1082,6 +1135,19 @@ export default function App() {
               <div className="splitter-h" onMouseDown={dragResults} />
               <div className="results-pane" style={{ height: resultsHeight }}>
                 <ResultsPanel
+                  editContext={
+                    activeTab?.connected && activeTab.lastSql && conn
+                      ? {
+                          tabId: activeTab.id,
+                          connectionId: conn.id,
+                          database: activeTab.database ?? "",
+                          dialect: activeTab.dialect,
+                          sql: activeTab.lastSql,
+                          readOnly: !!conn.readOnly,
+                          onSaved: () => void refreshResult(activeTab.id),
+                        }
+                      : undefined
+                  }
                   result={activeTab?.result}
                   plan={activeTab?.plan}
                   showPlan={activeTab?.view === "plan"}
@@ -1200,6 +1266,16 @@ export default function App() {
             </div>
           </div>
         </div>
+      )}
+      {dialog === "activity" && activeTab?.connected && conn && (
+        <ActivityDialog
+          connectionId={conn.id}
+          database={activeTab.database ?? ""}
+          dialect={activeTab.dialect}
+          server={`${conn.name} (${conn.host})`}
+          onOpenScript={(title, text) => void openText(title, text)}
+          onClose={() => setDialog(null)}
+        />
       )}
       {variables && (
         <VariablesDialog

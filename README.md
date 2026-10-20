@@ -82,6 +82,10 @@ formatter, completion, code analysis, refactorings) is a pure-Rust library with 
   SELECT/INSERT/UPDATE/DELETE/EXEC/CREATE/ALTER.
 - **ER diagram**: tables and foreign keys of a database, or one table and its related tables, laid out
   automatically; drag, zoom, highlight relations, copy as image or save as SVG.
+- **Used by**: views, procedures, functions, triggers and foreign keys that use a table, a column or a module,
+  with the line — before you rename or drop something.
+- **Index health**: missing indexes the server suggests, duplicate and overlapping indexes, indexes nobody reads,
+  tables read by full scans and large heaps. Fixes are CREATE/DROP scripts opened in a tab, never run directly.
 - **Test data**: realistic rows for a table (Vietnamese or English names, e-mails, phones, addresses, amounts,
   dates); foreign keys use rows that exist in the parent table and non-identity keys continue after the current
   maximum. The INSERT script opens in a new tab to review and run.
@@ -100,7 +104,14 @@ formatter, completion, code analysis, refactorings) is a pure-Rust library with 
 - **Estimated execution plan** (Ctrl+L): a tree with the cost share of each step and warnings for scans that
   read a whole table, key lookups, implicit conversions, missing join predicates, plus missing-index
   suggestions with a ready CREATE INDEX statement. SQL Server, PostgreSQL and MySQL; the query is not run.
-- Per-connection tab colours (e.g. red for production). Passwords are stored in the Windows Credential Manager.
+- **Edit rows** (✎ Edit on a result from one table with a primary key): change cells, add and delete rows, see the
+  statements first; Save runs them in one transaction and keeps nothing if a row was changed by someone else meanwhile.
+- **Copy as** INSERT statements, CSV, IN (…) list, Markdown table, JSON or HTML table.
+- **Activity monitor**: sessions, running queries, waits, open transactions and blocking chains (who blocks whom);
+  cancel a query or kill a session after confirming. SQL Server, PostgreSQL and MySQL.
+- **Environments**: mark connections Development / Test / Staging / Production. Production gets a red tab, a PROD
+  badge, manual commit, and a confirmation naming the server before every change.
+- Per-connection tab colours. Passwords are stored in the Windows Credential Manager.
 
 ## Keyboard shortcuts
 

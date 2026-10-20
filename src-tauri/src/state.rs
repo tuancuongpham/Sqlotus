@@ -77,6 +77,8 @@ pub struct AppState {
     pub catalogs: RwLock<HashMap<String, Arc<CatalogSnapshot>>>,
     /// One-time message for the first window (e.g. data migrated from the old name).
     pub startup_notice: Mutex<Option<String>>,
+    /// Activity monitor connections, per connection and database.
+    pub monitors: tokio::sync::Mutex<HashMap<String, Connection>>,
     /// Database names per saved connection, recorded when a tab connects.
     pub server_databases: RwLock<HashMap<String, Vec<String>>>,
 }
@@ -93,6 +95,7 @@ impl AppState {
             catalogs: RwLock::new(HashMap::new()),
             server_databases: RwLock::new(HashMap::new()),
             startup_notice: Mutex::new(None),
+            monitors: tokio::sync::Mutex::new(HashMap::new()),
         }
     }
 

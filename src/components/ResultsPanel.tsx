@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { Dialect, ExecuteResult, ExplainOutput } from "../types";
+import type { Dialect, EditContext, ExecuteResult, ExplainOutput } from "../types";
 import { PlanView } from "./PlanView";
 import { ResultGrid } from "./ResultGrid";
 
@@ -12,6 +12,7 @@ export function ResultsPanel({
   showPlan,
   running,
   dialect,
+  editContext,
 }: {
   result?: ExecuteResult;
   plan?: ExplainOutput;
@@ -19,6 +20,8 @@ export function ResultsPanel({
   showPlan?: boolean;
   running: boolean;
   dialect?: Dialect;
+  /** Lets the grid edit rows of a single-table result. */
+  editContext?: EditContext;
 }) {
   const sets = result?.batches.flatMap((b) => b.output.resultSets) ?? [];
   const messages = result?.batches.flatMap((b) => b.output.messages) ?? [];
@@ -77,6 +80,7 @@ export function ResultsPanel({
             key={`${result?.batches.length}-${active}-${elapsed}`}
             rs={sets[active]}
             dialect={dialect}
+            edit={sets.length === 1 ? editContext : undefined}
             label={`Results ${sets.length > 1 ? active + 1 : ""} · ${new Date().toLocaleTimeString()}`.replace("  ", " ")}
           />
         ) : result?.cancelled ? (

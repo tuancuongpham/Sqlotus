@@ -46,6 +46,16 @@ Rust (Tauri 2) + React/TypeScript + Monaco Editor.
 - **Đổi tên** (F2) biến, alias, CTE ở mọi chỗ dùng.
 - **Sơ đồ ER**: bảng và khoá ngoại của cả database hoặc một bảng cùng các bảng liên quan, tự sắp xếp; kéo thả, zoom,
   tô sáng quan hệ, copy ảnh hoặc lưu SVG (Object Explorer → Diagram).
+- **Used by**: view, proc, function, trigger và khoá ngoại nào đang dùng bảng/cột/module, kèm dòng — xem trước khi
+  đổi tên hoặc xoá.
+- **Sức khoẻ index**: index server gợi ý còn thiếu, index trùng/chồng lấn, index không ai đọc, bảng bị đọc toàn bộ, heap
+  lớn. Cách sửa là script CREATE/DROP mở ra tab, không tự chạy.
+- **Sửa dữ liệu trên lưới** (✎ Edit với kết quả từ một bảng có khoá chính): sửa ô, thêm/xoá dòng, xem trước câu lệnh;
+  Save chạy trong một transaction, nếu dòng đã bị người khác sửa trong lúc đó thì không lưu gì.
+- **Activity**: các phiên, câu đang chạy, đang chờ gì, transaction mở, chuỗi blocking (ai chặn ai); huỷ query hoặc kill
+  phiên sau khi xác nhận.
+- **Môi trường kết nối** Dev/Test/Staging/Production: Production có tab đỏ, nhãn PROD, manual commit và hỏi lại (ghi rõ
+  server) trước mọi thay đổi. Copy kết quả dạng Markdown, JSON, HTML.
 - **Sinh dữ liệu test**: dòng dữ liệu thực tế cho một bảng (tên tiếng Việt/Anh, email, số điện thoại, địa chỉ, số tiền,
   ngày); khoá ngoại lấy giá trị có thật ở bảng cha, khoá không identity nối tiếp giá trị lớn nhất. Script INSERT mở ra
   tab mới để xem trước rồi mới chạy (Object Explorer → chọn bảng → Test data…).

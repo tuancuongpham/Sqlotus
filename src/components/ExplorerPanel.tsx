@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, errorText } from "../api";
 import { toast, update } from "../notify";
-import type { DbObject, Dialect, ObjectKind, ObjectProblem, ScriptKind } from "../types";
+import type { DbObject, Dialect, ObjectKind, ObjectProblem, Reference, ScriptKind } from "../types";
 import { DiagramDialog } from "./DiagramDialog";
+import { IndexHealthDialog } from "./IndexHealthDialog";
 import { TestDataDialog } from "./TestDataDialog";
 
 const GROUPS: { kind: ObjectKind[]; label: string }[] = [
@@ -46,6 +47,31 @@ export function ExplorerPanel({ connectionId, database, dialect, version, onOpen
   const [checking, setChecking] = useState(false);
   const [diagram, setDiagram] = useState<{ schema: string; name: string } | "all" | null>(null);
   const [testData, setTestData] = useState<DbObject | null>(null);
+  const [health, setHealth] = useState(false);
+  const [refs, setRefs] = useState<{ title: string; list: Reference[] } | null>(null);
+
+  /** Who uses an object (or one of its columns). */
+  const findReferences = async (o: DbObject, column?: string) => {
+    if (!connectionId || !database) return;
+    const title = `${o.schema}.${o.name}${column ? `.${column}` : ""}`;
+    try {
+      const list = await api.objectReferences(connectionId, database, o.schema, o.name, column ?? null, dialect);
+      setRefs({ title, list });
+      if (list.length === 0) toast.info(`Nothing uses ${title}`, "No view, procedure, function, trigger or foreign key refers to it.");
+    } catch (e) {
+      toast.error(`Could not find what uses ${title}`, errorText(e));
+    }
+  };
+
+  const openReference = async (r: Reference) => {
+    if (!connectionId || !database || r.how === "foreign key") return;
+    try {
+      const text = await api.scriptObject(connectionId, database, r.schema, r.name, dialect, "create");
+      onOpenScript(`${r.name} (line ${r.line})`, text);
+    } catch (e) {
+      toast.error(`Could not open ${r.name}`, errorText(e));
+    }
+  };
 
   const findInvalid = async () => {
     if (!connectionId || !database) return;
@@ -134,7 +160,32 @@ export function ExplorerPanel({ connectionId, database, dialect, version, onOpen
         <button onClick={() => setDiagram("all")} disabled={!database} title="Entity-relationship diagram of the tables">
           Diagram
         </button>
+        <button onClick={() => setHealth(true)} disabled={!database} title="Missing, duplicate and unused indexes">
+          Index health
+        </button>
       </div>
+      {refs && (
+        <div className="problems references">
+          <div className="problems-head">
+            <b>
+              {refs.list.length === 0 ? `Nothing uses ${refs.title}` : `${refs.list.length} use(s) of ${refs.title}`}
+            </b>
+            <span className="spacer" />
+            <button onClick={() => setRefs(null)}>×</button>
+          </div>
+          {refs.list.map((r, i) => (
+            <div key={i} className="problem" onClick={() => void openReference(r)} title={r.how === "foreign key" ? r.text : "Open the definition"}>
+              <span className="tree-icon">{ICON[r.kind]}</span>
+              <span>
+                <small>{r.schema}.</small>
+                {r.name} <span className={`ref-how ref-${r.how.replace(" ", "-")}`}>{r.how}</span>
+                {r.line > 0 && <small> line {r.line}</small>}
+                <div className="problem-msg">{r.text}</div>
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
       {error && <div className="status-error">{error}</div>}
       {problems && (
         <div className="problems">
@@ -211,6 +262,9 @@ export function ExplorerPanel({ connectionId, database, dialect, version, onOpen
                           )}
                           {o.kind === "procedure" && <button onClick={() => script(o, "exec")}>EXEC</button>}
                           <button onClick={() => script(o, "create")}>{o.kind === "table" ? "CREATE" : "Definition"}</button>
+                          <button onClick={() => void findReferences(o)} title="Views, procedures, functions, triggers and foreign keys that use it">
+                            Used by
+                          </button>
                           {(isRoutine || o.kind === "view" || o.kind === "trigger") && dialect === "mssql" && (
                             <button onClick={() => script(o, "alter")}>ALTER</button>
                           )}
@@ -222,6 +276,9 @@ export function ExplorerPanel({ connectionId, database, dialect, version, onOpen
                             <div key={c.name} className="tree-leaf" onDoubleClick={() => onInsert(c.name)} title="Double-click to insert">
                               <span className="tree-icon">{c.isPrimaryKey ? "🔑" : "·"}</span>
                               {c.name} <small>{c.dataType}{c.nullable ? "" : ", not null"}{c.isIdentity ? ", identity" : ""}{c.isComputed ? ", computed" : ""}</small>
+                              <button className="leaf-action" onClick={(e) => (e.stopPropagation(), void findReferences(o, c.name))} title="What uses this column?">
+                                used by
+                              </button>
                             </div>
                           ))}
                           {o.params.map((p) => (
@@ -246,6 +303,15 @@ export function ExplorerPanel({ connectionId, database, dialect, version, onOpen
           database={database}
           focus={diagram === "all" ? undefined : diagram}
           onClose={() => setDiagram(null)}
+        />
+      )}
+      {health && database && (
+        <IndexHealthDialog
+          connectionId={connectionId}
+          database={database}
+          dialect={dialect}
+          onOpenScript={(title, text) => onOpenScript(title, text)}
+          onClose={() => setHealth(false)}
         />
       )}
       {testData && database && (
