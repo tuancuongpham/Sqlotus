@@ -96,7 +96,10 @@ for (const s of servers) {
     })()`),
   );
   if (!picked) throw new Error(`connection ${label} not listed`);
-  await waitUntil(async () => (await evaluate(`document.querySelector(".conn-form input")?.value`)) === label);
+  // never press Connect on an empty form: that would save a new "localhost" connection
+  if (!(await waitUntil(async () => (await evaluate(`document.querySelector(".conn-form input")?.value`)) === label))) {
+    throw new Error(`connection ${label} was not selected`);
+  }
   await evaluate(`[...document.querySelectorAll(".modal-actions button")].find((b) => b.textContent === "Connect").click()`);
   const connected = await waitUntil(async () => ((await toolbarConn()).includes(label) ? true : null));
   check(`${label}: connect`, !!connected, `${await toolbarConn()} ${await statusText()}`);

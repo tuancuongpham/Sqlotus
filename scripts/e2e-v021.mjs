@@ -43,7 +43,9 @@ async function connectNewTab(label) {
   await until(() =>
     evaluate(`(() => { const e = [...document.querySelectorAll(".conn-item")].find((e) => e.textContent.includes(${JSON.stringify(label)})); e?.click(); return !!e; })()`),
   );
-  await until(async () => (await evaluate(`document.querySelector(".conn-form input")?.value`)) === label);
+  // never press Connect on an empty form: that would save a new "localhost" connection
+  const ready = await until(async () => (await evaluate(`document.querySelector(".conn-form input")?.value`)) === label);
+  if (!ready) throw new Error(`connection ${label} was not selected`);
   await evaluate(`[...document.querySelectorAll(".modal-actions button")].find((b) => b.textContent === "Connect").click()`);
   const ok = await waitToast(`Connected to ${label}`, 20000);
   await until(async () => (await evaluate(`document.querySelector(".status-msg").textContent`)).includes("objects loaded"), 15000);
