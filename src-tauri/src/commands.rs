@@ -22,6 +22,19 @@ fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
 
+/// Run editor-path code (completion, formatting, ...) so a bug in it becomes
+/// an error for that one request instead of taking the whole app down.
+fn no_panic<T>(what: &str, f: impl FnOnce() -> T) -> CmdResult<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(|p| {
+        let msg = p
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| p.downcast_ref::<&str>().copied())
+            .unwrap_or("unknown");
+        format!("internal error in {what}: {msg}")
+    })
+}
+
 // ---------------------------------------------------------------------------
 // settings
 // ---------------------------------------------------------------------------
@@ -470,14 +483,16 @@ pub fn complete(state: State<'_, AppState>, args: CompleteArgs) -> CmdResult<Com
         ),
     ]);
     let offset = utf16_to_byte(&args.text, args.offset);
-    let mut r = sqlq_core::complete(
-        &args.text,
-        offset,
-        args.dialect,
-        catalog.as_ref().map(|c| &c.catalog),
-        &snippets,
-        &opts,
-    );
+    let mut r = no_panic("completion", || {
+        sqlq_core::complete(
+            &args.text,
+            offset,
+            args.dialect,
+            catalog.as_ref().map(|c| &c.catalog),
+            &snippets,
+            &opts,
+        )
+    })?;
     // byte -> UTF-16 for the editor
     r.replace_start = byte_to_utf16(&args.text, r.replace_start);
     r.replace_end = byte_to_utf16(&args.text, r.replace_end);
@@ -490,8 +505,9 @@ pub fn complete(state: State<'_, AppState>, args: CompleteArgs) -> CmdResult<Com
 }
 
 #[tauri::command]
-pub fn format_sql(state: State<'_, AppState>, text: String, dialect: Dialect) -> String {
-    sqlq_core::format_sql(&text, dialect, &state.settings().format)
+pub fn format_sql(state: State<'_, AppState>, text: String, dialect: Dialect) -> CmdResult<String> {
+    let opts = state.settings().format;
+    no_panic("formatter", || sqlq_core::format_sql(&text, dialect, &opts))
 }
 
 #[derive(Serialize)]
@@ -502,12 +518,14 @@ pub struct Range {
 
 /// The statement around `offset` (for "execute current statement").
 #[tauri::command]
-pub fn statement_at(text: String, dialect: Dialect, offset: usize) -> Option<Range> {
-    let span = sqlq_core::statements::statement_at(&text, dialect, utf16_to_byte(&text, offset))?;
-    Some(Range {
+pub fn statement_at(text: String, dialect: Dialect, offset: usize) -> CmdResult<Option<Range>> {
+    let span = no_panic("statement split", || {
+        sqlq_core::statements::statement_at(&text, dialect, utf16_to_byte(&text, offset))
+    })?;
+    Ok(span.map(|span| Range {
         start: byte_to_utf16(&text, span.start),
         end: byte_to_utf16(&text, span.end),
-    })
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -533,13 +551,9 @@ pub async fn search_objects(
         } else {
             snap.catalog.database.clone()
         };
-        hits.extend(sqlq_core::search::search(
-            &query,
-            &name,
-            &snap.catalog,
-            &snap.definitions,
-            &options,
-        ));
+        hits.extend(no_panic("search", || {
+            sqlq_core::search::search(&query, &name, &snap.catalog, &snap.definitions, &options)
+        })?);
     }
     hits.truncate(options.max_results.max(1));
     Ok(hits)

@@ -105,3 +105,62 @@ mod tests {
         assert_eq!(Dialect::MySql.quote_ident("my col"), "`my col`");
     }
 }
+
+#[cfg(test)]
+mod ime_tests {
+    use super::*;
+
+    /// Vietnamese IMEs (Telex) rewrite the word being typed: `ins` becomes
+    /// `ín`/`Ín`, another `s` turns it back. Every intermediate text and
+    /// every cursor position must be handled without panicking.
+    #[test]
+    fn vietnamese_ime_intermediate_states_do_not_panic() {
+        let texts = [
+            "i",
+            "in",
+            "ín",
+            "Ín",
+            "ins",
+            "Ins",
+            "Ínsert",
+            "insẻt",
+            "SELECT * FROM t WHERE x = 'ín' AND Ín",
+            "SELECT ín. FROM Ín ín",
+            "-- ghi chú tiếng Việt\nÍn",
+            "Nguyễn Văn A",
+            "ƯƠ ươ ẫ ặ 😀 Ín",
+        ];
+        let catalog = Catalog::default();
+        for text in texts {
+            let len16 = byte_to_utf16(text, text.len());
+            for off16 in 0..=len16 + 1 {
+                let off = utf16_to_byte(text, off16);
+                for d in [Dialect::MsSql, Dialect::Postgres, Dialect::MySql] {
+                    let r = complete(
+                        text,
+                        off,
+                        d,
+                        Some(&catalog),
+                        &crate::snippet::builtin_snippets(),
+                        &CompletionOptions::default(),
+                    );
+                    assert!(r.replace_start <= r.replace_end && r.replace_end <= text.len());
+                    let _ = statements::statement_at(text, d, off);
+                    let _ = format_sql(text, d, &FormatOptions::default());
+                }
+            }
+            // raw byte offsets inside a multi-byte char
+            for off in 0..=text.len() + 2 {
+                let _ = complete(
+                    text,
+                    off,
+                    Dialect::MsSql,
+                    None,
+                    &[],
+                    &CompletionOptions::default(),
+                );
+                let _ = statements::statement_at(text, Dialect::MsSql, off);
+            }
+        }
+    }
+}

@@ -16,5 +16,6 @@ thiserror = "2"
 codegen-units = 1
 lto = true
 opt-level = 3
-panic = "abort"
+# unwind (not abort) so commands can turn a bug into an error instead of a crash
+panic = "unwind"
 strip = true

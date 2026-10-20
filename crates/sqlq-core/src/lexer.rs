@@ -73,12 +73,13 @@ impl Token<'_> {
 pub fn unquote(text: &str) -> String {
     let b = text.as_bytes();
     if b.len() >= 2 {
-        let (open, close) = (b[0], b[b.len() - 1]);
-        let inner = &text[1..text.len() - 1];
-        match (open, close) {
-            (b'[', b']') => return inner.replace("]]", "]"),
-            (b'"', b'"') => return inner.replace("\"\"", "\""),
-            (b'`', b'`') => return inner.replace("``", "`"),
+        // Only slice once both ends are known ASCII quotes: slicing first
+        // would cut into multi-byte characters such as the `í` in `ín`.
+        let inner = || &text[1..text.len() - 1];
+        match (b[0], b[b.len() - 1]) {
+            (b'[', b']') => return inner().replace("]]", "]"),
+            (b'"', b'"') => return inner().replace("\"\"", "\""),
+            (b'`', b'`') => return inner().replace("``", "`"),
             _ => {}
         }
     }
