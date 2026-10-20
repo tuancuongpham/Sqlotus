@@ -16,6 +16,7 @@ pub mod plan;
 pub mod refactor;
 pub mod rename;
 pub mod rules;
+pub mod schemadiff;
 pub mod scope;
 pub mod script;
 pub mod search;

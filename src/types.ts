@@ -303,6 +303,26 @@ export type RowEdit =
   | { kind: "insert"; values: Record<string, string | null> }
   | { kind: "delete"; original: Record<string, string | null> };
 
+export interface ObjectDiff {
+  key: string;
+  kind: ObjectKind;
+  schema: string;
+  name: string;
+  change: "added" | "removed" | "changed";
+  details: string[];
+  sourceText: string | null;
+  targetText: string | null;
+  warnings: string[];
+}
+
+export interface SchemaCompareResult {
+  id: string;
+  dialect: Dialect;
+  source: string;
+  target: string;
+  diff: { differences: ObjectDiff[]; identical: number; skipped: string[] };
+}
+
 /** What a results grid needs to know to edit rows. */
 export interface EditContext {
   tabId: string;

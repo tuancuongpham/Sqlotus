@@ -5,6 +5,7 @@ mod metadata;
 mod mssql;
 mod mysql;
 mod pg;
+mod schema;
 
 use std::time::{Duration, Instant};
 
@@ -15,6 +16,7 @@ use sqlotus_core::plan::StatementPlan;
 use sqlotus_core::variables::VariableValue;
 
 pub use metadata::{CatalogSnapshot, load_catalog};
+pub use schema::load_schema;
 pub use sqlotus_core::catalog::ObjectDefinition;
 
 #[derive(Debug, thiserror::Error)]

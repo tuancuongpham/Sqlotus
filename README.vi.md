@@ -48,6 +48,12 @@ Rust (Tauri 2) + React/TypeScript + Monaco Editor.
   tô sáng quan hệ, copy ảnh hoặc lưu SVG (Object Explorer → Diagram).
 - **Used by**: view, proc, function, trigger và khoá ngoại nào đang dùng bảng/cột/module, kèm dòng — xem trước khi
   đổi tên hoặc xoá.
+- **So sánh schema** (thanh công cụ → Compare): hai database trên cùng hoặc khác kết nối — bảng (cột, kiểu, NULL,
+  default, identity, computed), khoá chính, index, unique, khoá ngoại, check, view, procedure, function, trigger; xem
+  khác biệt từng object song song. Script đồng bộ sắp theo phụ thuộc (bỏ khoá ngoại trước, tạo lại sau cùng, tạo schema
+  còn thiếu), ghi cảnh báo mất dữ liệu ở đầu, mở ra tab đã kết nối tới database đích, không tự chạy. Object chỉ có ở
+  đích không được chọn sẵn (phải tự chọn nếu muốn xoá). SQL Server cần quyền VIEW DEFINITION; thiếu quyền thì từ chối so
+  sánh vì object bị ẩn sẽ trông như không tồn tại.
 - **Sức khoẻ index**: index server gợi ý còn thiếu, index trùng/chồng lấn, index không ai đọc, bảng bị đọc toàn bộ, heap
   lớn. Cách sửa là script CREATE/DROP mở ra tab, không tự chạy.
 - **Sửa dữ liệu trên lưới** (✎ Edit với kết quả từ một bảng có khoá chính): sửa ô, thêm/xoá dòng, xem trước câu lệnh;

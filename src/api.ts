@@ -7,6 +7,7 @@ import type {
   IndexHealth,
   Reference,
   RowEdit,
+  SchemaCompareResult,
   SessionInfo,
   DiagramModel,
   Diagnosis,
@@ -135,6 +136,13 @@ export const api = {
     invoke<{ statements: string[]; problems: string[] }>("edit_preview", { source, edits, dialect }),
   applyEdits: (tabId: string, source: EditSource, edits: RowEdit[]) =>
     invoke<{ applied: number; committed: boolean; openTransactions: number; notice: string }>("apply_edits", { tabId, source, edits }),
+  compareSchemas: (
+    source: { connectionId: string; database: string },
+    target: { connectionId: string; database: string },
+    options: { ignoreWhitespace: boolean; ignoreCase: boolean },
+  ) => invoke<SchemaCompareResult>("compare_schemas", { source, target, options }),
+  schemaSyncScript: (id: string, selected: string[]) =>
+    invoke<{ script: string; warnings: string[]; statements: number }>("schema_sync_script", { id, selected }),
   takeStartupNotice: () => invoke<string | null>("take_startup_notice"),
   diagnoseConnection: (config: ConnectionConfig, error: string) => invoke<Diagnosis>("diagnose_connection", { config, error }),
   applyFix: (fix: Fix, config: ConnectionConfig, password: string | null) =>

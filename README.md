@@ -84,6 +84,13 @@ formatter, completion, code analysis, refactorings) is a pure-Rust library with 
   automatically; drag, zoom, highlight relations, copy as image or save as SVG.
 - **Used by**: views, procedures, functions, triggers and foreign keys that use a table, a column or a module,
   with the line — before you rename or drop something.
+- **Schema compare** (toolbar → Compare): two databases on the same or different saved connections — tables
+  (columns, types, NULL, defaults, identity, computed), primary keys, indexes, unique constraints, foreign keys,
+  checks, views, procedures, functions and triggers, with a side-by-side diff per object. The sync script is
+  ordered by dependencies (foreign keys dropped first and re-created last, missing schemas created), lists
+  data-loss warnings at the top, and opens in a tab connected to the target — it is never run for you. Objects
+  only in the target are not selected unless you choose to drop them. SQL Server requires VIEW DEFINITION:
+  without it hidden objects would look missing, so the comparison refuses instead.
 - **Index health**: missing indexes the server suggests, duplicate and overlapping indexes, indexes nobody reads,
   tables read by full scans and large heaps. Fixes are CREATE/DROP scripts opened in a tab, never run directly.
 - **Test data**: realistic rows for a table (Vietnamese or English names, e-mails, phones, addresses, amounts,

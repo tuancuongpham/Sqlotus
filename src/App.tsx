@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, errorText, newId } from "./api";
 import { ActivityDialog } from "./components/ActivityDialog";
+import { SchemaCompareDialog } from "./components/SchemaCompareDialog";
 import { ConnectionDialog } from "./components/ConnectionDialog";
 import { DoctorDialog } from "./components/DoctorDialog";
 import { Toaster } from "./components/Toaster";
@@ -93,7 +94,7 @@ export default function App() {
   const [activeId, setActiveId] = useState<string>("");
   const [settings, setSettings] = useState<Settings | null>(null);
   const [connections, setConnections] = useState<SavedConnection[]>([]);
-  const [dialog, setDialog] = useState<"connect" | "settings" | "multi" | "activity" | null>(null);
+  const [dialog, setDialog] = useState<"connect" | "settings" | "multi" | "activity" | "compare" | null>(null);
   // the explorer is open by default: the database structure is always in view
   const [panel, setPanel] = useState<Panel>("explorer");
   const [resultsVisible, setResultsVisible] = useState(true);
@@ -655,13 +656,15 @@ ${r.notice}` : failure.text);
   }, []);
 
   const openText = useCallback(
-    async (title: string, text: string, run = false) => {
+    async (title: string, text: string, run = false, target?: { connectionId: string; database: string }) => {
       const base = tabsRef.current.find((t) => t.id === activeRef.current);
-      const tab = createTab({ title, text, dialect: base?.dialect, connectionId: base?.connectionId, database: base?.database });
-      const conn = connectionsRef.current.find((c) => c.id === base?.connectionId);
-      if (conn && base?.connected) {
+      const connectionId = target?.connectionId ?? base?.connectionId;
+      const database = target?.database ?? base?.database;
+      const conn = connectionsRef.current.find((c) => c.id === connectionId);
+      const tab = createTab({ title, text, dialect: conn?.dialect ?? base?.dialect, connectionId, database });
+      if (conn && (target || base?.connected)) {
         try {
-          await connectTab(tab.id, conn, null, base.database);
+          await connectTab(tab.id, conn, null, database);
           // execute reads tab state from the last render; wait for it
           if (run && (await waitForTab(tab.id, (t) => t.connected))) await actions.current.execute("auto");
         } catch {
@@ -1028,6 +1031,12 @@ ${r.notice}` : failure.text);
           ◇ Plan
         </button>
         <button
+          onClick={() => (connections.length ? setDialog("compare") : toast.info("Save a connection first", "Schema compare works between saved connections."))}
+          title="Compare the schema of two databases and build a script to sync them"
+        >
+          Compare
+        </button>
+        <button
           onClick={() => (activeTab?.connected ? setDialog("activity") : toast.info("Connect first", "The activity monitor shows the sessions of the tab's server."))}
           title="Sessions, running queries and blocking on this server"
         >
@@ -1266,6 +1275,14 @@ ${r.notice}` : failure.text);
             </div>
           </div>
         </div>
+      )}
+      {dialog === "compare" && (
+        <SchemaCompareDialog
+          connections={connections}
+          initial={activeTab?.connected && conn ? { connectionId: conn.id, database: activeTab.database ?? "" } : undefined}
+          onOpenScript={(title, text, target) => void openText(title, text, false, target)}
+          onClose={() => setDialog(null)}
+        />
       )}
       {dialog === "activity" && activeTab?.connected && conn && (
         <ActivityDialog

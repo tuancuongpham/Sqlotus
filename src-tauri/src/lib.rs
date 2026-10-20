@@ -1,5 +1,6 @@
 mod activity;
 mod commands;
+mod compare;
 mod doctor;
 mod excel;
 mod health;
@@ -64,6 +65,7 @@ pub fn run() {
                 *n = notice;
             }
             app.manage(state);
+            app.manage(compare::CompareStore::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -125,6 +127,8 @@ pub fn run() {
             activity::server_activity,
             activity::kill_session,
             activity::close_activity,
+            compare::compare_schemas,
+            compare::schema_sync_script,
             commands::take_startup_notice,
         ])
         .run(tauri::generate_context!())
