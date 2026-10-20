@@ -366,3 +366,69 @@ async fn mysql_cancel() {
     assert!(started.elapsed() < Duration::from_secs(5), "{out:?}");
     assert!(conn.query_strings("SELECT 1").await.is_ok());
 }
+
+/// Row counts inside a transaction, estimated plans and variable values.
+async fn safety_features(var: &str, customers: &str) {
+    let Some(e) = env(var) else {
+        return;
+    };
+    let dialect = e.config.dialect;
+    let mut conn = connect(&e).await;
+    let limits = Limits::default();
+
+    // a counted change inside a transaction, then rolled back
+    let begin = conn.begin_statement();
+    assert!(!conn.execute(begin, &limits).await.failed);
+    let options = sqlotus_db::ScriptOptions { counted: true, ..Default::default() };
+    let out = sqlotus_db::execute_script_with(
+        &mut conn,
+        &format!("UPDATE {customers} SET name = name WHERE id IN (1, 2)"),
+        &limits,
+        &options,
+    )
+    .await;
+    assert!(errors(&out).is_empty(), "{:?}", errors(&out));
+    let changed: u64 = out.iter().map(|b| b.output.rows_affected).sum();
+    assert_eq!(changed, 2, "{out:#?}");
+    assert_eq!(conn.open_transactions().await.unwrap(), 1);
+    assert!(!conn.execute("ROLLBACK", &limits).await.failed);
+    assert_eq!(conn.open_transactions().await.unwrap(), 0);
+
+    // estimated plan
+    let plan = conn.explain(&format!("SELECT name FROM {customers} WHERE name LIKE 'A%'")).await;
+    assert!(plan.errors.is_empty(), "{:?}", plan.errors);
+    assert_eq!(plan.plans.len(), 1, "{plan:#?}");
+    assert!(plan.plans[0].root.is_some());
+    // nothing ran and the session is back to normal
+    assert_eq!(conn.query_strings("SELECT 1").await.unwrap()[0][0].as_deref(), Some("1"));
+
+    // values for undeclared variables
+    if dialect != sqlotus_core::Dialect::Postgres {
+        let options = sqlotus_db::ScriptOptions {
+            variables: vec![sqlotus_core::variables::VariableValue {
+                name: "@x".into(),
+                data_type: "int".into(),
+                value: Some("5".into()),
+            }],
+            ..Default::default()
+        };
+        let out = sqlotus_db::execute_script_with(&mut conn, "SELECT @x + 1 AS v", &limits, &options).await;
+        assert!(errors(&out).is_empty(), "{:?}", errors(&out));
+        assert_eq!(out[0].output.result_sets.last().unwrap().rows[0][0].as_deref(), Some("6"));
+    }
+}
+
+#[tokio::test]
+async fn mssql_safety() {
+    safety_features("SQLOTUS_TEST_MSSQL", "dbo.Customers").await;
+}
+
+#[tokio::test]
+async fn postgres_safety() {
+    safety_features("SQLOTUS_TEST_PG", "customers").await;
+}
+
+#[tokio::test]
+async fn mysql_safety() {
+    safety_features("SQLOTUS_TEST_MYSQL", "customers").await;
+}

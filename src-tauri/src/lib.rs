@@ -1,5 +1,6 @@
 mod commands;
 mod doctor;
+mod excel;
 mod intel;
 mod multi;
 mod state;
@@ -106,6 +107,9 @@ pub fn run() {
             multi::execute_multi,
             doctor::diagnose_connection,
             doctor::apply_fix,
+            commands::explain,
+            commands::undeclared_variables,
+            excel::export_xlsx,
             commands::take_startup_notice,
         ])
         .run(tauri::generate_context!())

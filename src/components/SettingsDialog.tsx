@@ -14,7 +14,7 @@ interface Props {
 
 export function SettingsDialog({ settings, dialect, onClose, onSaved }: Props) {
   const [s, setS] = useState<Settings>(settings);
-  const [page, setPage] = useState<"format" | "editor" | "snippets">("format");
+  const [page, setPage] = useState<"format" | "editor" | "safety" | "snippets">("format");
   const [preview, setPreview] = useState("");
   const [snippets, setSnippets] = useState<Snippet[]>([]);
   const [snip, setSnip] = useState<Snippet | null>(null);
@@ -41,6 +41,8 @@ export function SettingsDialog({ settings, dialect, onClose, onSaved }: Props) {
     setS({ ...s, completion: { ...c, [k]: v } });
   const e = s.editor;
   const setE = <K extends keyof Settings["editor"]>(k: K, v: Settings["editor"][K]) => setS({ ...s, editor: { ...e, [k]: v } });
+  const sf = s.safety ?? { confirmRowsOver: 1000, promptVariables: true };
+  const setSf = <K extends keyof Settings["safety"]>(k: K, v: Settings["safety"][K]) => setS({ ...s, safety: { ...sf, [k]: v } });
 
   const close = async () => {
     await api.saveSettings(s);
@@ -72,9 +74,9 @@ export function SettingsDialog({ settings, dialect, onClose, onSaved }: Props) {
       <div className="modal settings-modal" onMouseDown={(ev) => ev.stopPropagation()}>
         <div className="modal-title">Options</div>
         <div className="settings-tabs">
-          {(["format", "editor", "snippets"] as const).map((p) => (
+          {(["format", "editor", "safety", "snippets"] as const).map((p) => (
             <button key={p} className={page === p ? "active" : ""} onClick={() => setPage(p)}>
-              {p === "format" ? "Formatting" : p === "editor" ? "Editor & completion" : "Snippets"}
+              {{ format: "Formatting", editor: "Editor & completion", safety: "Safety", snippets: "Snippets" }[p]}
             </button>
           ))}
         </div>
@@ -173,6 +175,31 @@ export function SettingsDialog({ settings, dialect, onClose, onSaved }: Props) {
               <input type="checkbox" checked={c.assignAliases} onChange={(ev) => setC("assignAliases", ev.target.checked)} />
               Assign table aliases automatically
             </label>
+          </div>
+        )}
+        {page === "safety" && (
+          <div className="settings-body settings-form">
+            <label>
+              Ask before committing changes to more than (rows)
+              <input
+                className="confirm-rows"
+                type="number"
+                min={0}
+                value={sf.confirmRowsOver}
+                onChange={(ev) => setSf("confirmRowsOver", Math.max(0, Number(ev.target.value) || 0))}
+              />
+            </label>
+            <small className="settings-hint">
+              Scripts that only insert, update or delete rows run inside a transaction. If they change more rows than this, or
+              fail half-way, Sqlotus asks whether to commit or roll back. 0 turns this off.
+            </small>
+            <label className="check">
+              <input type="checkbox" checked={sf.promptVariables} onChange={(ev) => setSf("promptVariables", ev.target.checked)} />
+              Ask for values of variables the script uses without declaring them
+            </label>
+            <small className="settings-hint">
+              Read-only and manual-commit modes are set per connection in the Connect dialog.
+            </small>
           </div>
         )}
         {page === "snippets" && (

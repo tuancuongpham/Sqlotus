@@ -3,7 +3,7 @@
 Tổng hợp từ diễn đàn, blog và tài liệu sản phẩm (nguồn ở cuối trang). Mỗi mục ghi: vấn đề người dùng gặp,
 công cụ trả phí nào đã giải quyết, Sqlotus đang ở đâu.
 
-Trạng thái: ✅ đã có · 🆕 thêm trong đợt này · 💡 ứng viên để cân nhắc.
+Trạng thái: ✅ đã có · 🆕 thêm trong v0.2.0 · 💡 ứng viên để cân nhắc.
 
 ## 1. Kết nối thất bại mà không biết vì sao
 
@@ -22,8 +22,11 @@ log của server, người dùng chỉ thấy "Login failed".
 - 🆕 Nút sửa một chạm: **bật TCP/IP**, **khởi động service**, **bật SQL Browser**, **bật Mixed Mode**
   (Windows hỏi quyền Administrator), **dùng đúng port**, **đổi host**, **chuyển sang Windows Auth**,
   **tin chứng chỉ**, **chọn database khác**. Sửa xong tự thử kết nối lại và báo kết quả.
-- 💡 Đọc error log của server (`xp_readerrorlog`) để giải thích state của lỗi 18456 khi có quyền.
-- 💡 Mở port trên Windows Firewall cho máy chủ cục bộ.
+- 🆕 Lỗi 18456 trên máy này: đọc lý do thật từ Windows event log (sai mật khẩu, login không tồn tại, bị disable,
+  hết hạn, database không mở được); login bị disable có nút bật lại (qua Windows Auth, cần sysadmin). Server ở máy
+  khác: hướng dẫn đọc `xp_readerrorlog` và ý nghĩa từng state.
+- 🆕 Mở port trên Windows Firewall (TCP + UDP 1434 cho named instance, chỉ mạng domain/private).
+- 🆕 Nút **Check server** chạy kiểm tra khi chưa có lỗi (chuẩn bị cho máy khác kết nối).
 
 ## 2. Không biết thao tác đã xong hay chưa
 
@@ -57,8 +60,9 @@ reminder), DataGrip (read-only connection, manual commit), MySQL `--safe-updates
 - 🆕 **Nhắc transaction đang mở**: sau khi chạy nếu còn transaction (`@@TRANCOUNT`, `pg_stat_activity`,
   `innodb_trx`) thì tab hiện nhãn **TRAN** và thông báo có nút **Commit**/**Roll back**; đóng tab sẽ hỏi
   Commit / Roll back / Huỷ.
-- 💡 Chế độ "manual commit" (tự `BEGIN TRAN` trước mỗi lần chạy trên kết nối production).
-- 💡 Hỏi xác nhận khi số dòng bị ảnh hưởng vượt ngưỡng.
+- 🆕 Chế độ **manual commit** theo kết nối; nút Commit / Roll back trên thanh công cụ.
+- 🆕 **Hỏi khi thay đổi vượt ngưỡng** (mặc định 1.000 dòng): chạy trong transaction, đếm số dòng, hỏi Commit/Roll back;
+  ít hơn thì tự commit. MySQL báo số dòng khớp điều kiện (giống SQL Server/PostgreSQL).
 
 ## 5. Xem nhanh tổng/trung bình trong lưới kết quả
 
@@ -68,7 +72,7 @@ reminder), DataGrip (read-only connection, manual commit), MySQL `--safe-updates
 
 **Sqlotus.** 🆕 Chọn một ô, Shift+click ô khác cùng cột → thanh trạng thái hiện Count/Sum/Avg/Min/Max
 (cột số) hoặc Count/Distinct/Null; Ctrl+C copy cả vùng.
-- 💡 Mở bằng Excel, vẽ biểu đồ nhanh, so sánh hai result set.
+- 🆕 Mở bằng Excel / lưu .xlsx, vẽ biểu đồ nhanh, ghim và so sánh hai result set.
 
 ## 6. Gõ SQL chậm, nhớ tên cột
 
@@ -84,8 +88,8 @@ cross-database, snippet (import từ SQL Prompt). Xem `docs/redgate-comparison.m
 **Công cụ trả phí.** Redgate SQL Prompt code analysis (~100 luật), SQL Monitor, Plan Explorer.
 
 **Sqlotus.** ✅ 8 luật (gồm chuỗi Unicode thiếu `N`).
-- 💡 Thêm luật: `NOT IN (subquery)` có thể trả NULL, hàm trên cột trong WHERE, so sánh khác kiểu.
-- 💡 Xem execution plan dạng cây, đánh dấu scan/thiếu index.
+- 🆕 Luật SQ009 (`NOT IN` trên cột cho phép NULL), SQ010 (hàm bọc cột trong WHERE/ON), SQ011 (chuyển kiểu ngầm).
+- 🆕 Execution plan ước tính dạng cây (Ctrl+L), cảnh báo scan/key lookup/chuyển kiểu, gợi ý CREATE INDEX.
 
 ## 8. Tìm object, hiểu database lạ
 
@@ -94,20 +98,20 @@ cross-database, snippet (import từ SQL Prompt). Xem `docs/redgate-comparison.m
 **Sqlotus.** ✅ SQL Search, Object Explorer, Find invalid objects. 🆕 Explorer mở sẵn khi khởi động.
 - 💡 Sơ đồ quan hệ bảng (ER) từ khoá ngoại; tìm trên nhiều server cùng lúc.
 
-## Danh sách ứng viên để chọn
+## Danh sách ứng viên
 
-| # | Tính năng | Giá trị | Công sức |
-|---|---|---|---|
-| 1 | Giải thích lỗi 18456 bằng error log | Cao (lỗi hay gặp nhất) | Thấp |
-| 2 | Mở port Windows Firewall từ Connection Doctor | Trung bình | Thấp |
-| 3 | Manual commit cho kết nối production | Cao | Trung bình |
-| 4 | Xác nhận khi ảnh hưởng quá N dòng (chạy thử trong transaction rồi hỏi) | Cao | Trung bình |
-| 5 | Execution plan dạng cây + cảnh báo | Cao | Cao |
-| 6 | Thêm luật phân tích (NOT IN/NULL, hàm trên cột, implicit conversion) | Trung bình | Trung bình |
-| 7 | Biểu đồ nhanh / mở Excel / so sánh result set | Trung bình | Trung bình |
-| 8 | Sơ đồ ER | Trung bình | Cao |
-| 9 | Hỏi giá trị cho `@param` chưa khai báo khi chạy | Trung bình | Thấp |
-| 10 | Sinh dữ liệu test cho bảng | Thấp | Trung bình |
+| # | Tính năng | Trạng thái |
+|---|---|---|
+| 1 | Giải thích lỗi 18456 bằng event log / error log | 🆕 v0.2.0 |
+| 2 | Mở port Windows Firewall từ Connection Doctor | 🆕 v0.2.0 |
+| 3 | Manual commit cho kết nối production | 🆕 v0.2.0 |
+| 4 | Xác nhận khi ảnh hưởng quá N dòng | 🆕 v0.2.0 |
+| 5 | Execution plan dạng cây + cảnh báo | 🆕 v0.2.0 |
+| 6 | Thêm luật phân tích (NOT IN/NULL, hàm trên cột, implicit conversion) | 🆕 v0.2.0 |
+| 7 | Biểu đồ nhanh / mở Excel / so sánh result set | 🆕 v0.2.0 |
+| 8 | Hỏi giá trị cho `@param` chưa khai báo khi chạy | 🆕 v0.2.0 |
+| 9 | Sơ đồ ER | 💡 |
+| 10 | Sinh dữ liệu test cho bảng | 💡 |
 
 ## Nguồn
 

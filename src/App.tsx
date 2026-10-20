@@ -3,13 +3,14 @@ import { api, errorText, newId } from "./api";
 import { ConnectionDialog } from "./components/ConnectionDialog";
 import { DoctorDialog } from "./components/DoctorDialog";
 import { Toaster } from "./components/Toaster";
-import { toast, update } from "./notify";
+import { dismiss, toast, update } from "./notify";
 import { ExplorerPanel } from "./components/ExplorerPanel";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { MultiDbDialog } from "./components/MultiDbDialog";
 import { ResultsPanel } from "./components/ResultsPanel";
 import { SearchPanel } from "./components/SearchPanel";
 import { SettingsDialog } from "./components/SettingsDialog";
+import { VariablesDialog } from "./components/VariablesDialog";
 import {
   bindModelContext,
   editorArgs,
@@ -20,7 +21,17 @@ import {
   unbindModelContext,
   updateDiagnostics,
 } from "./monaco";
-import type { ConnectionConfig, Dialect, HistoryEntry, RefactorAction, SavedConnection, Settings, Tab } from "./types";
+import type {
+  ConnectionConfig,
+  Dialect,
+  ExecuteResult,
+  HistoryEntry,
+  RefactorAction,
+  SavedConnection,
+  Settings,
+  Tab,
+  VariableValue,
+} from "./types";
 
 interface SessionTab {
   id: string;
@@ -49,6 +60,12 @@ interface ChoiceState {
   message: string;
   options: { label: string; value: string; kind?: "primary" | "danger" }[];
   resolve: (value: string) => void;
+}
+
+interface VariablesState {
+  names: string[];
+  dialect: Dialect;
+  resolve: (values: VariableValue[] | null) => void;
 }
 
 interface DoctorState {
@@ -86,6 +103,11 @@ export default function App() {
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
   const [choice, setChoice] = useState<ChoiceState | null>(null);
   const [doctor, setDoctor] = useState<DoctorState | null>(null);
+  const [variables, setVariables] = useState<VariablesState | null>(null);
+  const settingsRef = useRef<Settings | null>(null);
+  /** "Transaction still open" notification per tab, closed once it ends. */
+  const txReminders = useRef(new Map<string, number>());
+  settingsRef.current = settings;
 
   const askChoice = (title: string, message: string, options: ChoiceState["options"]) =>
     new Promise<string>((resolve) =>
@@ -328,8 +350,27 @@ export default function App() {
 
   // -- execution ------------------------------------------------------------
 
-  /** Toast after a run: rows / errors / open transaction. */
-  const reportExecution = (result: import("./types").ExecuteResult, title: string, tabId: string) => {
+  /** COMMIT or ROLLBACK the open transaction of a tab. */
+  const finishTransaction = useCallback(
+    async (tabId: string, sql: "COMMIT" | "ROLLBACK") => {
+      try {
+        const r = await api.execute(tabId, sql);
+        patchTab(tabId, { openTransactions: r.openTransactions ?? 0 });
+        const reminder = txReminders.current.get(tabId);
+        if (reminder && !r.openTransactions) {
+          dismiss(reminder);
+          txReminders.current.delete(tabId);
+        }
+        toast.success(sql === "COMMIT" ? "Transaction committed" : "Transaction rolled back", sql === "COMMIT" ? "The changes are saved." : "The changes were undone.");
+      } catch (e) {
+        toast.error(`${sql} failed`, errorText(e));
+      }
+    },
+    [patchTab],
+  );
+
+  /** Toast after a run: rows / errors / open transaction / commit decision. */
+  const reportExecution = (result: ExecuteResult, title: string, tabId: string) => {
     if (result.cancelled) {
       toast.info("Query cancelled", "The connection was reset; it reconnects on the next run.");
       return;
@@ -338,26 +379,41 @@ export default function App() {
     const failed = outs.some((o) => o.failed);
     const rows = outs.reduce((n, o) => n + o.resultSets.reduce((m, r) => m + r.rows.length, 0), 0);
     const secs = (outs.reduce((n, o) => n + o.elapsedMs, 0) / 1000).toFixed(2);
+    const changed = result.rowsAffected != null ? ` · ${result.rowsAffected.toLocaleString()} row(s) changed` : "";
     if (failed) {
       const first = outs.flatMap((o) => o.messages).find((m) => m.kind === "error")?.text ?? "";
       toast.error("The query finished with errors", first.split("\n").slice(-1)[0]);
     } else {
-      toast.success(`Query finished in ${secs}s`, `${rows.toLocaleString()} row(s) in ${outs.reduce((n, o) => n + o.resultSets.length, 0)} result set(s)`);
+      toast.success(
+        `Query finished in ${secs}s`,
+        `${rows.toLocaleString()} row(s) in ${outs.reduce((n, o) => n + o.resultSets.length, 0)} result set(s)${changed}`,
+      );
     }
-    if ((result.openTransactions ?? 0) > 0) {
-      const finish = (sql: string) => async () => {
-        try {
-          const r = await api.execute(tabId, sql);
-          patchTab(tabId, { openTransactions: r.openTransactions ?? 0 });
-          toast.success(sql === "COMMIT" ? "Transaction committed" : "Transaction rolled back");
-        } catch (e) {
-          toast.error(`${sql} failed`, errorText(e));
-        }
-      };
-      toast.warning(`${title}: transaction still open`, "Changes are not saved until COMMIT. Other sessions may be blocked meanwhile.", [
-        { label: "Commit", run: finish("COMMIT") },
-        { label: "Roll back", run: finish("ROLLBACK") },
+    if (result.notice && !result.pendingCommit) toast.info(result.notice);
+    const remind = () => {
+      const old = txReminders.current.get(tabId);
+      if (old) dismiss(old);
+      const id = toast.warning(`${title}: transaction still open`, "Changes are not saved until COMMIT. Other sessions may be blocked meanwhile.", [
+        { label: "Commit", run: () => void finishTransaction(tabId, "COMMIT") },
+        { label: "Roll back", run: () => void finishTransaction(tabId, "ROLLBACK") },
       ]);
+      txReminders.current.set(tabId, id);
+    };
+    const pending = result.pendingCommit;
+    if (pending) {
+      const message = pending.failed
+        ? `Some statements failed. The changes made so far (${pending.rows.toLocaleString()} row(s)) are kept in an open transaction.`
+        : `This run changed ${pending.rows.toLocaleString()} rows — more than your limit of ${pending.limit.toLocaleString()} (Options → Safety). The changes are kept in an open transaction.`;
+      void askChoice("Commit these changes?", message, [
+        { label: "Commit", value: "COMMIT", kind: "primary" },
+        { label: "Roll back", value: "ROLLBACK", kind: "danger" },
+        { label: "Decide later", value: "" },
+      ]).then((answer) => {
+        if (answer === "COMMIT" || answer === "ROLLBACK") void finishTransaction(tabId, answer);
+        else remind();
+      });
+    } else if ((result.openTransactions ?? 0) > 0) {
+      remind();
     }
   };
 
@@ -410,11 +466,24 @@ export default function App() {
           return;
         }
       }
+      // values for variables the script uses without declaring them
+      let values: VariableValue[] | null = null;
+      if (settingsRef.current?.safety?.promptVariables ?? true) {
+        const names = await api.undeclaredVariables(sql, tab.dialect).catch(() => [] as string[]);
+        if (names.length > 0) {
+          values = await new Promise<VariableValue[] | null>((resolve) => setVariables({ names, dialect: tab.dialect, resolve }));
+          setVariables(null);
+          if (!values) {
+            toast.info("Execution cancelled", "Nothing was run.");
+            return;
+          }
+        }
+      }
       recordHistory(id, "execute");
-      patchTab(id, { running: true });
+      patchTab(id, { running: true, view: "results" });
       setResultsVisible(true);
       try {
-        const result = await api.execute(id, sql);
+        const result = await api.execute(id, sql, values);
         patchTab(id, {
           running: false,
           result,
@@ -440,6 +509,38 @@ export default function App() {
     },
     [patchTab, recordHistory, loadCatalog],
   );
+
+  /** Estimated execution plan of the selection or the whole tab. */
+  const explain = useCallback(async () => {
+    const id = activeRef.current;
+    const tab = tabsRef.current.find((t) => t.id === id);
+    const ed = editor.current;
+    const model = models.current.get(id);
+    if (!tab || !ed || !model) return;
+    if (!tab.connected) {
+      toast.info("Connect first", "The plan comes from the server.");
+      setDialog("connect");
+      return;
+    }
+    const sel = ed.getSelection();
+    const sql = sel && !sel.isEmpty() ? model.getValueInRange(sel) : model.getValue();
+    if (!sql.trim()) {
+      toast.info("Nothing to explain", "The editor is empty.");
+      return;
+    }
+    const progress = toast.progress("Getting the estimated plan…", "The query is not run.");
+    try {
+      const plan = await api.explain(id, sql);
+      patchTab(id, { plan, view: "plan" });
+      setResultsVisible(true);
+      const warnings = plan.plans.reduce((n, p) => n + p.warnings.length + p.missingIndexes.length, 0);
+      if (plan.plans.length === 0) update(progress, plan.errors.length ? "error" : "info", "No plan", plan.errors[0] ?? "Only SELECT, INSERT, UPDATE, DELETE and MERGE have plans.");
+      else if (warnings > 0) update(progress, "warning", `Plan ready: ${warnings} thing(s) to look at`, "See the ⚠ lines in the Plan tab.");
+      else update(progress, "success", "Plan ready", `${plan.plans.length} statement(s), no obvious problems.`);
+    } catch (e) {
+      update(progress, "error", "Could not get the plan", errorText(e));
+    }
+  }, [patchTab]);
 
   /** Run the selection (or the whole tab) on several databases. */
   const executeMulti = useCallback(
@@ -609,8 +710,8 @@ export default function App() {
     setDialog("multi");
   }, []);
 
-  const actions = useRef({ execute, cancel, format, closeTab, createTab, reopenClosed, refactor, goToDefinition, openMulti });
-  actions.current = { execute, cancel, format, closeTab, createTab, reopenClosed, refactor, goToDefinition, openMulti };
+  const actions = useRef({ execute, cancel, format, closeTab, createTab, reopenClosed, refactor, goToDefinition, openMulti, explain });
+  actions.current = { execute, cancel, format, closeTab, createTab, reopenClosed, refactor, goToDefinition, openMulti, explain };
 
   // -- startup ----------------------------------------------------------------
 
@@ -643,6 +744,7 @@ export default function App() {
     ed.addCommand(KM.chord(KM.CtrlCmd | KC.KeyK, KM.CtrlCmd | KC.KeyY), () => actions.current.format());
     ed.addCommand(KM.Alt | KC.PauseBreak, () => actions.current.cancel());
     ed.addCommand(KM.CtrlCmd | KC.KeyR, () => setResultsVisible((v) => !v));
+    ed.addCommand(KM.CtrlCmd | KC.KeyL, () => void actions.current.explain());
     ed.addCommand(
       KC.Tab,
       () => {
@@ -667,6 +769,7 @@ export default function App() {
     action("sqlotus.alter", "Script as ALTER", () => void actions.current.goToDefinition("alter"), [KM.Alt | KC.F12], "0_nav", 2);
     action("sqlotus.format", "Format SQL", () => actions.current.format(), [], "1_sqlotus", 1);
     action("sqlotus.multi", "Run on Multiple Databases…", () => actions.current.openMulti(), [KM.CtrlCmd | KM.Shift | KC.F5], "0_nav", 3);
+    action("sqlotus.explain", "Display Estimated Execution Plan", () => void actions.current.explain(), [], "0_nav", 4);
     action(
       "sqlotus.expandWildcards",
       "Expand Wildcards",
@@ -874,6 +977,19 @@ export default function App() {
         <button onClick={cancel} disabled={!activeTab?.running} title="Cancel (Alt+Break)">
           ■ Cancel
         </button>
+        <button onClick={() => void explain()} disabled={activeTab?.running} title="Estimated execution plan (Ctrl+L) — the query is not run">
+          ◇ Plan
+        </button>
+        {activeTab?.connected && (activeTab.openTransactions ?? 0) > 0 && (
+          <>
+            <button className="tx-commit" onClick={() => void finishTransaction(activeTab.id, "COMMIT")} title="COMMIT the open transaction">
+              ✓ Commit
+            </button>
+            <button className="tx-rollback" onClick={() => void finishTransaction(activeTab.id, "ROLLBACK")} title="ROLLBACK the open transaction">
+              ↶ Roll back
+            </button>
+          </>
+        )}
         <span className="sep" />
         <button onClick={format} title="Format SQL (Ctrl+K, Ctrl+Y)">
           Format
@@ -960,7 +1076,13 @@ export default function App() {
             <>
               <div className="splitter-h" onMouseDown={dragResults} />
               <div className="results-pane" style={{ height: resultsHeight }}>
-                <ResultsPanel result={activeTab?.result} running={!!activeTab?.running} dialect={activeTab?.dialect} />
+                <ResultsPanel
+                  result={activeTab?.result}
+                  plan={activeTab?.plan}
+                  showPlan={activeTab?.view === "plan"}
+                  running={!!activeTab?.running}
+                  dialect={activeTab?.dialect}
+                />
               </div>
             </>
           )}
@@ -1073,6 +1195,14 @@ export default function App() {
             </div>
           </div>
         </div>
+      )}
+      {variables && (
+        <VariablesDialog
+          names={variables.names}
+          dialect={variables.dialect}
+          onRun={(v) => variables.resolve(v)}
+          onCancel={() => variables.resolve(null)}
+        />
       )}
       <Toaster />
       {confirmState && (

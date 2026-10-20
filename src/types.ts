@@ -13,6 +13,8 @@ export interface ConnectionConfig {
   trustServerCertificate: boolean;
   color?: string | null;
   readOnly?: boolean;
+  /** Changes wait in an open transaction until the user commits. */
+  manualCommit?: boolean;
 }
 
 export interface SavedConnection extends ConnectionConfig {
@@ -46,6 +48,7 @@ export interface BatchOutput {
   messages: Message[];
   elapsedMs: number;
   failed: boolean;
+  rowsAffected?: number;
 }
 
 export interface ExecuteResult {
@@ -53,6 +56,41 @@ export interface ExecuteResult {
   database: string;
   cancelled: boolean;
   openTransactions?: number;
+  /** Rows changed by INSERT/UPDATE/DELETE/MERGE, when reported. */
+  rowsAffected?: number | null;
+  /** Sqlotus kept the changes in a transaction and needs a decision. */
+  pendingCommit?: { rows: number; limit: number; failed: boolean } | null;
+  notice?: string | null;
+}
+
+export interface PlanNode {
+  op: string;
+  object: string | null;
+  detail: string | null;
+  rows: number | null;
+  cost: number | null;
+  costPercent: number | null;
+  warnings: string[];
+  children: PlanNode[];
+}
+
+export interface StatementPlan {
+  statement: string;
+  cost: number | null;
+  root: PlanNode | null;
+  warnings: string[];
+  missingIndexes: { table: string; impact: number | null; createStatement: string }[];
+}
+
+export interface ExplainOutput {
+  plans: StatementPlan[];
+  errors: string[];
+}
+
+export interface VariableValue {
+  name: string;
+  dataType: string;
+  value: string | null;
 }
 
 export type CompletionKind =
@@ -171,6 +209,7 @@ export interface Settings {
   format: FormatOptions;
   completion: CompletionOptions;
   editor: { fontSize: number; autosaveSeconds: number; maxRows: number; theme: "dark" | "light" };
+  safety: { confirmRowsOver: number; promptVariables: boolean };
 }
 
 /** An editor tab. Text lives in the Monaco model; this is the metadata. */
@@ -188,6 +227,10 @@ export interface Tab {
   executedAt?: number;
   /** Transactions left open after the last run. */
   openTransactions?: number;
+  /** Estimated plan shown in the results area. */
+  plan?: ExplainOutput;
+  /** Which results view to show: rows or the plan. */
+  view?: "results" | "plan";
 }
 
 export interface Diagnostic {
@@ -257,7 +300,9 @@ export type Fix =
   | { kind: "useHost"; host: string }
   | { kind: "useWindowsAuth" }
   | { kind: "trustCertificate" }
-  | { kind: "useDatabase"; database: string | null };
+  | { kind: "useDatabase"; database: string | null }
+  | { kind: "openFirewall"; port: number; browser: boolean }
+  | { kind: "enableLogin"; login: string };
 
 export interface Finding {
   level: "ok" | "info" | "warning" | "error";

@@ -31,7 +31,7 @@ pub struct Diagnostic {
     pub message: String,
 }
 
-fn diag(t: &Token<'_>, severity: Severity, code: &str, message: String) -> Diagnostic {
+pub(crate) fn diag(t: &Token<'_>, severity: Severity, code: &str, message: String) -> Diagnostic {
     Diagnostic {
         start: t.start,
         end: t.end(),
@@ -41,18 +41,18 @@ fn diag(t: &Token<'_>, severity: Severity, code: &str, message: String) -> Diagn
     }
 }
 
-fn sig<'a>(tokens: &[Token<'a>]) -> Vec<Token<'a>> {
+pub(crate) fn sig<'a>(tokens: &[Token<'a>]) -> Vec<Token<'a>> {
     tokens.iter().filter(|t| !t.is_trivia()).copied().collect()
 }
 
-fn word(t: Option<&Token<'_>>) -> String {
+pub(crate) fn word(t: Option<&Token<'_>>) -> String {
     t.filter(|t| t.kind == TokenKind::Word)
         .map(|t| t.upper())
         .unwrap_or_default()
 }
 
 /// Statement keywords that end the reach of a preceding UPDATE/DELETE.
-const STATEMENT_KEYWORDS: &[&str] = &[
+pub(crate) const STATEMENT_KEYWORDS: &[&str] = &[
     "SELECT", "INSERT", "UPDATE", "DELETE", "MERGE", "IF", "WHILE", "DECLARE", "SET", "EXEC",
     "EXECUTE", "BEGIN", "END", "RETURN", "PRINT", "CREATE", "ALTER", "DROP", "TRUNCATE", "GO",
 ];
@@ -151,6 +151,40 @@ pub fn modifying_statements(sql: &str, dialect: Dialect) -> Vec<String> {
         }
     }
     out
+}
+
+/// Whether the script manages transactions itself (BEGIN TRAN, COMMIT,
+/// ROLLBACK, SAVEPOINT, autocommit settings, ...).
+pub fn has_transaction_control(sql: &str, dialect: Dialect) -> bool {
+    let tokens = tokenize(sql, dialect);
+    let t = sig(&tokens);
+    t.iter().enumerate().any(|(i, tok)| {
+        let next = word(t.get(i + 1));
+        match word(Some(tok)).as_str() {
+            "COMMIT" | "ROLLBACK" | "SAVEPOINT" => true,
+            "BEGIN" => {
+                matches!(next.as_str(), "TRAN" | "TRANSACTION" | "DISTRIBUTED" | "WORK")
+                    || (dialect != Dialect::MsSql && t.get(i + 1).is_none_or(|n| n.kind == TokenKind::Semicolon))
+            }
+            "START" => next == "TRANSACTION",
+            "SAVE" => matches!(next.as_str(), "TRAN" | "TRANSACTION"),
+            "SET" => matches!(next.as_str(), "IMPLICIT_TRANSACTIONS" | "AUTOCOMMIT" | "XACT_ABORT"),
+            _ => false,
+        }
+    })
+}
+
+/// Whether every change in the script is a row change (INSERT, UPDATE,
+/// DELETE, MERGE) — no DDL, which some servers commit implicitly — and the
+/// script does not manage transactions itself. Such scripts can run inside a
+/// transaction that Sqlotus commits or rolls back.
+pub fn row_changes_only(sql: &str, dialect: Dialect) -> bool {
+    let changes = modifying_statements(sql, dialect);
+    !changes.is_empty()
+        && changes.iter().all(|c| {
+            matches!(c.split(' ').next().unwrap_or(""), "INSERT" | "UPDATE" | "DELETE" | "MERGE" | "REPLACE" | "UPSERT")
+        })
+        && !has_transaction_control(sql, dialect)
 }
 
 /// The words naming what a statement changes, e.g. `FROM dbo.Orders` or
@@ -272,7 +306,7 @@ fn created_objects(t: &[Token<'_>]) -> HashSet<String> {
     out
 }
 
-fn resolve<'c>(cat: &'c Catalog, r: &TableRef) -> Option<&'c DbObject> {
+pub(crate) fn resolve<'c>(cat: &'c Catalog, r: &TableRef) -> Option<&'c DbObject> {
     if r.local || r.name.is_empty() {
         return None;
     }
@@ -286,6 +320,11 @@ pub fn diagnostics(src: &str, dialect: Dialect, catalog: Option<&Catalog>) -> Ve
     let mut out = Vec::new();
     let created = created_objects(&all);
     let catalog = catalog.filter(|c| !c.objects.is_empty());
+    let variable_types: HashMap<String, String> = document_symbols(src, dialect)
+        .variables
+        .into_iter()
+        .filter_map(|v| Some((v.name.to_lowercase(), v.data_type?)))
+        .collect();
 
     // per statement
     for span in split_statements(src, dialect) {
@@ -305,12 +344,17 @@ pub fn diagnostics(src: &str, dialect: Dialect, catalog: Option<&Catalog>) -> Ve
         }
         select_star(&t, &mut out);
         null_comparison(&t, &mut out);
+        let scope = analyze_statement(&stmt_tokens, dialect);
+        crate::rules::not_in_subquery(&t, &scope, catalog, &mut out);
+        crate::rules::non_sargable(&t, &scope, catalog, &mut out);
+        if let Some(cat) = catalog {
+            crate::rules::implicit_conversions(&t, &scope, cat, &variable_types, dialect, &mut out);
+        }
         if dialect == Dialect::MsSql {
             deprecated_types(&t, &mut out);
             unicode_without_n(&t, &mut out);
         }
         if let Some(cat) = catalog {
-            let scope = analyze_statement(&stmt_tokens, dialect);
             invalid_objects(&scope, cat, &created, dialect, &mut out);
             invalid_columns(&t, &scope, cat, &mut out);
         }
@@ -501,7 +545,7 @@ fn unused_variables(src: &str, dialect: Dialect, tokens: &[Token<'_>], out: &mut
 }
 
 /// Inside `DECLARE a, b, ...` (walk back over the list to DECLARE).
-fn in_declare(t: &[Token<'_>], i: usize) -> bool {
+pub(crate) fn in_declare(t: &[Token<'_>], i: usize) -> bool {
     let mut depth = 0i32;
     for k in (0..i).rev() {
         match t[k].kind {
@@ -524,7 +568,7 @@ fn in_declare(t: &[Token<'_>], i: usize) -> bool {
 }
 
 /// A parameter in a CREATE PROCEDURE/FUNCTION header (before the body's AS).
-fn is_parameter(t: &[Token<'_>], i: usize) -> bool {
+pub(crate) fn is_parameter(t: &[Token<'_>], i: usize) -> bool {
     !t[..i]
         .iter()
         .any(|x| matches!(x.upper().as_str(), "AS" | "BEGIN"))
@@ -1170,6 +1214,13 @@ mod tests {
         assert_eq!(m("SELECT a INTO #x FROM t"), vec!["SELECT INTO"]);
         assert_eq!(m("CREATE TABLE t (a int REFERENCES u(a) ON DELETE CASCADE)").len(), 1);
         assert!(modifying_statements("SELECT 1; -- delete from t", Dialect::MsSql).is_empty());
+        let ms = Dialect::MsSql;
+        assert!(row_changes_only("UPDATE t SET a = 1 WHERE b = 2; DELETE FROM u WHERE 1 = 0", ms));
+        assert!(!row_changes_only("BEGIN TRAN; UPDATE t SET a = 1", ms));
+        assert!(!row_changes_only("UPDATE t SET a = 1; DROP TABLE u", ms));
+        assert!(!row_changes_only("SELECT 1", ms));
+        assert!(row_changes_only("IF 1 = 1 BEGIN UPDATE t SET a = 1 END", ms));
+        assert!(!row_changes_only("BEGIN; UPDATE t SET a = 1; COMMIT;", Dialect::Postgres));
     }
 
     #[test]

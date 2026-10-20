@@ -33,12 +33,25 @@ impl MySqlCancel {
 }
 
 impl MySqlConn {
+    /// Whether a transaction is open, from the server status flags of the
+    /// last OK packet (information_schema.innodb_trx also lists the query
+    /// that asks).
+    pub async fn in_transaction(&mut self) -> Result<bool> {
+        self.conn.query_drop("DO 0").await.map_err(|e| DbError::Query(e.to_string()))?;
+        Ok(self
+            .conn
+            .last_ok_packet()
+            .is_some_and(|ok| ok.status_flags().contains(mysql_async::consts::StatusFlags::SERVER_STATUS_IN_TRANS)))
+    }
+
     pub async fn open(cfg: &ConnectionConfig, password: Option<&str>) -> Result<Self> {
         let mut b = OptsBuilder::default()
             .ip_or_hostname(cfg.host.trim())
             .tcp_port(cfg.port.unwrap_or(3306))
             .user(cfg.user.clone())
             .pass(password.map(str::to_string))
+            // report rows matched, like SQL Server and Postgres, not only rows whose value changed
+            .client_found_rows(true)
             .db_name(cfg.database.clone().filter(|d| !d.is_empty()))
             .prefer_socket(false);
         if cfg.encrypt {
@@ -116,6 +129,7 @@ impl MySqlConn {
                 }
                 _ => {
                     let n = result.affected_rows();
+                    out.rows_affected += n;
                     out.info(format!(
                         "({n} row{} affected)",
                         if n == 1 { "" } else { "s" }

@@ -30,12 +30,29 @@ impl Default for EditorSettings {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct SafetySettings {
+    /// Scripts that only change rows run in a transaction; when they change
+    /// more rows than this, Sqlotus asks before committing. 0 = never ask.
+    pub confirm_rows_over: u64,
+    /// Ask for values of variables the script uses without declaring them.
+    pub prompt_variables: bool,
+}
+
+impl Default for SafetySettings {
+    fn default() -> Self {
+        Self { confirm_rows_over: 1000, prompt_variables: true }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Settings {
     pub format: FormatOptions,
     pub completion: CompletionOptions,
     pub editor: EditorSettings,
+    pub safety: SafetySettings,
 }
 
 /// A tab's connection. The connection sits behind an async mutex because a

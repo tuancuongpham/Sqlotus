@@ -41,7 +41,7 @@ Trạng thái: ✅ có · 🟡 có một phần · ❌ chưa có. Cột "Mới" 
 | Tính năng Redgate | Sqlotus | Mới | Ghi chú |
 |---|---|---|---|
 | Gạch chân object/cột không tồn tại | ✅ | ✅ | SQ006, SQ007 |
-| Code analysis rules | 🟡 | ✅ | 8 luật: UPDATE/DELETE thiếu WHERE, `SELECT *`, `= NULL`, kiểu deprecated, biến không dùng, object/cột sai, chuỗi Unicode thiếu `N` (luật riêng cho tiếng Việt). Redgate có ~100 luật |
+| Code analysis rules | 🟡 | ✅ | 11 luật: UPDATE/DELETE thiếu WHERE, `SELECT *`, `= NULL`, kiểu deprecated, biến không dùng, object/cột sai, chuỗi Unicode thiếu `N` (luật riêng cho tiếng Việt), `NOT IN` trên cột NULL, hàm bọc cột trong WHERE, chuyển kiểu ngầm. Redgate có ~100 luật |
 | Execution warnings (UPDATE/DELETE không WHERE) | ✅ | ✅ | Thêm TRUNCATE, DROP TABLE/DATABASE |
 | Find invalid objects (toàn database) | ✅ | ✅ | Object Explorer → "Find invalid objects" |
 
@@ -98,6 +98,11 @@ Trạng thái: ✅ có · 🟡 có một phần · ❌ chưa có. Cột "Mới" 
 | Nhắc transaction đang mở | dbForge SQL Complete | ✅ | Nhãn TRAN, Commit/Roll back, hỏi khi đóng tab |
 | Tổng/trung bình vùng chọn trên lưới | dbForge (trả phí), SSMSBoost | ✅ | Shift+click trong một cột |
 | Object Explorer mở sẵn | SSMS | ✅ | |
+| Hỏi trước khi commit thay đổi lớn, manual commit | DataGrip, dbForge | ✅ | v0.2.0 |
+| Hỏi giá trị biến chưa khai báo | SSMS (template parameters) | ✅ | v0.2.0 |
+| Execution plan ước tính + gợi ý index | SSMS, Plan Explorer | ✅ | v0.2.0, dạng cây |
+| Mở Excel, biểu đồ, so sánh result set | dbForge (trả phí) | ✅ | v0.2.0 |
+| Giải thích lỗi 18456, mở firewall | — | ✅ | v0.2.0 |
 
 Danh sách pain point và ứng viên tính năng: `docs/pain-points.md`.
 

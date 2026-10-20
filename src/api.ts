@@ -14,7 +14,10 @@ import type {
   ConnectionConfig,
   Dialect,
   ExecuteResult,
+  ExplainOutput,
   HistoryEntry,
+  ResultColumn,
+  VariableValue,
   SavedConnection,
   SearchHit,
   SearchOptions,
@@ -40,7 +43,13 @@ export const api = {
     invoke<TabConnection>("connect_tab", { tabId, connectionId, database, password }),
   disconnectTab: (tabId: string) => invoke<void>("disconnect_tab", { tabId }),
   changeDatabase: (tabId: string, database: string) => invoke<string>("change_database", { tabId, database }),
-  execute: (tabId: string, sql: string) => invoke<ExecuteResult>("execute", { tabId, sql }),
+  execute: (tabId: string, sql: string, variables: VariableValue[] | null = null) =>
+    invoke<ExecuteResult>("execute", { tabId, sql, variables }),
+  explain: (tabId: string, sql: string) => invoke<ExplainOutput>("explain", { tabId, sql }),
+  undeclaredVariables: (text: string, dialect: Dialect) => invoke<string[]>("undeclared_variables", { text, dialect }),
+  /** Write an .xlsx (to `path`, or a temp file) and optionally open it. Returns the path. */
+  exportXlsx: (path: string | null, columns: ResultColumn[], rows: (string | null)[][], open: boolean) =>
+    invoke<string>("export_xlsx", { path, columns, rows, open }),
   cancelQuery: (tabId: string) => invoke<void>("cancel_query", { tabId }),
 
   loadCatalog: (connectionId: string, database: string, refresh: boolean) =>

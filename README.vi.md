@@ -17,13 +17,26 @@ Rust (Tauri 2) + React/TypeScript + Monaco Editor.
 - **Mở rộng `*`**: gõ `SELECT *` (hoặc `t.*`) rồi nhấn **Tab** để thay bằng danh sách cột.
 - **Hover** xem cột/kiểu của bảng, cột, biến; **gợi ý tham số** khi gõ hàm/proc.
 - **Phân tích code** (gạch chân khi gõ): UPDATE/DELETE thiếu WHERE, `SELECT *`, `= NULL`, kiểu deprecated, biến không dùng,
-  object/cột không tồn tại, chuỗi tiếng Việt thiếu tiền tố `N`. **Cảnh báo trước khi chạy** UPDATE/DELETE không WHERE, TRUNCATE, DROP.
+  object/cột không tồn tại, chuỗi tiếng Việt thiếu tiền tố `N`, `NOT IN (SELECT …)` trên cột cho phép NULL,
+  hàm bọc cột trong WHERE/ON (`YEAR(NgayTao) = 2024` không dùng được index), so sánh gây chuyển kiểu ngầm
+  (`cot_varchar = N'x'`, `cot_chuoi = 123`). **Cảnh báo trước khi chạy** UPDATE/DELETE không WHERE, TRUNCATE, DROP.
 - **Kết nối read-only**: chặn INSERT/UPDATE/DELETE/MERGE/DDL/GRANT, vẫn chạy được SELECT (tab có 🔒).
-  **Nhắc transaction đang mở**: tab hiện **TRAN**, thông báo có nút Commit / Roll back, đóng tab sẽ hỏi.
+  **Nhắc transaction đang mở**: tab hiện **TRAN**, thanh công cụ có nút Commit / Roll back, đóng tab sẽ hỏi.
+- **Hỏi trước khi lưu thay đổi lớn**: script chỉ INSERT/UPDATE/DELETE được chạy trong transaction; nếu đổi quá
+  số dòng giới hạn (mặc định 1.000, Options → Safety) hoặc lỗi giữa chừng thì hỏi Commit hay Roll back; ít hơn thì
+  tự commit và báo số dòng. **Manual commit** theo từng kết nối: thay đổi nằm trong transaction tới khi bấm Commit.
+- **Biến chưa khai báo**: chạy `… WHERE Id = @Id` mà chưa `DECLARE` sẽ hỏi giá trị (và kiểu), tự khai báo, nhớ giá trị.
+- **Kế hoạch thực thi ước tính** (Ctrl+L): dạng cây, % chi phí từng bước, cảnh báo scan cả bảng, key lookup,
+  chuyển kiểu ngầm, thiếu điều kiện join, gợi ý index còn thiếu kèm câu CREATE INDEX (SQL Server, PostgreSQL, MySQL;
+  không chạy query).
+- **Lưới kết quả**: mở bằng Excel / lưu .xlsx, vẽ biểu đồ (cột, đường, tròn; copy ảnh), ghim một kết quả rồi
+  **so sánh** với kết quả sau (dòng thêm, bớt, thay đổi theo cột khoá).
 - **Connection Doctor**: khi kết nối lỗi tự giải thích nguyên nhân (từ chối kết nối, timeout, sai host/instance,
   sai đăng nhập, chứng chỉ, database, Windows Auth); với SQL Server trên máy này kiểm tra service, TCP/IP, port,
   SQL Browser, chế độ xác thực. Sửa một chạm: bật TCP/IP, khởi động service, bật SQL Browser, bật Mixed Mode
-  (Windows hỏi quyền Administrator), dùng đúng port/host, chuyển Windows Auth, tin chứng chỉ; sửa xong tự kết nối lại.
+  (Windows hỏi quyền Administrator), dùng đúng port/host, chuyển Windows Auth, tin chứng chỉ, mở port trên Windows
+  Firewall, bật lại login bị disable; sửa xong tự kết nối lại. Lỗi **18456** trên máy này: đọc lý do thật từ Windows
+  event log (sai mật khẩu, login không tồn tại, bị disable, hết hạn…). Nút **Check server** kiểm tra khi chưa có lỗi.
 - **Thông báo cho mọi thao tác và cài đặt**: đang kết nối/đã kết nối, chạy xong (thời gian, số dòng),
   lỗi kèm nút Diagnose/Retry, format, copy, lưu CSV, lưu kết nối, lưu cài đặt, khôi phục tab.
 - **Thao tác** (chuột phải hoặc F1): Expand wildcards, Qualify object names, Insert semicolons, Remove square brackets,
@@ -52,6 +65,7 @@ Rust (Tauri 2) + React/TypeScript + Monaco Editor.
 |---|---|
 | F5 / Ctrl+E | Execute |
 | Shift+F5 | Execute câu lệnh hiện tại |
+| Ctrl+L | Kế hoạch thực thi ước tính |
 | Alt+Break | Huỷ query |
 | Ctrl+K, Ctrl+Y | Format |
 | Tab sau `*` | Mở rộng thành danh sách cột |

@@ -10,7 +10,8 @@ use sqlotus_core::catalog::ObjectKind;
 use sqlotus_core::search::{SearchHit, SearchOptions};
 use sqlotus_core::snippet::Snippet;
 use sqlotus_core::{CompletionResult, Dialect, byte_to_utf16, utf16_to_byte};
-use sqlotus_db::{BatchOutput, Connection, ConnectionConfig, Limits, load_catalog};
+use sqlotus_core::variables::VariableValue;
+use sqlotus_db::{BatchOutput, Connection, ConnectionConfig, ExplainOutput, Limits, ScriptOptions, load_catalog};
 use sqlotus_store::{HistoryEntry, NewHistory};
 use tauri::State;
 
@@ -275,7 +276,19 @@ pub struct BatchDto {
     pub(crate) output: BatchOutput,
 }
 
+/// A run whose changes wait in an open transaction for the user's decision.
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingCommit {
+    /// Rows the run changed.
+    pub(crate) rows: u64,
+    /// The limit from the settings.
+    pub(crate) limit: u64,
+    /// Some statements failed, so the changes may be incomplete.
+    pub(crate) failed: bool,
+}
+
+#[derive(Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecuteResult {
     pub(crate) batches: Vec<BatchDto>,
@@ -283,6 +296,29 @@ pub struct ExecuteResult {
     pub(crate) cancelled: bool,
     /// Transactions left open after the run (0 when none or unknown).
     pub(crate) open_transactions: u32,
+    /// Rows changed by INSERT/UPDATE/DELETE/MERGE, when the server reported it.
+    pub(crate) rows_affected: Option<u64>,
+    /// Set when Sqlotus wrapped the run in a transaction and needs a decision.
+    pub(crate) pending_commit: Option<PendingCommit>,
+    /// How Sqlotus handled the transaction, for the notification.
+    pub(crate) notice: Option<String>,
+}
+
+/// How a run was wrapped in a transaction by Sqlotus.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Wrapped {
+    No,
+    /// The connection is in manual-commit mode: leave it open.
+    Manual,
+    /// Row-count guard: commit unless too many rows changed.
+    Guard,
+}
+
+fn uses_use_statement(sql: &str, dialect: Dialect) -> bool {
+    sqlotus_core::tokenize(sql, dialect)
+        .iter()
+        .filter(|t| !t.is_trivia())
+        .any(|t| t.kind == sqlotus_core::TokenKind::Word && t.upper() == "USE")
 }
 
 /// Run `sql` on the tab's connection. Runs in its own task so `cancel_query`
@@ -292,20 +328,33 @@ pub async fn execute(
     state: State<'_, AppState>,
     tab_id: String,
     sql: String,
+    variables: Option<Vec<VariableValue>>,
 ) -> CmdResult<ExecuteResult> {
     let session = state.session(&tab_id).ok_or("tab is not connected")?;
-    if session.config.read_only {
-        let blocked = sqlotus_core::analysis::modifying_statements(&sql, session.config.dialect);
-        if !blocked.is_empty() {
-            return Err(format!(
-                "This connection is read-only, so the script was not run. It contains: {}.                  Turn off \"Read-only\" in the connection settings to allow changes.",
-                blocked.join(", ")
-            ));
-        }
+    let dialect = session.config.dialect;
+    let changes = sqlotus_core::analysis::modifying_statements(&sql, dialect);
+    if session.config.read_only && !changes.is_empty() {
+        return Err(format!(
+            "This connection is read-only, so the script was not run. It contains: {}. \
+             Turn off \"Read-only\" in the connection settings to allow changes.",
+            changes.join(", ")
+        ));
     }
+    let settings = state.settings();
     let limits = Limits {
-        max_rows: state.settings().editor.max_rows.max(1),
+        max_rows: settings.editor.max_rows.max(1),
         ..Limits::default()
+    };
+    let row_limit = settings.safety.confirm_rows_over;
+    let rows_only = sqlotus_core::analysis::row_changes_only(&sql, dialect);
+    let tx_control = sqlotus_core::analysis::has_transaction_control(&sql, dialect);
+    let manual = session.config.manual_commit && !changes.is_empty() && !tx_control;
+    let guard_wanted = !manual && row_limit > 0 && rows_only;
+    let options = ScriptOptions {
+        variables: variables.unwrap_or_default(),
+        // SQL Server reports changed rows only through sp_executesql, whose
+        // scope would undo a USE statement
+        counted: rows_only && !uses_use_statement(&sql, dialect),
     };
     let task_session = session.clone();
     let script = sql.clone();
@@ -315,11 +364,43 @@ pub async fn execute(
         ensure_connected(&task_session, &mut guard).await?;
         let conn = guard.as_mut().expect("connected");
         let _ = cancel_tx.send(conn.cancel_handle());
-        let batches = sqlotus_db::execute_script(conn, &script, &limits).await;
+        // wrap the run in a transaction unless one is already open
+        let mut wrapped = Wrapped::No;
+        if (manual || guard_wanted) && conn.open_transactions().await.unwrap_or(1) == 0 {
+            let begin = conn.begin_statement();
+            if !conn.execute(begin, &limits).await.failed {
+                wrapped = if manual { Wrapped::Manual } else { Wrapped::Guard };
+            }
+        }
+        let batches = sqlotus_db::execute_script_with(conn, &script, &limits, &options).await;
+        let rows: u64 = batches.iter().map(|b| b.output.rows_affected).sum();
+        let failed = batches.iter().any(|b| b.output.failed);
+        let mut open = conn.open_transactions().await.unwrap_or(0);
+        let mut pending = None;
+        let mut notice = None;
+        match wrapped {
+            Wrapped::Guard if open > 0 => {
+                if rows > row_limit || failed {
+                    pending = Some(PendingCommit { rows, limit: row_limit, failed });
+                } else {
+                    let commit = conn.execute("COMMIT", &limits).await;
+                    notice = Some(if commit.failed {
+                        format!("COMMIT failed: {}", commit.messages.iter().map(|m| m.text.as_str()).collect::<Vec<_>>().join(" "))
+                    } else {
+                        format!("{rows} row(s) changed and committed.")
+                    });
+                    open = conn.open_transactions().await.unwrap_or(0);
+                }
+            }
+            Wrapped::Manual => {
+                notice = Some("Manual commit is on for this connection: the changes stay in an open transaction until you commit or roll back.".into());
+            }
+            _ => {}
+        }
         // a USE statement may have switched database
         let db = conn.current_database().await.unwrap_or_default();
-        let open = conn.open_transactions().await.unwrap_or(0);
-        Ok::<_, String>((batches, db, open))
+        let counted = options.counted || dialect != Dialect::MsSql;
+        Ok::<_, String>((batches, db, open, (counted && rows_only).then_some(rows), pending, notice))
     });
     if let Ok(cancel) = cancel_rx.await {
         *session.running.lock().map_err(err)? = Some(Running {
@@ -330,7 +411,7 @@ pub async fn execute(
     let result = handle.await;
     session.running.lock().map_err(err)?.take();
     match result {
-        Ok(Ok((batches, db, open_transactions))) => {
+        Ok(Ok((batches, db, open_transactions, rows_affected, pending_commit, notice))) => {
             if !db.is_empty() {
                 *session.database.lock().map_err(err)? = db.clone();
             }
@@ -347,6 +428,9 @@ pub async fn execute(
                 database: db,
                 cancelled: false,
                 open_transactions,
+                rows_affected,
+                pending_commit,
+                notice,
             })
         }
         Ok(Err(e)) => Err(e),
@@ -354,13 +438,28 @@ pub async fn execute(
             // aborted: the connection was dropped with the task; reconnect next time
             let db = session.database.lock().map_err(err)?.clone();
             Ok(ExecuteResult {
-                batches: Vec::new(),
                 database: db,
                 cancelled: true,
-                open_transactions: 0,
+                ..ExecuteResult::default()
             })
         }
     }
+}
+
+/// Estimated execution plans for `sql` (nothing is executed).
+#[tauri::command]
+pub async fn explain(state: State<'_, AppState>, tab_id: String, sql: String) -> CmdResult<ExplainOutput> {
+    let session = state.session(&tab_id).ok_or("tab is not connected")?;
+    let mut guard = session.conn.lock().await;
+    ensure_connected(&session, &mut guard).await?;
+    let conn = guard.as_mut().expect("connected");
+    Ok(conn.explain(&sql).await)
+}
+
+/// Variables `sql` uses without declaring them (to ask for their values).
+#[tauri::command]
+pub fn undeclared_variables(text: String, dialect: Dialect) -> CmdResult<Vec<String>> {
+    no_panic("variables", || sqlotus_core::variables::undeclared_variables(&text, dialect))
 }
 
 #[tauri::command]

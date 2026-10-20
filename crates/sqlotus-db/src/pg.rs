@@ -171,10 +171,13 @@ impl PgConn {
                         });
                         out.result_sets.push(rs);
                     }
-                    None => out.info(format!(
-                        "({n} row{} affected)",
-                        if n == 1 { "" } else { "s" }
-                    )),
+                    None => {
+                        out.rows_affected += n;
+                        out.info(format!(
+                            "({n} row{} affected)",
+                            if n == 1 { "" } else { "s" }
+                        ))
+                    }
                 },
                 _ => {}
             }

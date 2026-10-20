@@ -1,0 +1,218 @@
+// End-to-end checks for the 0.2 tools: commit confirmation for large
+// changes, manual commit, values for undeclared variables, estimated plans,
+// new analysis rules, Excel export, charts, result comparison and the
+// server check. Uses the Docker "Shop" database (connection "E2E SQL Server").
+//
+//   SQLOTUS_E2E_PASSWORD=... node scripts/e2e-tools.mjs [screenshot-dir]
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { attach, checker } from "./cdp.mjs";
+
+const outDir = process.argv[2] ?? "e2e-out";
+mkdirSync(outDir, { recursive: true });
+const password = process.env.SQLOTUS_E2E_PASSWORD;
+if (!password) throw new Error("set SQLOTUS_E2E_PASSWORD");
+const ui = await attach(outDir);
+const { sleep, evaluate, waitFor, click, press, type, shot, invoke } = ui;
+const { check, summary } = checker();
+
+async function until(fn, timeout = 10000) {
+  const end = Date.now() + timeout;
+  while (Date.now() < end) {
+    const v = await fn();
+    if (v) return v;
+    await sleep(150);
+  }
+  return null;
+}
+const toastText = () => evaluate(`[...document.querySelectorAll(".toast")].map((t) => t.innerText.replace(/\\s+/g, " ")).join(" | ")`);
+const waitToast = (needle, timeout = 10000) => until(async () => ((await toastText()).includes(needle) ? toastText() : null), timeout);
+const clearToasts = () => evaluate(`document.querySelectorAll(".toast-close").forEach((b) => b.click())`);
+const clickButton = (scope, label) =>
+  evaluate(`(() => { const b = [...document.querySelectorAll(${JSON.stringify(scope + " button")})].find((x) => x.textContent.trim().startsWith(${JSON.stringify(label)})); b?.click(); return !!b; })()`);
+const modalText = (cls) => evaluate(`document.querySelector(${JSON.stringify(cls)})?.innerText ?? ""`);
+
+const tabTitles = () => evaluate(`[...document.querySelectorAll(".tab")].map((t) => t.textContent)`);
+const before = new Set(await tabTitles());
+
+async function connectNewTab(label) {
+  await press("Control+N");
+  await sleep(300);
+  await evaluate(`document.querySelector(".toolbar button").click()`);
+  await waitFor(".conn-modal");
+  await until(() =>
+    evaluate(`(() => { const e = [...document.querySelectorAll(".conn-item")].find((e) => e.textContent.includes(${JSON.stringify(label)})); e?.click(); return !!e; })()`),
+  );
+  await until(async () => (await evaluate(`document.querySelector(".conn-form input")?.value`)) === label);
+  await evaluate(`[...document.querySelectorAll(".modal-actions button")].find((b) => b.textContent === "Connect").click()`);
+  const ok = await waitToast(`Connected to ${label}`, 20000);
+  await until(async () => (await evaluate(`document.querySelector(".status-msg").textContent`)).includes("objects loaded"), 15000);
+  return ok;
+}
+
+async function setText(text) {
+  await click(".editor .view-lines");
+  await sleep(150);
+  await press("Control+A");
+  await press("Delete");
+  await type(text);
+  await press("Escape");
+}
+
+async function run(sql) {
+  await clearToasts();
+  await setText(sql);
+  await press("F5");
+}
+
+const settings = await invoke("get_settings");
+await invoke("save_settings", { settings: { ...settings, safety: { confirmRowsOver: 2, promptVariables: true } } });
+try {
+  check("connect", !!(await connectNewTab("E2E SQL Server")), await toastText());
+
+  // 1. more rows than the limit: asked to commit; roll back keeps the data
+  await run("UPDATE dbo.Customers SET Country = Country WHERE Id <= 3");
+  const ask = await until(async () => {
+    const t = await modalText(".confirm-modal");
+    return t.includes("Commit these changes") ? t : null;
+  }, 10000);
+  await shot("t1-commit-question");
+  check("large change asks before commit", !!ask && ask.includes("changed 3 rows"), (ask ?? (await toastText())).replace(/\n/g, " | "));
+  await clickButton(".confirm-modal", "Roll back");
+  check("roll back from the question", !!(await waitToast("Transaction rolled back", 8000)), await toastText());
+  check("no transaction left", !(await evaluate(`!!document.querySelector(".tab.active .tab-badge.tx")`)));
+
+  // 2. within the limit: committed automatically, with a notice
+  await run("UPDATE dbo.Customers SET Country = Country WHERE Id = 1");
+  const auto = await waitToast("changed and committed", 8000);
+  check("small change commits automatically", !!auto && auto.includes("1 row(s) changed"), auto ?? (await toastText()));
+
+  // 3. undeclared variable: asked for a value
+  await run("SELECT Id, Name FROM dbo.Customers WHERE Id = @CustomerId");
+  const varsDialog = await until(() => evaluate(`!!document.querySelector(".variables-modal")`), 5000);
+  check("asks for undeclared variable", !!varsDialog, await modalText(".variables-modal"));
+  if (varsDialog) {
+    // the last value is remembered: replace it
+    await press("Control+A");
+    await type("2");
+    await press("Enter");
+  }
+  await waitToast("Query finished", 8000);
+  const ids = await evaluate(`[...document.querySelectorAll(".grid-row")].map((r) => r.children[1].textContent)`);
+  check("runs with the given value", JSON.stringify(ids) === '["2"]', JSON.stringify(ids));
+
+  // 4. estimated plan (Ctrl+L)
+  await clearToasts();
+  await setText("SELECT c.Name, o.Total FROM dbo.Customers c JOIN dbo.Orders o ON o.CustomerId = c.Id WHERE o.Total > 100");
+  await press("Control+L");
+  const nodes = await until(async () => {
+    const n = await evaluate(`document.querySelectorAll(".plan-view .plan-node").length`);
+    return n > 0 ? n : null;
+  }, 15000);
+  await shot("t4-plan");
+  check("estimated plan tree", (nodes ?? 0) >= 2, `${nodes} nodes · ${await toastText()}`);
+  check("plan tab active", (await evaluate(`document.querySelector(".results-tabs .plan-tab")?.className ?? ""`)).includes("active"));
+
+  // 5. new analysis rules
+  const diag = async (text) =>
+    (await invoke("diagnostics", { args: { connectionId: "e2e-mssql", database: "Shop", dialect: "mssql", text, offset: 0 } })).map((d) => d.code);
+  const d1 = await diag("SELECT Id FROM dbo.Customers WHERE YEAR(CreatedAt) = 2024");
+  const d2 = await diag("SELECT Id FROM dbo.Customers WHERE Country = N'VN'");
+  const d3 = await diag("SELECT Id FROM dbo.Customers WHERE Country NOT IN (SELECT Country FROM dbo.Customers)");
+  check("rule SQ010 function on column", d1.includes("SQ010"), d1.join(","));
+  check("rule SQ011 implicit conversion", d2.includes("SQ011"), d2.join(","));
+  check("rule SQ009 NOT IN nullable", d3.includes("SQ009"), d3.join(","));
+
+  // 6. Excel workbook
+  const xlsx = `${process.env.TEMP}\\sqlotus-e2e.xlsx`;
+  rmSync(xlsx, { force: true });
+  await invoke("export_xlsx", {
+    path: xlsx,
+    columns: [{ name: "Id", typeName: "int" }, { name: "Name", typeName: "nvarchar" }],
+    rows: [["1", "Nguyễn Văn A"], ["2", null]],
+    open: false,
+  });
+  check("Excel workbook written", existsSync(xlsx) && readFileSync(xlsx).subarray(0, 2).toString() === "PK");
+
+  // 7. chart and compare
+  await run("SELECT Id, Name, Id * 10 AS Score FROM dbo.Customers ORDER BY Id");
+  await waitToast("Query finished", 8000);
+  await clickButton(".grid-toolbar", "Chart");
+  const canvas = await until(() => evaluate(`!!document.querySelector(".chart-modal canvas")`), 5000);
+  await sleep(300);
+  await shot("t7-chart");
+  check("chart of the result", !!canvas);
+  await clickButton(".chart-modal", "Close");
+  await clickButton(".grid-toolbar", "📌 Pin");
+  check("pin result", !!(await waitToast("pinned for comparison", 5000)));
+  await run("SELECT Id, Name, Id * 10 AS Score FROM dbo.Customers WHERE Id <= 2 ORDER BY Id");
+  await waitToast("Query finished", 8000);
+  await clickButton(".grid-toolbar", "Compare");
+  const cmp = await until(() => modalText(".compare-modal"), 5000);
+  await shot("t7-compare");
+  check("compare with pinned result", (cmp ?? "").includes("Removed 1") && (cmp ?? "").includes("Same 2"), (cmp ?? "").split("\n").slice(0, 6).join(" | "));
+  await clickButton(".compare-modal", "Close");
+  await press("Control+W");
+  await sleep(400);
+
+  // 8. manual commit connection: changes stay open until Commit / Roll back
+  const manual = {
+    id: "e2e-manual",
+    name: "E2E Manual commit",
+    dialect: "mssql",
+    host: "localhost,14333",
+    port: null,
+    database: "Shop",
+    auth: "sql",
+    user: "sa",
+    encrypt: false,
+    trustServerCertificate: true,
+    color: "#d35400",
+    manualCommit: true,
+  };
+  await invoke("save_connection", { config: manual, password, forgetPassword: false });
+  await connectNewTab("E2E Manual commit");
+  await run("UPDATE dbo.Customers SET Country = Country WHERE Id = 1");
+  const open = await waitToast("transaction still open", 8000);
+  const buttons = await until(() => evaluate(`!!document.querySelector(".toolbar .tx-rollback")`), 3000);
+  check("manual commit keeps the transaction open", !!open && !!buttons, open ?? (await toastText()));
+  await evaluate(`document.querySelector(".toolbar .tx-rollback").click()`);
+  check("toolbar roll back", !!(await waitToast("Transaction rolled back", 8000)), await toastText());
+  check("badge cleared", !(await evaluate(`!!document.querySelector(".tab.active .tab-badge.tx")`)));
+  await press("Control+W");
+  await sleep(400);
+  await invoke("delete_connection", { id: manual.id });
+
+  // 9. server check from the connection dialog (no error needed)
+  await evaluate(`document.querySelector(".toolbar button").click()`);
+  await waitFor(".conn-modal");
+  await until(() =>
+    evaluate(`(() => { const e = [...document.querySelectorAll(".conn-item")].find((e) => e.textContent.includes("E2E SQL Server")); e?.click(); return !!e; })()`),
+  );
+  await sleep(300);
+  await clickButton(".conn-modal .modal-actions", "🩺 Check server");
+  const check9 = await until(async () => {
+    const t = await modalText(".doctor-modal");
+    return t.includes("Server check") && !t.includes("Checking the server") ? t : null;
+  }, 40000);
+  await shot("t9-server-check");
+  check("server check without an error", !!check9 && /Firewall|firewall|SQL Server/.test(check9), (check9 ?? "").split("\n").slice(0, 8).join(" | "));
+  await clickButton(".doctor-modal .modal-actions", "Close");
+  await sleep(200);
+  await clickButton(".conn-modal .modal-actions", "Close");
+} finally {
+  await invoke("save_settings", { settings });
+  // close the tabs this run opened
+  for (let i = 0; i < 10; i++) {
+    const own = (await tabTitles()).findIndex((t) => !before.has(t));
+    if (own < 0) break;
+    await evaluate(`document.querySelectorAll(".tab")[${own}].click()`);
+    await sleep(200);
+    await press("Control+W");
+    await sleep(300);
+    await clickButton(".confirm-modal", "Roll back and close");
+  }
+}
+
+const failed = summary();
+ui.close();
+process.exit(failed ? 1 : 0);

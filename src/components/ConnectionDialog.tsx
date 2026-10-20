@@ -228,6 +228,10 @@ export function ConnectionDialog({ onClose, onConnect }: Props) {
               <input type="checkbox" checked={!!cfg.readOnly} onChange={(e) => set("readOnly", e.target.checked)} />
               Read-only (block data and schema changes)
             </label>
+            <label className="check" title="Start a transaction before changes; nothing is saved until you press Commit">
+              <input type="checkbox" checked={!!cfg.manualCommit} onChange={(e) => set("manualCommit", e.target.checked)} />
+              Manual commit (keep changes in a transaction until you commit)
+            </label>
             <label>
               Tab colour
               <div className="colors">
@@ -260,6 +264,9 @@ export function ConnectionDialog({ onClose, onConnect }: Props) {
           <button onClick={test} disabled={busy}>
             Test
           </button>
+          <button onClick={() => setDoctorError("")} disabled={busy || !cfg.host.trim()} title="Check services, TCP/IP, ports, firewall and authentication of this server">
+            🩺 Check server
+          </button>
           <button
             onClick={() =>
               save(true).catch((e) => {
@@ -277,7 +284,7 @@ export function ConnectionDialog({ onClose, onConnect }: Props) {
           <button onClick={onClose}>Close</button>
         </div>
       </div>
-      {doctorError && (
+      {doctorError !== null && (
         <DoctorDialog
           config={normalized()}
           password={password || null}

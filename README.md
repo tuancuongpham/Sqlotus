@@ -39,13 +39,21 @@ formatter, completion, code analysis, refactorings) is a pure-Rust library with 
 
 ### Safety and code analysis
 - Squiggles while typing: UPDATE/DELETE without WHERE, `SELECT *`, `= NULL` comparisons, deprecated types,
-  unused variables, unknown objects and columns, and Unicode literals without the `N` prefix
-  (`'Nguyễn'` would be stored as `Nguy?n`).
+  unused variables, unknown objects and columns, Unicode literals without the `N` prefix
+  (`'Nguyễn'` would be stored as `Nguy?n`), `NOT IN (SELECT …)` over a nullable column, functions wrapped
+  around a column in WHERE/ON (`YEAR(OrderDate) = 2024` cannot use an index), and comparisons that force an
+  implicit conversion of the column (`varchar_col = N'x'`, `text_col = 123`).
 - **Execution warnings**: confirmation before running UPDATE/DELETE without WHERE, TRUNCATE or DROP.
 - **Read-only connections**: block INSERT/UPDATE/DELETE/MERGE/DDL/GRANT on a connection (e.g. production)
   while still running queries; such tabs show a 🔒.
 - **Open transaction reminder**: when a run leaves a transaction open (SQL Server, PostgreSQL, MySQL) the tab
-  shows **TRAN** and a notification offers Commit / Roll back; closing the tab asks what to do.
+  shows **TRAN**, the toolbar shows **Commit** / **Roll back**, and closing the tab asks what to do.
+- **Confirm large changes**: scripts that only insert, update or delete rows run inside a transaction; if they
+  change more rows than a limit (1,000 by default, Options → Safety) or fail half-way, Sqlotus asks whether to
+  commit or roll back. Smaller changes are committed automatically and the row count is reported.
+- **Manual commit** per connection: every change starts a transaction that stays open until you commit.
+- **Undeclared variables**: running `… WHERE Id = @Id` without a `DECLARE` asks for the value (and type) and
+  declares it for you; values are remembered.
 - **Find invalid objects**: views, procedures, functions and triggers that reference missing tables or columns.
 
 ### Connection Doctor and notifications
@@ -54,8 +62,13 @@ formatter, completion, code analysis, refactorings) is a pure-Rust library with 
   checks the service, TCP/IP, listening ports, SQL Server Browser and the authentication mode.
 - One-click fixes: enable TCP/IP, start the service, start SQL Server Browser, enable SQL Server
   authentication (these ask Windows for administrator permission), use the right port or host, switch to
-  Windows authentication, trust the certificate, pick another database. It reconnects afterwards and reports
-  the result.
+  Windows authentication, trust the certificate, pick another database, allow the port in Windows Firewall,
+  enable a disabled login. It reconnects afterwards and reports the result.
+- **Login failed (18456)** on a local server: the real reason is read from the Windows event log (wrong
+  password, unknown login, disabled login, expired password, database unavailable). For remote servers it
+  explains how to read the server's error log and what each state number means.
+- **Check server** in the Connect dialog runs the same checks without an error, e.g. to let other computers
+  connect (TCP/IP, firewall, SQL Server Browser).
 - Every action and setting shows a notification: connecting, query finished (time and rows), errors with
   **Diagnose** / **Retry**, format and refactor, copy, CSV export, saving connections and options, restored tabs.
 
@@ -75,6 +88,13 @@ formatter, completion, code analysis, refactorings) is a pure-Rust library with 
   shape are combined.
 - Virtualized result grid: sort by column, filter, copy (with headers), **copy as INSERT statements / CSV /
   IN (…) list**, save as CSV. Shift+click a range in a column to see Count / Sum / Avg / Min / Max.
+- **Excel**: open the result in Excel or save it as .xlsx (numbers stay numbers, header row, filters).
+- **Chart**: bar, line or pie chart of a result; copy it as an image.
+- **Compare results**: pin a result, run again (or another query), then compare — added, removed and changed
+  rows matched on the key columns you choose.
+- **Estimated execution plan** (Ctrl+L): a tree with the cost share of each step and warnings for scans that
+  read a whole table, key lookups, implicit conversions, missing join predicates, plus missing-index
+  suggestions with a ready CREATE INDEX statement. SQL Server, PostgreSQL and MySQL; the query is not run.
 - Per-connection tab colours (e.g. red for production). Passwords are stored in the Windows Credential Manager.
 
 ## Keyboard shortcuts
@@ -85,6 +105,7 @@ formatter, completion, code analysis, refactorings) is a pure-Rust library with 
 | Shift+F5 | Execute current statement |
 | Ctrl+Shift+F5 | Run on multiple databases |
 | Alt+Break | Cancel |
+| Ctrl+L | Estimated execution plan |
 | Ctrl+K, Ctrl+Y | Format |
 | Tab after `*` | Expand to column list |
 | F2 | Rename variable / alias / CTE |
@@ -128,7 +149,7 @@ npx tauri build
 - `scripts/` — UI tests over WebView2's DevTools Protocol (`ui-smoke.mjs`, `e2e-db.mjs`, `e2e-features.mjs`)
   and Docker test databases (`test-db/`).
 - `docs/redgate-comparison.md` — feature comparison with Redgate and ideas (Vietnamese).
-- `docs/pain-points.md` — common SQL tool pain points, which paid tools address them, and candidate features (Vietnamese).
+- `docs/pain-points.md` — common SQL tool pain points, which paid tools address them, and what Sqlotus does (Vietnamese).
 
 ### Testing against real databases
 

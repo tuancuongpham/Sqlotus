@@ -1,27 +1,46 @@
 import { useEffect, useState } from "react";
-import type { Dialect, ExecuteResult } from "../types";
+import type { Dialect, ExecuteResult, ExplainOutput } from "../types";
+import { PlanView } from "./PlanView";
 import { ResultGrid } from "./ResultGrid";
 
-export function ResultsPanel({ result, running, dialect }: { result?: ExecuteResult; running: boolean; dialect?: Dialect }) {
+const PLAN = -2;
+const MESSAGES = -1;
+
+export function ResultsPanel({
+  result,
+  plan,
+  showPlan,
+  running,
+  dialect,
+}: {
+  result?: ExecuteResult;
+  plan?: ExplainOutput;
+  /** Show the plan tab (after Explain) instead of the results. */
+  showPlan?: boolean;
+  running: boolean;
+  dialect?: Dialect;
+}) {
   const sets = result?.batches.flatMap((b) => b.output.resultSets) ?? [];
   const messages = result?.batches.flatMap((b) => b.output.messages) ?? [];
   const failed = result?.batches.some((b) => b.output.failed) ?? false;
   const elapsed = result?.batches.reduce((a, b) => a + b.output.elapsedMs, 0) ?? 0;
-  const [active, setActive] = useState<number>(0); // -1 = messages
+  const [active, setActive] = useState<number>(0);
 
   useEffect(() => {
-    setActive(sets.length > 0 && !failed ? 0 : -1);
+    setActive(sets.length > 0 && !failed ? 0 : MESSAGES);
   }, [result]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (plan && showPlan) setActive(PLAN);
+  }, [plan, showPlan]);
 
   if (running) {
     return <div className="results-empty">Executing…</div>;
   }
-  if (!result) {
-    return <div className="results-empty">Run a query with F5 or Ctrl+E</div>;
+  if (!result && !plan) {
+    return <div className="results-empty">Run a query with F5 or Ctrl+E · estimated plan with Ctrl+L</div>;
   }
-  if (result.cancelled) {
-    return <div className="results-empty">Query cancelled.</div>;
-  }
+  const planWarnings = plan?.plans.reduce((n, p) => n + p.warnings.length + p.missingIndexes.length, 0) ?? 0;
   return (
     <div className="results">
       <div className="results-tabs">
@@ -30,16 +49,38 @@ export function ResultsPanel({ result, running, dialect }: { result?: ExecuteRes
             Results {sets.length > 1 ? i + 1 : ""} <small>({rs.rows.length})</small>
           </button>
         ))}
-        <button className={(active === -1 ? "active" : "") + (failed ? " error" : "")} onClick={() => setActive(-1)}>
-          Messages
-        </button>
+        {result && (
+          <button className={(active === MESSAGES ? "active" : "") + (failed ? " error" : "")} onClick={() => setActive(MESSAGES)}>
+            Messages
+          </button>
+        )}
+        {plan && (
+          <button className={"plan-tab" + (active === PLAN ? " active" : "")} onClick={() => setActive(PLAN)}>
+            Plan {planWarnings > 0 && <small className="plan-tab-warn">⚠ {planWarnings}</small>}
+          </button>
+        )}
         <span className="results-status">
-          {failed ? "Completed with errors" : "Query executed successfully"} · {(elapsed / 1000).toFixed(3)}s
+          {active === PLAN
+            ? "Estimated plan — the query was not run"
+            : result?.cancelled
+              ? "Query cancelled"
+              : result
+                ? `${failed ? "Completed with errors" : "Query executed successfully"} · ${(elapsed / 1000).toFixed(3)}s`
+                : ""}
         </span>
       </div>
       <div className="results-body">
-        {active >= 0 && sets[active] ? (
-          <ResultGrid key={`${result.batches.length}-${active}-${elapsed}`} rs={sets[active]} dialect={dialect} />
+        {active === PLAN && plan ? (
+          <PlanView explain={plan} />
+        ) : active >= 0 && sets[active] ? (
+          <ResultGrid
+            key={`${result?.batches.length}-${active}-${elapsed}`}
+            rs={sets[active]}
+            dialect={dialect}
+            label={`Results ${sets.length > 1 ? active + 1 : ""} · ${new Date().toLocaleTimeString()}`.replace("  ", " ")}
+          />
+        ) : result?.cancelled ? (
+          <div className="results-empty">Query cancelled.</div>
         ) : (
           <pre className="messages">
             {messages.map((m, i) => (

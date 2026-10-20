@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { api, errorText } from "../api";
-import { toast } from "../notify";
+import { toast, update } from "../notify";
+import { pin, unpin, usePinned } from "../pinned";
 import type { Dialect, ResultSet } from "../types";
+import { ChartDialog } from "./ChartDialog";
+import { CompareDialog } from "./CompareDialog";
 
 const ROW_H = 24;
 const OVERSCAN = 10;
@@ -74,7 +77,10 @@ interface Cell {
   col: number;
 }
 
-export function ResultGrid({ rs, dialect = "mssql" }: { rs: ResultSet; dialect?: Dialect }) {
+export function ResultGrid({ rs, dialect = "mssql", label = "Results" }: { rs: ResultSet; dialect?: Dialect; label?: string }) {
+  const [dialog, setDialog] = useState<"chart" | "compare" | null>(null);
+  const pinned = usePinned();
+  const isPinned = pinned?.rs === rs;
   const [scrollTop, setScrollTop] = useState(0);
   const [height, setHeight] = useState(300);
   const [selected, setSelected] = useState<Cell | null>(null);
@@ -114,6 +120,32 @@ export function ResultGrid({ rs, dialect = "mssql" }: { rs: ResultSet; dialect?:
       toast.error("Could not save the CSV file", errorText(e));
     }
   };
+  const excel = async (open: boolean) => {
+    let path: string | null = null;
+    if (!open) {
+      path = await save({ defaultPath: "results.xlsx", filters: [{ name: "Excel workbook", extensions: ["xlsx"] }] });
+      if (!path) return;
+    }
+    const n = targetRows().length;
+    const id = toast.progress(open ? "Opening in Excel…" : "Saving the workbook…", `${n.toLocaleString()} row(s)`);
+    try {
+      const file = await api.exportXlsx(path, rs.columns, targetRows(), open);
+      update(id, "success", open ? `Opened ${n.toLocaleString()} row(s) in Excel` : `Saved ${n.toLocaleString()} row(s) as Excel`, file);
+    } catch (e) {
+      update(id, "error", "Could not export to Excel", errorText(e));
+    }
+  };
+
+  const togglePin = () => {
+    if (isPinned) {
+      unpin();
+      toast.info("Result unpinned");
+    } else {
+      pin(label, rs);
+      toast.success("Result pinned for comparison", "Run the query again (or another one), then press Compare on the new result.");
+    }
+  };
+
   const ref = useRef<HTMLDivElement>(null);
   const resizing = useRef<{ col: number; x: number; w: number } | null>(null);
 
@@ -288,7 +320,30 @@ export function ResultGrid({ rs, dialect = "mssql" }: { rs: ResultSet; dialect?:
         <button onClick={saveCsv} title="Save the selected rows (or all rows) as a CSV file">
           Save CSV…
         </button>
+        <button onClick={() => void excel(true)} title="Open the selected rows (or all rows) in Excel">
+          Excel
+        </button>
+        <button onClick={() => void excel(false)} title="Save the selected rows (or all rows) as an Excel workbook">
+          Save Excel…
+        </button>
+        <button onClick={() => setDialog("chart")} title="Chart the result">
+          Chart…
+        </button>
+        <button className={isPinned ? "active" : ""} onClick={togglePin} title="Keep this result to compare a later result with">
+          {isPinned ? "📌 Pinned" : "📌 Pin"}
+        </button>
+        <button
+          onClick={() => setDialog("compare")}
+          disabled={!pinned || isPinned}
+          title={pinned ? `Compare with the pinned result (${pinned.label})` : "Pin a result first"}
+        >
+          Compare
+        </button>
       </div>
+      {dialog === "chart" && <ChartDialog rs={rs} onClose={() => setDialog(null)} />}
+      {dialog === "compare" && pinned && (
+        <CompareDialog before={pinned.rs} beforeLabel={pinned.label} after={rs} onClose={() => setDialog(null)} />
+      )}
       <div
         className="grid"
         ref={ref}

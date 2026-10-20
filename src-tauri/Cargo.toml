@@ -1,6 +1,6 @@
 [package]
 name = "sqlotus"
-version = "0.1.0"
+version = "0.2.0"
 description = "SQL editor with completion, formatting, object search and query history"
 authors = ["Sqlotus"]
 edition = "2024"
@@ -27,5 +27,6 @@ sqlotus-db = { path = "../crates/sqlotus-db" }
 sqlotus-store = { path = "../crates/sqlotus-store" }
 tokio = { version = "1", features = ["sync", "time"] }
 tauri-plugin-dialog = "2"
+rust_xlsxwriter = "0.100.0"
 
 

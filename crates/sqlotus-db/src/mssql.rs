@@ -3,8 +3,8 @@
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 use futures_util::TryStreamExt;
 use tiberius::{
-    AuthMethod, Client, ColumnData, ColumnType, Config, EncryptionLevel, FromSql, QueryItem,
-    SqlBrowser,
+    AuthMethod, Client, ColumnData, ColumnType, Command, CommandItem, Config, EncryptionLevel, FromSql,
+    QueryItem, ResultMetadata, Row, SqlBrowser,
 };
 use tokio::net::TcpStream;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
@@ -103,6 +103,58 @@ impl MssqlConn {
         }
     }
 
+    /// Run the batch through `sp_executesql`, which reports the rows each
+    /// statement changed (plain batches do not). Variables, SET options and
+    /// temporary tables created inside do not outlive the call, so this is
+    /// only used for scripts that just change rows.
+    pub async fn execute_counted(&mut self, sql: &str, limits: &Limits) -> BatchOutput {
+        let mut out = BatchOutput::default();
+        let mut cmd = Command::new("sp_executesql");
+        cmd.bind_param("@stmt", sql.to_string());
+        let mut stream = match cmd.exec(&mut self.client).await {
+            Ok(s) => s,
+            Err(e) => {
+                out.error(error_text(&e));
+                return out;
+            }
+        };
+        let mut current: Option<ResultSet> = None;
+        // the count after a result set belongs to that SELECT
+        let mut after_select = false;
+        loop {
+            match stream.try_next().await {
+                Ok(Some(CommandItem::Metadata(meta))) => {
+                    out.result_sets.extend(current.replace(new_result_set(&meta)));
+                    after_select = true;
+                }
+                Ok(Some(CommandItem::Row(row))) => {
+                    if let Some(rs) = current.as_mut() {
+                        push_row(rs, row, limits);
+                    }
+                }
+                Ok(Some(CommandItem::RowsAffected(n))) => {
+                    if after_select {
+                        after_select = false;
+                    } else if n > 0 {
+                        out.rows_affected += n;
+                        out.info(format!("({n} row{} affected)", if n == 1 { "" } else { "s" }));
+                    }
+                }
+                Ok(Some(_)) => {}
+                Ok(None) => break,
+                Err(e) => {
+                    out.error(error_text(&e));
+                    break;
+                }
+            }
+        }
+        out.result_sets.extend(current.take());
+        if !out.failed && out.result_sets.is_empty() && out.rows_affected == 0 {
+            out.info("Commands completed successfully.");
+        }
+        out
+    }
+
     pub async fn execute(&mut self, sql: &str, limits: &Limits) -> BatchOutput {
         let mut out = BatchOutput::default();
         let mut stream = match self.client.simple_query(sql).await {
@@ -116,34 +168,11 @@ impl MssqlConn {
         loop {
             match stream.try_next().await {
                 Ok(Some(QueryItem::Metadata(meta))) => {
-                    if let Some(rs) = current.take() {
-                        out.result_sets.push(rs);
-                    }
-                    let columns = meta
-                        .columns()
-                        .iter()
-                        .map(|c| ResultColumn {
-                            name: c.name().to_string(),
-                            type_name: type_name(c.column_type()).into(),
-                        })
-                        .collect();
-                    current = Some(ResultSet {
-                        columns,
-                        rows: Vec::new(),
-                        truncated: false,
-                    });
+                    out.result_sets.extend(current.replace(new_result_set(&meta)));
                 }
                 Ok(Some(QueryItem::Row(row))) => {
                     if let Some(rs) = current.as_mut() {
-                        if rs.rows.len() >= limits.max_rows {
-                            rs.truncated = true;
-                            continue;
-                        }
-                        rs.rows.push(
-                            row.into_iter()
-                                .map(|cd| cell(cd).map(|s| clip(s, limits.max_cell_chars)))
-                                .collect(),
-                        );
+                        push_row(rs, row, limits);
                     }
                 }
                 Ok(None) => break,
@@ -182,6 +211,33 @@ impl MssqlConn {
     pub async fn close(self) {
         let _ = self.client.close().await;
     }
+}
+
+fn new_result_set(meta: &ResultMetadata) -> ResultSet {
+    ResultSet {
+        columns: meta
+            .columns()
+            .iter()
+            .map(|c| ResultColumn {
+                name: c.name().to_string(),
+                type_name: type_name(c.column_type()).into(),
+            })
+            .collect(),
+        rows: Vec::new(),
+        truncated: false,
+    }
+}
+
+fn push_row(rs: &mut ResultSet, row: Row, limits: &Limits) {
+    if rs.rows.len() >= limits.max_rows {
+        rs.truncated = true;
+        return;
+    }
+    rs.rows.push(
+        row.into_iter()
+            .map(|cd| cell(cd).map(|s| clip(s, limits.max_cell_chars)))
+            .collect(),
+    );
 }
 
 fn error_text(e: &tiberius::error::Error) -> String {

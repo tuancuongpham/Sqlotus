@@ -94,6 +94,9 @@ pub async fn execute_multi(
     if session.config.read_only && !sqlotus_core::analysis::modifying_statements(&sql, session.config.dialect).is_empty() {
         return Err("This connection is read-only, so the script was not run on any database.".into());
     }
+    if session.config.manual_commit && !sqlotus_core::analysis::modifying_statements(&sql, session.config.dialect).is_empty() {
+        return Err("Manual commit is on for this connection, but a multi-database run commits each database on its own connection. Run the changes database by database instead.".into());
+    }
     let limits = Limits {
         max_rows: state.settings().editor.max_rows.max(1),
         ..Limits::default()
@@ -141,6 +144,7 @@ pub async fn execute_multi(
         database,
         cancelled: false,
         open_transactions: 0,
+        ..ExecuteResult::default()
     })
 }
 

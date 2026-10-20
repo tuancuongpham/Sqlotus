@@ -14,6 +14,9 @@ interface Props {
   onRetry: (config: ConnectionConfig) => void;
 }
 
+/** Fixes that only change the connection settings (applied here). */
+const SETTINGS_FIXES: Fix["kind"][] = ["usePort", "useHost", "useWindowsAuth", "trustCertificate", "useDatabase"];
+
 /** Apply a settings-only fix to a connection config. */
 function applyToConfig(cfg: ConnectionConfig, fix: Fix): ConnectionConfig {
   switch (fix.kind) {
@@ -56,7 +59,7 @@ export function DoctorDialog({ config, password, error, onClose, onRetry }: Prop
 
   const fix = async (f: Finding) => {
     if (!f.fix) return;
-    if (!f.needsAdmin) {
+    if (SETTINGS_FIXES.includes(f.fix.kind)) {
       const next = applyToConfig(cfg, f.fix);
       try {
         await api.saveConnection(next, null, false);
@@ -69,10 +72,10 @@ export function DoctorDialog({ config, password, error, onClose, onRetry }: Prop
       return;
     }
     setBusy(f.title);
-    const id = toast.progress(`${f.fixLabel}…`, "Windows will ask for administrator permission.");
+    const id = toast.progress(`${f.fixLabel}…`, f.needsAdmin ? "Windows will ask for administrator permission." : "Working on the server…");
     try {
       const msg = await api.applyFix(f.fix, cfg, password);
-      const works = msg.includes("works now");
+      const works = msg.includes("works now") && error !== "";
       update(id, works ? "success" : "warning", works ? "Fixed" : "Fix applied", msg, works ? [{ label: "Connect", run: () => onRetry(cfg) }] : undefined);
       if (works) onRetry(cfg);
       else void run(cfg);
@@ -86,7 +89,9 @@ export function DoctorDialog({ config, password, error, onClose, onRetry }: Prop
   return (
     <div className="modal-backdrop" onMouseDown={onClose} onKeyDown={(e) => e.key === "Escape" && onClose()}>
       <div className="modal doctor-modal" onMouseDown={(e) => e.stopPropagation()}>
-        <div className="modal-title">🩺 Connection Doctor — {cfg.name || cfg.host}</div>
+        <div className="modal-title">
+          🩺 {error ? "Connection Doctor" : "Server check"} — {cfg.name || cfg.host}
+        </div>
         <div className="doctor-body">
           {!diagnosis ? (
             <div className="panel-empty">
@@ -110,10 +115,12 @@ export function DoctorDialog({ config, password, error, onClose, onRetry }: Prop
                   )}
                 </div>
               ))}
-              <details className="doctor-error">
-                <summary>Original error</summary>
-                <pre>{error}</pre>
-              </details>
+              {error && (
+                <details className="doctor-error">
+                  <summary>Original error</summary>
+                  <pre>{error}</pre>
+                </details>
+              )}
             </>
           )}
         </div>

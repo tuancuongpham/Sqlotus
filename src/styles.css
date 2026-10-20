@@ -297,18 +297,28 @@ textarea:focus,
 
 .grid-toolbar {
   display: flex;
-  gap: 6px;
+  flex-wrap: wrap;
+  gap: 4px 6px;
   align-items: center;
   padding: 2px 6px;
   color: var(--fg-dim);
 }
 
-.grid-toolbar span {
+.grid-toolbar > span {
   margin-right: auto;
+  white-space: nowrap;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .grid-toolbar button {
   padding: 1px 7px;
+  white-space: nowrap;
+}
+
+.grid-toolbar .grid-filter {
+  width: 140px;
 }
 
 .grid {
@@ -1157,4 +1167,258 @@ mark {
 .grid-aggregates {
   color: var(--fg);
   font-weight: 600;
+}
+
+/* estimated plan */
+.plan-view {
+  height: 100%;
+  overflow: auto;
+  padding: 8px 12px;
+  font-size: 13px;
+}
+.plan-statement {
+  margin-bottom: 18px;
+}
+.plan-head {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  margin-bottom: 6px;
+}
+.plan-head b,
+.plan-total {
+  white-space: nowrap;
+}
+.plan-head code {
+  color: var(--fg-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.plan-total {
+  color: var(--fg-dim);
+  white-space: nowrap;
+}
+.plan-warnings {
+  margin: 4px 0 8px;
+  padding-left: 4px;
+  list-style: none;
+  color: #e5a50a;
+}
+.plan-missing-index {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 4px 0 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg2);
+}
+.plan-missing-index code {
+  flex: 1;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.plan-branch > summary {
+  list-style: none;
+  cursor: pointer;
+}
+.plan-branch > summary::-webkit-details-marker {
+  display: none;
+}
+.plan-branch > summary .plan-op::before {
+  content: "▸ ";
+  color: var(--fg-dim);
+}
+.plan-branch[open] > summary .plan-op::before {
+  content: "▾ ";
+}
+.plan-leaf .plan-op::before {
+  content: "• ";
+  color: var(--fg-dim);
+}
+.plan-node {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 3px 6px;
+  border-left: 2px solid var(--border);
+}
+.plan-node:hover {
+  background: var(--hover);
+}
+.plan-node.has-warning {
+  border-left-color: #e5a50a;
+}
+.plan-node.hot .plan-op {
+  font-weight: 600;
+}
+.plan-object {
+  color: var(--fg-dim);
+}
+.plan-rows {
+  color: var(--fg-dim);
+  white-space: nowrap;
+}
+.plan-cost {
+  position: relative;
+  width: 90px;
+  height: 16px;
+  background: var(--bg3);
+  border-radius: 3px;
+  overflow: hidden;
+  text-align: right;
+  font-size: 11px;
+}
+.plan-cost b {
+  position: relative;
+  padding-right: 4px;
+}
+.plan-bar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: rgba(229, 165, 10, 0.45);
+}
+.plan-detail {
+  margin: 0 0 2px 22px;
+  color: var(--fg-dim);
+  font-family: Cascadia Mono, Consolas, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+.plan-node-warning {
+  margin: 0 0 2px 22px;
+  color: #e5a50a;
+  font-size: 12px;
+}
+.plan-tab-warn {
+  color: #e5a50a;
+}
+.plan-error {
+  margin-bottom: 8px;
+  white-space: pre-wrap;
+}
+
+/* chart, compare, variables */
+.chart-modal {
+  width: min(1100px, 92vw);
+  height: min(700px, 88vh);
+}
+.chart-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: center;
+  padding: 8px 14px;
+}
+.chart-controls label {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.chart-values {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.chart-body {
+  flex: 1;
+  position: relative;
+  min-height: 0;
+  padding: 8px 14px;
+}
+.compare-modal {
+  width: min(1200px, 94vw);
+  height: min(720px, 88vh);
+}
+.compare-keys,
+.compare-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  padding: 6px 14px;
+}
+.compare-summary button.active {
+  outline: 1px solid var(--accent);
+}
+.compare-warn {
+  color: #e5a50a;
+}
+.compare-table-wrap {
+  flex: 1;
+  overflow: auto;
+  margin: 0 14px;
+  border: 1px solid var(--border);
+}
+.compare-table {
+  border-collapse: collapse;
+  font-size: 12px;
+  font-family: Cascadia Mono, Consolas, monospace;
+}
+.compare-table th,
+.compare-table td {
+  border: 1px solid var(--grid-line);
+  padding: 2px 6px;
+  white-space: nowrap;
+  text-align: left;
+}
+.compare-table th {
+  position: sticky;
+  top: 0;
+  background: var(--bg3);
+}
+tr.diff-added td,
+button.diff-added {
+  color: var(--ok);
+}
+tr.diff-removed td,
+button.diff-removed {
+  color: var(--error);
+}
+button.diff-changed {
+  color: #e5a50a;
+}
+.diff-cell-changed {
+  background: rgba(229, 165, 10, 0.15);
+}
+.diff-cell-changed del {
+  color: var(--error);
+}
+.diff-cell-changed ins {
+  color: var(--ok);
+  text-decoration: none;
+}
+.diff-mark {
+  font-weight: bold;
+}
+.variables-modal {
+  width: 640px;
+}
+.variables-body {
+  padding: 8px 14px;
+}
+.variables-table td {
+  padding: 3px 6px;
+}
+.variables-table .variable-value {
+  width: 260px;
+}
+.settings-hint {
+  color: var(--fg-dim);
+  display: block;
+  margin: -4px 0 8px;
+  line-height: 1.4;
+}
+.toolbar .tx-commit {
+  color: var(--ok);
+}
+.toolbar .tx-rollback {
+  color: var(--error);
 }
