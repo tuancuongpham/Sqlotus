@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "sqlq",
+  "productName": "SqlSupportQuery",
   "version": "0.1.0",
   "identifier": "com.sqlsupportquery.app",
   "build": {
@@ -12,9 +12,12 @@
   "app": {
     "windows": [
       {
-        "title": "sqlq",
-        "width": 800,
-        "height": 600
+        "label": "main",
+        "title": "SqlSupportQuery",
+        "width": 1400,
+        "height": 900,
+        "minWidth": 800,
+        "minHeight": 500
       }
     ],
     "security": {
@@ -23,7 +26,10 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": [
+      "msi",
+      "nsis"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

@@ -66,6 +66,8 @@ pub struct CompletionOptions {
     /// Append a generated alias after tables in FROM/JOIN.
     pub assign_aliases: bool,
     pub max_items: usize,
+    /// Values for snippet variables `$USER$`, `$MACHINE$`, `$DBNAME$`, `$SERVER$`.
+    pub snippet_vars: std::collections::HashMap<String, String>,
 }
 
 impl Default for CompletionOptions {
@@ -75,6 +77,7 @@ impl Default for CompletionOptions {
             qualify_objects: true,
             assign_aliases: true,
             max_items: 400,
+            snippet_vars: Default::default(),
         }
     }
 }
@@ -474,7 +477,7 @@ impl<'a> Ctx<'a> {
     }
 
     fn snippets(&mut self, snippets: &[Snippet]) {
-        let vars = Default::default();
+        let vars = self.opts.snippet_vars.clone();
         for s in snippets {
             self.items.push(CompletionItem {
                 sort_text: format!("1{}", s.prefix.to_lowercase()),

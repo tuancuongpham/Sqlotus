@@ -12,6 +12,8 @@ export default defineConfig(() => ({
   //
   // 1. prevent Vite from obscuring rust errors
   clearScreen: false,
+  // desktop app: one large chunk (Monaco) is fine
+  build: { chunkSizeWarningLimit: 4000 },
   // 2. tauri expects a fixed port, fail if that port is not available
   server: {
     port: 1420,
@@ -26,7 +28,7 @@ export default defineConfig(() => ({
       : undefined,
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`
-      ignored: ["**/src-tauri/**"],
+      ignored: ["**/src-tauri/**", "**/target/**", "**/crates/**"],
     },
   },
 }));

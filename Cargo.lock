@@ -4042,9 +4042,13 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "sqlq-core",
+ "sqlq-db",
+ "sqlq-store",
  "tauri",
  "tauri-build",
  "tauri-plugin-opener",
+ "tokio",
 ]
 
 [[package]]
