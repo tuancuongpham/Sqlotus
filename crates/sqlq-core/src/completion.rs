@@ -641,8 +641,10 @@ impl<'a> Ctx<'a> {
 
     fn qualified_name(&self, o: &DbObject, force_schema: bool) -> String {
         let cat = self.catalog;
+        // Qualifying with the default schema is a SQL Server convention
+        // (`dbo.`); in Postgres/MySQL it is just noise (`public.`, `mydb.`).
         let use_schema = force_schema
-            || self.opts.qualify_objects
+            || (self.opts.qualify_objects && self.dialect == Dialect::MsSql)
             || cat.is_some_and(|c| !o.schema.eq_ignore_ascii_case(&c.default_schema));
         if use_schema && !o.schema.is_empty() {
             format!("{}.{}", self.quote(&o.schema), self.quote(&o.name))
@@ -1321,6 +1323,32 @@ mod tests {
     fn temp_table_columns() {
         let r = run("CREATE TABLE #t (A INT, B INT);\nSELECT t.| FROM #t t");
         assert_eq!(labels(&r), vec!["A", "B"]);
+    }
+
+    #[test]
+    fn postgres_does_not_qualify_default_schema() {
+        let mut c = cat();
+        c.default_schema = "dbo".into();
+        let src = "SELECT * FROM Cus";
+        let r = complete(
+            src,
+            src.len(),
+            Dialect::Postgres,
+            Some(&c),
+            &[],
+            &CompletionOptions::default(),
+        );
+        assert_eq!(r.items[0].insert_text, "\"Customers\" c");
+        let src = "SELECT * FROM Reg";
+        let r = complete(
+            src,
+            src.len(),
+            Dialect::Postgres,
+            Some(&c),
+            &[],
+            &CompletionOptions::default(),
+        );
+        assert_eq!(r.items[0].insert_text, "sales.\"Regions\" r");
     }
 
     #[test]

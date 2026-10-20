@@ -155,12 +155,14 @@ export default function App() {
 
   const loadCatalog = useCallback(async (tab: Tab, refresh = false) => {
     if (!tab.connectionId || !tab.database) return;
-    setStatus(refresh ? "Refreshing objects…" : "Loading objects…");
+    const name = connectionsRef.current.find((c) => c.id === tab.connectionId)?.name ?? "";
+    const where = `${name} / ${tab.database}`;
+    setStatus(`${where}: ${refresh ? "refreshing" : "loading"} objects…`);
     try {
       const info = await api.loadCatalog(tab.connectionId, tab.database, refresh);
-      setStatus(`${info.objects} objects loaded`);
+      setStatus(`${where}: ${info.objects} objects loaded`);
     } catch (e) {
-      setStatus(`Object load failed: ${errorText(e)}`);
+      setStatus(`${where}: object load failed: ${errorText(e)}`);
     }
   }, []);
 
@@ -185,7 +187,7 @@ export default function App() {
         void loadCatalog(tab);
       } catch (e) {
         patchTab(id, { connecting: false, connected: false });
-        setStatus(`Connection failed: ${errorText(e)}`);
+        setStatus(`${conn.name}: ${errorText(e)}`);
         throw e;
       }
     },
@@ -640,7 +642,8 @@ export default function App() {
             connectionsRef.current = conns;
             setDialog(null);
             const id = activeRef.current || createTab().id;
-            connectTab(id, c, pw).catch((e) => alert(errorText(e)));
+            // failures are reported in the status bar by connectTab
+            connectTab(id, c, pw).catch(() => undefined);
           }}
         />
       )}

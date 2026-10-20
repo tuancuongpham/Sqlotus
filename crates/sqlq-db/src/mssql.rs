@@ -1,6 +1,6 @@
 //! SQL Server via tiberius.
 
-use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime};
+use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 use futures_util::TryStreamExt;
 use tiberius::{
     AuthMethod, Client, ColumnData, ColumnType, Config, EncryptionLevel, FromSql, QueryItem,
@@ -243,6 +243,15 @@ fn hex(bytes: &[u8]) -> String {
     s
 }
 
+/// `.fffffff` with exactly `scale` digits, as SSMS shows datetime2/time.
+fn fraction(nanos: u32, scale: u8) -> String {
+    if scale == 0 {
+        return String::new();
+    }
+    let digits = format!("{nanos:09}");
+    format!(".{}", &digits[..(scale as usize).min(9)])
+}
+
 /// Render a value the way SSMS's grid shows it.
 fn cell(cd: ColumnData<'static>) -> Option<String> {
     Some(match &cd {
@@ -272,22 +281,36 @@ fn cell(cd: ColumnData<'static>) -> Option<String> {
             .ok()??
             .format("%Y-%m-%d %H:%M:%S")
             .to_string(),
-        ColumnData::DateTime2(_) => NaiveDateTime::from_sql(&cd)
-            .ok()??
-            .format("%Y-%m-%d %H:%M:%S%.f")
-            .to_string(),
+        ColumnData::DateTime2(Some(v)) => {
+            let dt = NaiveDateTime::from_sql(&cd).ok()??;
+            format!(
+                "{}{}",
+                dt.format("%Y-%m-%d %H:%M:%S"),
+                fraction(dt.and_utc().timestamp_subsec_nanos(), v.time().scale())
+            )
+        }
         ColumnData::Date(_) => NaiveDate::from_sql(&cd)
             .ok()??
             .format("%Y-%m-%d")
             .to_string(),
-        ColumnData::Time(_) => NaiveTime::from_sql(&cd)
-            .ok()??
-            .format("%H:%M:%S%.f")
-            .to_string(),
-        ColumnData::DateTimeOffset(_) => DateTime::<FixedOffset>::from_sql(&cd)
-            .ok()??
-            .format("%Y-%m-%d %H:%M:%S%.f %:z")
-            .to_string(),
+        ColumnData::Time(Some(v)) => {
+            let t = NaiveTime::from_sql(&cd).ok()??;
+            format!(
+                "{}{}",
+                t.format("%H:%M:%S"),
+                fraction(t.nanosecond(), v.scale())
+            )
+        }
+        ColumnData::DateTimeOffset(Some(v)) => {
+            let dt = DateTime::<FixedOffset>::from_sql(&cd).ok()??;
+            let scale = v.datetime2().time().scale();
+            format!(
+                "{}{} {}",
+                dt.format("%Y-%m-%d %H:%M:%S"),
+                fraction(dt.timestamp_subsec_nanos(), scale),
+                dt.format("%:z")
+            )
+        }
     })
 }
 
@@ -306,5 +329,12 @@ mod tests {
             ("db.example.com".into(), None, Some(1500))
         );
         assert_eq!(parse_host("tcp:10.0.0.5"), ("10.0.0.5".into(), None, None));
+    }
+
+    #[test]
+    fn fractions() {
+        assert_eq!(fraction(123_456_700, 7), ".1234567");
+        assert_eq!(fraction(120_000_000, 3), ".120");
+        assert_eq!(fraction(5, 0), "");
     }
 }
