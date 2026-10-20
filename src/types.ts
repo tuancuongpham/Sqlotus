@@ -59,7 +59,7 @@ export interface ExecuteResult {
   /** Rows changed by INSERT/UPDATE/DELETE/MERGE, when reported. */
   rowsAffected?: number | null;
   /** Sqlotus kept the changes in a transaction and needs a decision. */
-  pendingCommit?: { rows: number; limit: number; failed: boolean } | null;
+  pendingCommit?: { rows: number | null; limit: number; failed: boolean } | null;
   notice?: string | null;
 }
 
@@ -262,6 +262,67 @@ export interface DbObject {
   kind: ObjectKind;
   columns: CatalogColumn[];
   params: { name: string; dataType: string; isOutput: boolean; hasDefault: boolean }[];
+}
+
+export interface ForeignKey {
+  name: string;
+  fromSchema: string;
+  fromTable: string;
+  fromColumns: string[];
+  toSchema: string;
+  toTable: string;
+  toColumns: string[];
+}
+
+export interface DiagramModel {
+  tables: DbObject[];
+  foreignKeys: ForeignKey[];
+}
+
+export type Generator =
+  | "skip"
+  | "null"
+  | "fullName"
+  | "firstName"
+  | "lastName"
+  | "email"
+  | "phone"
+  | "address"
+  | "city"
+  | "country"
+  | "company"
+  | "product"
+  | "code"
+  | "status"
+  | "gender"
+  | "url"
+  | "text"
+  | "integer"
+  | "decimal"
+  | "date"
+  | "birthDate"
+  | "dateTime"
+  | "boolean"
+  | "guid"
+  | "sequence"
+  | "foreignKey"
+  | "fixed";
+
+export interface ColumnPlan {
+  column: string;
+  dataType: string;
+  nullable: boolean;
+  generator: Generator;
+  note: string;
+}
+
+export interface TestDataOptions {
+  rows: number;
+  locale: "vi" | "en";
+  nullPercent: number;
+  seed: number;
+  overrides: Record<string, Generator>;
+  fixed: Record<string, string>;
 }
 
 export type RefactorAction =

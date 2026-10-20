@@ -182,6 +182,39 @@ try {
   await sleep(400);
   await invoke("delete_connection", { id: manual.id });
 
+  // 10. ER diagram and test data from the Object Explorer
+  check("connect for diagram", !!(await connectNewTab("E2E SQL Server")));
+  if (!(await evaluate(`!!document.querySelector(".explorer-panel")`))) await press("F8");
+  await waitFor(".explorer-panel");
+  await clickButton(".explorer-panel .panel-search-row", "Diagram");
+  const tables = await until(async () => {
+    const n = await evaluate(`document.querySelectorAll(".diagram-table").length`);
+    return n > 0 ? n : null;
+  }, 15000);
+  const relations = await evaluate(`document.querySelectorAll(".diagram-svg path[marker-end]").length`);
+  const overlaps = await evaluate(`(() => { const r = [...document.querySelectorAll(".diagram-table > rect")].map((e) => e.getBoundingClientRect()); let n = 0; for (let i = 0; i < r.length; i++) for (let j = i + 1; j < r.length; j++) { const a = r[i], b = r[j]; if (a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom) n++; } return n; })()`);
+  await shot("t10-diagram");
+  check("ER diagram of the database", tables === 4 && relations === 2 && overlaps === 0, `${tables} tables, ${relations} relations, ${overlaps} overlaps`);
+  await clickButton(".diagram-modal .modal-actions", "Close");
+  await sleep(200);
+  await evaluate(`[...document.querySelectorAll(".tree-item")].find((e) => e.querySelector(".tree-name")?.textContent.trim() === "dbo.Orders")?.click()`);
+  await sleep(300);
+  await clickButton(".tree-actions", "Test data");
+  const preview = await until(async () => {
+    const t = await evaluate(`document.querySelector(".testdata-preview pre")?.textContent ?? ""`);
+    return t.includes("INSERT INTO dbo.Orders") ? t : null;
+  }, 15000);
+  await shot("t10-testdata");
+  const customerIds = [...(preview ?? "").matchAll(/^\s*(?:VALUES )?\((\d+),/gm)].map((m) => Number(m[1]));
+  check("test data preview uses existing customers", customerIds.length === 5 && customerIds.every((id) => id >= 1 && id <= 3), JSON.stringify(customerIds));
+  await clickButton(".testdata-modal .modal-actions", "Open script");
+  // the editor only renders visible lines: read the full text from the saved session
+  const opened = await until(async () => {
+    const session = await invoke("load_session");
+    return session?.tabs?.find((t) => t.text.includes("Test data for dbo.Orders"))?.text ?? null;
+  }, 10000);
+  check("test data script opens in a new tab", !!opened && (opened.match(/^\s*\(|VALUES \(/gm) ?? []).length === 100, `${(opened ?? "").split(String.fromCharCode(10)).length} lines`);
+
   // 9. server check from the connection dialog (no error needed)
   await evaluate(`document.querySelector(".toolbar button").click()`);
   await waitFor(".conn-modal");

@@ -280,8 +280,9 @@ pub struct BatchDto {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingCommit {
-    /// Rows the run changed.
-    pub(crate) rows: u64,
+    /// Rows the run changed; `None` when the server did not report it
+    /// (SET NOCOUNT ON, or a script SQL Server cannot count).
+    pub(crate) rows: Option<u64>,
     /// The limit from the settings.
     pub(crate) limit: u64,
     /// Some statements failed, so the changes may be incomplete.
@@ -314,11 +315,10 @@ enum Wrapped {
     Guard,
 }
 
-fn uses_use_statement(sql: &str, dialect: Dialect) -> bool {
+fn has_word(sql: &str, dialect: Dialect, word: &str) -> bool {
     sqlotus_core::tokenize(sql, dialect)
         .iter()
-        .filter(|t| !t.is_trivia())
-        .any(|t| t.kind == sqlotus_core::TokenKind::Word && t.upper() == "USE")
+        .any(|t| t.kind == sqlotus_core::TokenKind::Word && t.text.eq_ignore_ascii_case(word))
 }
 
 /// Run `sql` on the tab's connection. Runs in its own task so `cancel_query`
@@ -354,8 +354,11 @@ pub async fn execute(
         variables: variables.unwrap_or_default(),
         // SQL Server reports changed rows only through sp_executesql, whose
         // scope would undo a USE statement
-        counted: rows_only && !uses_use_statement(&sql, dialect),
+        counted: rows_only && !has_word(&sql, dialect, "USE"),
     };
+    // SQL Server reports no counts under SET NOCOUNT ON; an unknown count
+    // must never be taken as "few rows"
+    let count_reliable = dialect != Dialect::MsSql || (options.counted && !has_word(&sql, dialect, "NOCOUNT"));
     let task_session = session.clone();
     let script = sql.clone();
     let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
@@ -364,6 +367,16 @@ pub async fn execute(
         ensure_connected(&task_session, &mut guard).await?;
         let conn = guard.as_mut().expect("connected");
         let _ = cancel_tx.send(conn.cancel_handle());
+        // Postgres answers COMMIT of a failed transaction with a silent
+        // rollback: say so instead of letting it look committed
+        if dialect == Dialect::Postgres && script.trim().trim_end_matches(';').trim().eq_ignore_ascii_case("commit") {
+            let probe = conn.execute("SELECT 1", &limits).await;
+            let aborted = probe.messages.iter().any(|m| m.text.contains("current transaction is aborted"));
+            if aborted {
+                let _ = conn.execute("ROLLBACK", &limits).await;
+                return Err("The transaction had failed, so PostgreSQL could not commit it: all of its changes were rolled back.".to_string());
+            }
+        }
         // wrap the run in a transaction unless one is already open
         let mut wrapped = Wrapped::No;
         if (manual || guard_wanted) && conn.open_transactions().await.unwrap_or(1) == 0 {
@@ -379,9 +392,16 @@ pub async fn execute(
         let mut pending = None;
         let mut notice = None;
         match wrapped {
+            // Postgres cannot commit a transaction after an error: undo it now
+            // instead of offering a Commit that would silently roll back
+            Wrapped::Guard if open > 0 && failed && dialect == Dialect::Postgres => {
+                let _ = conn.execute("ROLLBACK", &limits).await;
+                open = conn.open_transactions().await.unwrap_or(0);
+                notice = Some("The script failed, so PostgreSQL rolled back all of its changes (a failed transaction cannot be committed).".into());
+            }
             Wrapped::Guard if open > 0 => {
-                if rows > row_limit || failed {
-                    pending = Some(PendingCommit { rows, limit: row_limit, failed });
+                if !count_reliable || rows > row_limit || failed {
+                    pending = Some(PendingCommit { rows: count_reliable.then_some(rows), limit: row_limit, failed });
                 } else {
                     let commit = conn.execute("COMMIT", &limits).await;
                     notice = Some(if commit.failed {
@@ -399,8 +419,7 @@ pub async fn execute(
         }
         // a USE statement may have switched database
         let db = conn.current_database().await.unwrap_or_default();
-        let counted = options.counted || dialect != Dialect::MsSql;
-        Ok::<_, String>((batches, db, open, (counted && rows_only).then_some(rows), pending, notice))
+        Ok::<_, String>((batches, db, open, (count_reliable && rows_only).then_some(rows), pending, notice))
     });
     if let Ok(cancel) = cancel_rx.await {
         *session.running.lock().map_err(err)? = Some(Running {
@@ -524,11 +543,9 @@ fn catalog_info(snap: &sqlotus_db::CatalogSnapshot) -> CatalogInfo {
     }
 }
 
-pub(crate) async fn fetch_catalog(
-    state: &AppState,
-    connection_id: &str,
-    database: &str,
-) -> CmdResult<Arc<sqlotus_db::CatalogSnapshot>> {
+/// A new connection to `database` of a saved connection, using the
+/// password a connected tab already has (it may not be saved).
+pub(crate) async fn open_database(state: &AppState, connection_id: &str, database: &str) -> CmdResult<Connection> {
     let mut config = state
         .store
         .get_connection(connection_id)
@@ -546,9 +563,15 @@ pub(crate) async fn fetch_catalog(
         .find(|s| s.config.id == connection_id)
         .and_then(|s| s.password.clone());
     let password = session_pw.or_else(|| state.store.get_password(connection_id).ok().flatten());
-    let mut conn = Connection::open(&config, password.as_deref())
-        .await
-        .map_err(err)?;
+    Connection::open(&config, password.as_deref()).await.map_err(err)
+}
+
+pub(crate) async fn fetch_catalog(
+    state: &AppState,
+    connection_id: &str,
+    database: &str,
+) -> CmdResult<Arc<sqlotus_db::CatalogSnapshot>> {
+    let mut conn = open_database(state, connection_id, database).await?;
     let snap = load_catalog(&mut conn).await.map_err(err);
     conn.close().await;
     Ok(state.put_catalog(connection_id, database, snap?))

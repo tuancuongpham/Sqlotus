@@ -96,7 +96,7 @@ cross-database, snippet (import từ SQL Prompt). Xem `docs/redgate-comparison.m
 **Công cụ trả phí.** Redgate SQL Search (miễn phí), SSMS Plus, DataGrip.
 
 **Sqlotus.** ✅ SQL Search, Object Explorer, Find invalid objects. 🆕 Explorer mở sẵn khi khởi động.
-- 💡 Sơ đồ quan hệ bảng (ER) từ khoá ngoại; tìm trên nhiều server cùng lúc.
+- 🆕 Sơ đồ ER từ khoá ngoại (cả database hoặc quanh một bảng). 💡 Tìm trên nhiều server cùng lúc.
 
 ## Danh sách ứng viên
 
@@ -110,8 +110,10 @@ cross-database, snippet (import từ SQL Prompt). Xem `docs/redgate-comparison.m
 | 6 | Thêm luật phân tích (NOT IN/NULL, hàm trên cột, implicit conversion) | 🆕 v0.2.0 |
 | 7 | Biểu đồ nhanh / mở Excel / so sánh result set | 🆕 v0.2.0 |
 | 8 | Hỏi giá trị cho `@param` chưa khai báo khi chạy | 🆕 v0.2.0 |
-| 9 | Sơ đồ ER | 💡 |
-| 10 | Sinh dữ liệu test cho bảng | 💡 |
+| 9 | Sơ đồ ER | 🆕 sau v0.2.0 |
+| 10 | Sinh dữ liệu test cho bảng | 🆕 sau v0.2.0 |
+
+Đề xuất tiếp theo (chờ xác nhận): `docs/feature-proposals.md`.
 
 ## Nguồn
 

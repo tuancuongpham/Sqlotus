@@ -432,3 +432,21 @@ async fn postgres_safety() {
 async fn mysql_safety() {
     safety_features("SQLOTUS_TEST_MYSQL", "customers").await;
 }
+
+
+#[tokio::test]
+async fn postgres_failed_transaction_is_detected() {
+    let Some(e) = env("SQLOTUS_TEST_PG") else {
+        return;
+    };
+    let mut conn = connect(&e).await;
+    let limits = Limits::default();
+    assert!(!conn.execute("BEGIN", &limits).await.failed);
+    assert!(conn.execute("SELECT 1/0", &limits).await.failed);
+    // a failed transaction still counts as open, and other queries are refused
+    assert_eq!(conn.open_transactions().await.unwrap(), 1);
+    let probe = conn.execute("SELECT 1", &limits).await;
+    assert!(probe.messages.iter().any(|m| m.text.contains("current transaction is aborted")), "{probe:?}");
+    assert!(!conn.execute("ROLLBACK", &limits).await.failed);
+    assert_eq!(conn.open_transactions().await.unwrap(), 0);
+}

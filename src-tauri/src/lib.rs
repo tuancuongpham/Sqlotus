@@ -4,6 +4,7 @@ mod excel;
 mod intel;
 mod multi;
 mod state;
+mod tools;
 
 use tauri::Manager;
 
@@ -110,6 +111,9 @@ pub fn run() {
             commands::explain,
             commands::undeclared_variables,
             excel::export_xlsx,
+            tools::diagram_model,
+            tools::test_data_plan,
+            tools::test_data_script,
             commands::take_startup_notice,
         ])
         .run(tauri::generate_context!())

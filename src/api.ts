@@ -1,8 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   CatalogInfo,
+  ColumnPlan,
   DbObject,
+  DiagramModel,
   Diagnosis,
+  TestDataOptions,
   Fix,
   Diagnostic,
   EditorArgs,
@@ -107,6 +110,11 @@ export const api = {
   saveTextFile: (path: string, contents: string) => invoke<void>("save_text_file", { path, contents }),
   executeMulti: (tabId: string, sql: string, databases: string[]) =>
     invoke<ExecuteResult>("execute_multi", { tabId, sql, databases }),
+  diagramModel: (connectionId: string, database: string) => invoke<DiagramModel>("diagram_model", { connectionId, database }),
+  testDataPlan: (connectionId: string, database: string, schema: string, name: string, dialect: Dialect) =>
+    invoke<ColumnPlan[]>("test_data_plan", { connectionId, database, schema, name, dialect }),
+  testDataScript: (connectionId: string, database: string, schema: string, name: string, dialect: Dialect, options: TestDataOptions) =>
+    invoke<string>("test_data_script", { connectionId, database, schema, name, dialect, options }),
   takeStartupNotice: () => invoke<string | null>("take_startup_notice"),
   diagnoseConnection: (config: ConnectionConfig, error: string) => invoke<Diagnosis>("diagnose_connection", { config, error }),
   applyFix: (fix: Fix, config: ConnectionConfig, password: string | null) =>

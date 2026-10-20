@@ -1422,3 +1422,100 @@ button.diff-changed {
 .toolbar .tx-rollback {
   color: var(--error);
 }
+
+/* ER diagram */
+.diagram-modal {
+  width: 96vw;
+  height: 92vh;
+}
+.diagram-controls,
+.testdata-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  padding: 6px 14px;
+}
+.diagram-controls label,
+.testdata-controls label {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.diagram-controls input {
+  width: 200px;
+}
+.diagram-body {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+.diagram-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+  cursor: grab;
+  font-family: Cascadia Mono, Consolas, monospace;
+  font-size: 12px;
+  user-select: none;
+}
+.diagram-svg:active {
+  cursor: grabbing;
+}
+.diagram-table {
+  cursor: move;
+}
+
+/* test data */
+.testdata-modal {
+  width: min(1200px, 94vw);
+  height: min(760px, 90vh);
+}
+.testdata-controls input[type="number"] {
+  width: 90px;
+}
+.testdata-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(380px, 1fr) 1.2fr;
+  gap: 10px;
+  padding: 0 14px 8px;
+}
+.testdata-columns {
+  overflow: auto;
+}
+.testdata-columns table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.testdata-columns td,
+.testdata-columns th {
+  padding: 3px 6px;
+  text-align: left;
+  border-bottom: 1px solid var(--grid-line);
+}
+.testdata-columns tr.skipped td {
+  opacity: 0.5;
+}
+.testdata-fixed {
+  margin-left: 6px;
+  width: 140px;
+}
+.testdata-preview {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border: 1px solid var(--border);
+}
+.testdata-preview pre {
+  flex: 1;
+  margin: 0;
+  padding: 8px;
+  overflow: auto;
+  font-family: Cascadia Mono, Consolas, monospace;
+  font-size: 12px;
+}

@@ -18,6 +18,7 @@ pub mod script;
 pub mod search;
 pub mod snippet;
 pub mod statements;
+pub mod testdata;
 pub mod variables;
 
 use serde::{Deserialize, Serialize};
@@ -63,7 +64,7 @@ impl Dialect {
         if self == Dialect::Postgres && name.chars().any(|c| c.is_uppercase()) {
             return true;
         }
-        keywords::is_reserved(&name.to_ascii_uppercase(), self)
+        keywords::must_quote(&name.to_ascii_uppercase(), self)
     }
 }
 
@@ -110,6 +111,14 @@ mod tests {
         assert_eq!(Dialect::MsSql.quote_ident("Name"), "Name");
         assert_eq!(Dialect::Postgres.quote_ident("Name"), "\"Name\"");
         assert_eq!(Dialect::MySql.quote_ident("my col"), "`my col`");
+        // reserved words that are easy to use as column names
+        assert_eq!(Dialect::MsSql.quote_ident("LineNo"), "[LineNo]");
+        assert_eq!(Dialect::MsSql.quote_ident("File"), "[File]");
+        assert_eq!(Dialect::MsSql.quote_ident("Plan"), "[Plan]");
+        assert_eq!(Dialect::MySql.quote_ident("rank"), "`rank`");
+        assert_eq!(Dialect::MySql.quote_ident("groups"), "`groups`");
+        assert_eq!(Dialect::Postgres.quote_ident("user"), "\"user\"");
+        assert_eq!(Dialect::MsSql.quote_ident("Status"), "Status");
     }
 }
 

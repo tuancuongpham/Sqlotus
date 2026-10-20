@@ -80,6 +80,11 @@ formatter, completion, code analysis, refactorings) is a pure-Rust library with 
   Open tabs are restored on restart.
 - **Object Explorer** (F8, open by default): filter objects and columns, Select top 100, script
   SELECT/INSERT/UPDATE/DELETE/EXEC/CREATE/ALTER.
+- **ER diagram**: tables and foreign keys of a database, or one table and its related tables, laid out
+  automatically; drag, zoom, highlight relations, copy as image or save as SVG.
+- **Test data**: realistic rows for a table (Vietnamese or English names, e-mails, phones, addresses, amounts,
+  dates); foreign keys use rows that exist in the parent table and non-identity keys continue after the current
+  maximum. The INSERT script opens in a new tab to review and run.
 
 ### Running queries
 - F5 / Ctrl+E runs the selection or the tab, Shift+F5 the statement at the cursor; `GO` / `GO n` batches;
@@ -150,6 +155,8 @@ npx tauri build
   and Docker test databases (`test-db/`).
 - `docs/redgate-comparison.md` — feature comparison with Redgate and ideas (Vietnamese).
 - `docs/pain-points.md` — common SQL tool pain points, which paid tools address them, and what Sqlotus does (Vietnamese).
+- `docs/feature-proposals.md` — researched feature proposals with an assessment of each (Vietnamese).
+- `docs/review-2026-10.md` — code review: bugs found and fixed, remaining risks (Vietnamese).
 
 ### Testing against real databases
 

@@ -44,6 +44,11 @@ Rust (Tauri 2) + React/TypeScript + Monaco Editor.
 - **Object Explorer** (F8, mở sẵn khi khởi động): lọc object/cột, Select top 100, script SELECT/INSERT/UPDATE/DELETE/EXEC/CREATE/ALTER,
   **Find invalid objects** (view/proc/function/trigger tham chiếu tới bảng/cột không còn tồn tại).
 - **Đổi tên** (F2) biến, alias, CTE ở mọi chỗ dùng.
+- **Sơ đồ ER**: bảng và khoá ngoại của cả database hoặc một bảng cùng các bảng liên quan, tự sắp xếp; kéo thả, zoom,
+  tô sáng quan hệ, copy ảnh hoặc lưu SVG (Object Explorer → Diagram).
+- **Sinh dữ liệu test**: dòng dữ liệu thực tế cho một bảng (tên tiếng Việt/Anh, email, số điện thoại, địa chỉ, số tiền,
+  ngày); khoá ngoại lấy giá trị có thật ở bảng cha, khoá không identity nối tiếp giá trị lớn nhất. Script INSERT mở ra
+  tab mới để xem trước rồi mới chạy (Object Explorer → chọn bảng → Test data…).
 - **Gợi ý xuyên database**: `OtherDb.` → schema, `OtherDb.dbo.` → bảng, cột của bảng ở database khác.
 - **Chạy trên nhiều database** (Ctrl+Shift+F5): kết quả có cột `Database`, gộp lại nếu cùng cấu trúc.
 - **Snippet**: lần chạy đầu tự import snippet của SQL Prompt (`%LOCALAPPDATA%\Red Gate\SQL Prompt *\Snippets`).

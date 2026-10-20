@@ -28,6 +28,16 @@ fn is_numeric(type_name: &str) -> bool {
     NUMERIC.iter().any(|n| n.eq_ignore_ascii_case(base))
 }
 
+/// Excel stores numbers as doubles: only values that survive the round
+/// trip (at most 15 significant digits) are written as numbers, so bigint
+/// keys and decimal(38, x) amounts are not silently rounded.
+fn exact_number(v: &str) -> Option<f64> {
+    let n: f64 = v.trim().parse().ok()?;
+    let digits = v.trim().trim_start_matches(['-', '+']).chars().filter(char::is_ascii_digit).collect::<String>();
+    let significant = digits.trim_start_matches('0').trim_end_matches('0').len();
+    (n.is_finite() && significant <= 15 && !v.contains(['e', 'E'])).then_some(n)
+}
+
 fn write_workbook(path: &PathBuf, columns: &[SheetColumn], rows: &[Vec<Option<String>>]) -> Result<(), rust_xlsxwriter::XlsxError> {
     let mut wb = Workbook::new();
     let ws = wb.add_worksheet();
@@ -42,8 +52,8 @@ fn write_workbook(path: &PathBuf, columns: &[SheetColumn], rows: &[Vec<Option<St
         for (j, v) in row.iter().enumerate() {
             let Some(v) = v else { continue };
             let col = j as u16;
-            match v.parse::<f64>() {
-                Ok(n) if numeric.get(j).copied().unwrap_or(false) && n.is_finite() => ws.write_number(r, col, n)?,
+            match exact_number(v) {
+                Some(n) if numeric.get(j).copied().unwrap_or(false) => ws.write_number(r, col, n)?,
                 _ => ws.write_string(r, col, v)?,
             };
         }
@@ -112,5 +122,9 @@ mod tests {
         assert_eq!(&bytes[..2], b"PK"); // a zip container
         std::fs::remove_file(&path).ok();
         assert!(is_numeric("decimal(18, 2)") && !is_numeric("varchar"));
+        assert_eq!(exact_number("12.50"), Some(12.5));
+        assert_eq!(exact_number("-0.001"), Some(-0.001));
+        assert_eq!(exact_number("9007199254740993"), None); // bigint beyond double precision
+        assert_eq!(exact_number("1234567890.1234567890"), None);
     }
 }

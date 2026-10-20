@@ -364,6 +364,9 @@ export default function App() {
         toast.success(sql === "COMMIT" ? "Transaction committed" : "Transaction rolled back", sql === "COMMIT" ? "The changes are saved." : "The changes were undone.");
       } catch (e) {
         toast.error(`${sql} failed`, errorText(e));
+        // the transaction may have ended anyway (e.g. rolled back): refresh the badge
+        const r = await api.execute(tabId, "SELECT 1").catch(() => null);
+        if (r) patchTab(tabId, { openTransactions: r.openTransactions ?? 0 });
       }
     },
     [patchTab],
@@ -402,8 +405,10 @@ export default function App() {
     const pending = result.pendingCommit;
     if (pending) {
       const message = pending.failed
-        ? `Some statements failed. The changes made so far (${pending.rows.toLocaleString()} row(s)) are kept in an open transaction.`
-        : `This run changed ${pending.rows.toLocaleString()} rows — more than your limit of ${pending.limit.toLocaleString()} (Options → Safety). The changes are kept in an open transaction.`;
+        ? `Some statements failed. The changes made so far${pending.rows != null ? ` (${pending.rows.toLocaleString()} row(s))` : ""} are kept in an open transaction.`
+        : pending.rows == null
+          ? "SQL Server did not report how many rows changed (the script uses SET NOCOUNT ON or USE), so Sqlotus cannot tell whether it is within your limit. The changes are kept in an open transaction."
+          : `This run changed ${pending.rows.toLocaleString()} rows — more than your limit of ${pending.limit.toLocaleString()} (Options → Safety). The changes are kept in an open transaction.`;
       void askChoice("Commit these changes?", message, [
         { label: "Commit", value: "COMMIT", kind: "primary" },
         { label: "Roll back", value: "ROLLBACK", kind: "danger" },

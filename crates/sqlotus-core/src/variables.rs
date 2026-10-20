@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 
 use crate::Dialect;
-use crate::analysis::{STATEMENT_KEYWORDS, in_declare, is_parameter, sig, word};
+use crate::analysis::{STATEMENT_KEYWORDS, in_declare, sig, word};
 use crate::lexer::{Token, TokenKind, tokenize};
 use crate::statements::split_batches;
 
@@ -53,9 +53,20 @@ fn is_named_argument(t: &[Token<'_>], i: usize) -> bool {
         && matches!(statement_keyword(t, i).as_str(), "EXEC" | "EXECUTE")
 }
 
+/// `CREATE/ALTER PROCEDURE|FUNCTION|TRIGGER|VIEW` must be the first
+/// statement of its batch, so nothing may be put in front of it.
+fn is_module_batch(t: &[Token<'_>]) -> bool {
+    matches!(word(t.first()).as_str(), "CREATE" | "ALTER")
+        && t.iter()
+            .take(6)
+            .any(|x| matches!(x.upper().as_str(), "PROCEDURE" | "PROC" | "FUNCTION" | "TRIGGER" | "VIEW"))
+}
+
 fn mssql_undeclared(t: &[Token<'_>], out: &mut Vec<String>, seen: &mut HashSet<String>) {
-    let routine = matches!(word(t.first()).as_str(), "CREATE" | "ALTER")
-        && t.iter().take(6).any(|x| matches!(x.upper().as_str(), "PROCEDURE" | "PROC" | "FUNCTION" | "TRIGGER"));
+    // the server reports undeclared variables in a module body when it is created
+    if is_module_batch(t) {
+        return;
+    }
     let mut declared = HashSet::new();
     for (i, x) in t.iter().enumerate() {
         if x.kind != TokenKind::Variable || x.text.starts_with("@@") {
@@ -63,8 +74,7 @@ fn mssql_undeclared(t: &[Token<'_>], out: &mut Vec<String>, seen: &mut HashSet<S
         }
         let key = x.text.to_lowercase();
         let declares = word(i.checked_sub(1).and_then(|p| t.get(p))) == "DECLARE"
-            || (i > 0 && t[i - 1].kind == TokenKind::Comma && in_declare(t, i))
-            || (routine && is_parameter(t, i));
+            || (i > 0 && t[i - 1].kind == TokenKind::Comma && in_declare(t, i));
         if declares {
             declared.insert(key);
         } else if !declared.contains(&key) && !is_named_argument(t, i) && seen.insert(key) {
@@ -190,8 +200,10 @@ mod tests {
         // named procedure arguments are not variables; the return code variable is
         assert!(undeclared_variables("EXEC dbo.GetOrders @CustomerId = 1, @From = '2024-01-01'", ms).is_empty());
         assert_eq!(undeclared_variables("EXEC @rc = dbo.p @x = 1", ms), vec!["@rc"]);
-        // parameters of a procedure being created
-        assert!(undeclared_variables("CREATE PROCEDURE dbo.p @Id int AS SELECT @Id", ms).is_empty());
+        // a module body is checked by the server when it is created; nothing goes in front of CREATE
+        assert!(undeclared_variables("CREATE PROCEDURE dbo.p @Id int AS SELECT @Id, @Other", ms).is_empty());
+        let v = [VariableValue { name: "@Other".into(), data_type: "int".into(), value: Some("1".into()) }];
+        assert_eq!(prelude("CREATE PROCEDURE dbo.p AS SELECT @Other", ms, &v), "");
         // declared in another batch does not count, and each name is asked once
         assert_eq!(undeclared_variables("DECLARE @x int = 1\nGO\nSELECT @x\nGO\nSELECT @x", ms), vec!["@x"]);
     }

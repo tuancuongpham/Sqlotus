@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api, errorText } from "../api";
 import { toast, update } from "../notify";
 import type { DbObject, Dialect, ObjectKind, ObjectProblem, ScriptKind } from "../types";
+import { DiagramDialog } from "./DiagramDialog";
+import { TestDataDialog } from "./TestDataDialog";
 
 const GROUPS: { kind: ObjectKind[]; label: string }[] = [
   { kind: ["table"], label: "Tables" },
@@ -42,6 +44,8 @@ export function ExplorerPanel({ connectionId, database, dialect, version, onOpen
   const [error, setError] = useState("");
   const [problems, setProblems] = useState<ObjectProblem[] | null>(null);
   const [checking, setChecking] = useState(false);
+  const [diagram, setDiagram] = useState<{ schema: string; name: string } | "all" | null>(null);
+  const [testData, setTestData] = useState<DbObject | null>(null);
 
   const findInvalid = async () => {
     if (!connectionId || !database) return;
@@ -127,6 +131,9 @@ export function ExplorerPanel({ connectionId, database, dialect, version, onOpen
         <button onClick={findInvalid} disabled={checking} title="Find views, procedures, functions and triggers that reference missing tables or columns">
           {checking ? "Checking…" : "Find invalid objects"}
         </button>
+        <button onClick={() => setDiagram("all")} disabled={!database} title="Entity-relationship diagram of the tables">
+          Diagram
+        </button>
       </div>
       {error && <div className="status-error">{error}</div>}
       {problems && (
@@ -194,6 +201,12 @@ export function ExplorerPanel({ connectionId, database, dialect, version, onOpen
                               <button onClick={() => script(o, "insert")}>INSERT</button>
                               <button onClick={() => script(o, "update")}>UPDATE</button>
                               <button onClick={() => script(o, "delete")}>DELETE</button>
+                              <button onClick={() => setDiagram({ schema: o.schema, name: o.name })} title="Diagram of this table and its related tables">
+                                Diagram
+                              </button>
+                              <button onClick={() => setTestData(o)} title="Generate realistic rows as an INSERT script">
+                                Test data…
+                              </button>
                             </>
                           )}
                           {o.kind === "procedure" && <button onClick={() => script(o, "exec")}>EXEC</button>}
@@ -227,6 +240,25 @@ export function ExplorerPanel({ connectionId, database, dialect, version, onOpen
         })}
         {visible.length === 0 && <div className="panel-empty">{objects.length ? "No match" : "No objects loaded"}</div>}
       </div>
+      {diagram && database && (
+        <DiagramDialog
+          connectionId={connectionId}
+          database={database}
+          focus={diagram === "all" ? undefined : diagram}
+          onClose={() => setDiagram(null)}
+        />
+      )}
+      {testData && database && (
+        <TestDataDialog
+          connectionId={connectionId}
+          database={database}
+          schema={testData.schema}
+          name={testData.name}
+          dialect={dialect}
+          onOpenScript={(title, text) => onOpenScript(title, text)}
+          onClose={() => setTestData(null)}
+        />
+      )}
     </div>
   );
 }
