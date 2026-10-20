@@ -215,6 +215,7 @@ mod tests {
                         nullable: false,
                         is_primary_key: true,
                         is_identity: true,
+                        is_computed: false,
                     }],
                     params: vec![],
                 },

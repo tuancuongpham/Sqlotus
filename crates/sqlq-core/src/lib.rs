@@ -3,12 +3,15 @@
 //! Nothing in this crate performs IO; database metadata comes in through
 //! [`catalog::Catalog`], which the `sqlq-db` crate fills.
 
+pub mod analysis;
 pub mod catalog;
 pub mod completion;
 pub mod format;
 pub mod keywords;
 pub mod lexer;
+pub mod refactor;
 pub mod scope;
+pub mod script;
 pub mod search;
 pub mod snippet;
 pub mod statements;

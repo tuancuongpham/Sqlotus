@@ -126,7 +126,7 @@ fn mssql_type(name: &str, max_length: i64, precision: i64, scale: i64) -> String
                 format!("{name}({})", max_length / 2)
             }
         }
-        "decimal" | "numeric" => format!("{name}({precision},{scale})"),
+        "decimal" | "numeric" => format!("{name}({precision}, {scale})"),
         "datetime2" | "time" | "datetimeoffset" if scale != 7 => format!("{name}({scale})"),
         _ => name.to_string(),
     }
@@ -154,7 +154,7 @@ async fn load_mssql(conn: &mut Connection) -> Result<CatalogSnapshot> {
     let rows = conn
         .query_strings(
             "SELECT s.name, o.name, RTRIM(o.type), c.name, TYPE_NAME(c.user_type_id), c.max_length, c.precision, c.scale, \
-                    c.is_nullable, c.is_identity, CASE WHEN pk.column_id IS NULL THEN 0 ELSE 1 END \
+                    c.is_nullable, c.is_identity, CASE WHEN pk.column_id IS NULL THEN 0 ELSE 1 END, c.is_computed \
              FROM sys.objects o \
              JOIN sys.schemas s ON s.schema_id = o.schema_id \
              LEFT JOIN sys.columns c ON c.object_id = o.object_id \
@@ -175,6 +175,7 @@ async fn load_mssql(conn: &mut Connection) -> Result<CatalogSnapshot> {
             nullable: b(&r, 8),
             is_identity: b(&r, 9),
             is_primary_key: b(&r, 10),
+            is_computed: b(&r, 11),
         });
         push_object_row(&mut cat.objects, s(&r, 0), s(&r, 1), kind, column);
     }
@@ -313,7 +314,8 @@ async fn load_pg(conn: &mut Connection) -> Result<CatalogSnapshot> {
             "SELECT n.nspname, c.relname, c.relkind::text, a.attname, format_type(a.atttypid, a.atttypmod), \
                     (NOT a.attnotnull)::text, \
                     (a.attidentity <> '' OR COALESCE(pg_get_expr(d.adbin, d.adrelid), '') LIKE 'nextval(%')::text, \
-                    EXISTS (SELECT 1 FROM pg_index i WHERE i.indrelid = c.oid AND i.indisprimary AND a.attnum = ANY(i.indkey))::text \
+                    EXISTS (SELECT 1 FROM pg_index i WHERE i.indrelid = c.oid AND i.indisprimary AND a.attnum = ANY(i.indkey))::text, \
+                    (COALESCE(to_jsonb(a) ->> 'attgenerated', '') <> '')::text \
              FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
              LEFT JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped \
              LEFT JOIN pg_attrdef d ON d.adrelid = c.oid AND d.adnum = a.attnum \
@@ -333,6 +335,7 @@ async fn load_pg(conn: &mut Connection) -> Result<CatalogSnapshot> {
             nullable: b(&r, 5),
             is_identity: b(&r, 6),
             is_primary_key: b(&r, 7),
+            is_computed: b(&r, 8),
         });
         push_object_row(&mut cat.objects, s(&r, 0), s(&r, 1), kind, column);
     }
@@ -466,6 +469,7 @@ async fn load_mysql(conn: &mut Connection) -> Result<CatalogSnapshot> {
             data_type: s(&r, 4),
             nullable: b(&r, 5),
             is_identity: s(&r, 6).contains("auto_increment"),
+            is_computed: s(&r, 6).contains("GENERATED"),
             is_primary_key: s(&r, 7) == "PRI",
         };
         push_object_row(&mut cat.objects, s(&r, 0), s(&r, 1), kind, Some(column));
@@ -561,7 +565,7 @@ mod tests {
     fn mssql_types() {
         assert_eq!(mssql_type("nvarchar", 100, 0, 0), "nvarchar(50)");
         assert_eq!(mssql_type("varchar", -1, 0, 0), "varchar(max)");
-        assert_eq!(mssql_type("decimal", 9, 18, 2), "decimal(18,2)");
+        assert_eq!(mssql_type("decimal", 9, 18, 2), "decimal(18, 2)");
         assert_eq!(mssql_type("datetime2", 8, 27, 7), "datetime2");
         assert_eq!(mssql_type("int", 4, 10, 0), "int");
     }

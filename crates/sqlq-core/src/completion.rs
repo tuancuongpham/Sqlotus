@@ -8,6 +8,7 @@ use crate::catalog::{Catalog, DbObject, ObjectKind};
 use crate::format::KeywordCase;
 use crate::lexer::{Token, TokenKind, tokenize};
 use crate::scope::{DocSymbols, Scope, TableRef, analyze_statement, document_symbols};
+use crate::script;
 use crate::snippet::{Snippet, to_monaco};
 use crate::statements::statement_at;
 use crate::{Dialect, keywords};
@@ -89,7 +90,11 @@ enum Context {
     Relation {
         alias: bool,
         join: bool,
+        /// `INSERT INTO |`: tables expand to a full INSERT statement.
+        insert: bool,
     },
+    /// `GROUP BY |`: offer the non-aggregated SELECT items.
+    GroupBy,
     Procedure,
     /// `INSERT INTO t (|`
     InsertColumns,
@@ -109,6 +114,7 @@ struct Ctx<'a> {
     before: Vec<Token<'a>>,
     /// The word being typed.
     prefix: String,
+    replace_start: usize,
     items: Vec<CompletionItem>,
 }
 
@@ -196,6 +202,7 @@ pub fn complete(
         doc: document_symbols(src, dialect),
         before,
         prefix: prefix.to_string(),
+        replace_start,
         items: Vec::new(),
     };
 
@@ -210,7 +217,15 @@ pub fn complete(
                 cx.general(snippets);
             }
             _ => match cx.context() {
-                Context::Relation { alias, join } => cx.relations(alias, join),
+                Context::Relation {
+                    alias,
+                    join,
+                    insert,
+                } => cx.relations(alias, join, insert),
+                Context::GroupBy => {
+                    cx.group_by();
+                    cx.general(snippets);
+                }
                 Context::Procedure => cx.procedures(),
                 Context::InsertColumns => cx.insert_columns(),
                 Context::JoinCondition => {
@@ -297,20 +312,32 @@ impl<'a> Ctx<'a> {
                     return Context::Relation {
                         alias: true,
                         join: false,
+                        insert: false,
                     };
                 }
                 "JOIN" => {
                     return Context::Relation {
                         alias: true,
                         join: true,
+                        insert: false,
                     };
                 }
-                "UPDATE" | "INTO" | "TABLE" | "USING" | "TRUNCATE" => {
+                "INSERT" | "INTO" => {
+                    let insert = last.upper() == "INSERT" || self.last_upper(1) == "INSERT";
                     return Context::Relation {
                         alias: false,
                         join: false,
+                        insert,
                     };
                 }
+                "UPDATE" | "TABLE" | "USING" | "TRUNCATE" => {
+                    return Context::Relation {
+                        alias: false,
+                        join: false,
+                        insert: false,
+                    };
+                }
+                "BY" if self.last_upper(1) == "GROUP" => return Context::GroupBy,
                 "EXEC" | "EXECUTE" | "CALL" => return Context::Procedure,
                 "ON" if self.after_join() => return Context::JoinCondition,
                 _ => {}
@@ -324,6 +351,7 @@ impl<'a> Ctx<'a> {
             return Context::Relation {
                 alias: true,
                 join: false,
+                insert: false,
             };
         }
         Context::General
@@ -430,6 +458,7 @@ impl<'a> Ctx<'a> {
             columns: Vec::new(),
             local: false,
             start: 0,
+            ..Default::default()
         })
     }
 
@@ -449,6 +478,10 @@ impl<'a> Ctx<'a> {
             };
             let k = self.kw(w);
             self.push(k.clone(), CompletionKind::Keyword, "keyword", k, rank);
+        }
+        for phrase in KEYWORD_PHRASES {
+            let k = self.kw(phrase);
+            self.push(k.clone(), CompletionKind::Keyword, "keyword", k, 6);
         }
     }
 
@@ -531,7 +564,8 @@ impl<'a> Ctx<'a> {
         let tables = self.scope.tables.clone();
         for t in tables {
             let v = t.visible_name().to_string();
-            if v.is_empty() {
+            // the word being typed right after a table looks like its alias
+            if v.is_empty() || v.eq_ignore_ascii_case(&self.prefix) {
                 continue;
             }
             let detail = match (&t.alias, &t.schema) {
@@ -661,7 +695,75 @@ impl<'a> Ctx<'a> {
             .collect()
     }
 
-    fn relations(&mut self, alias: bool, join: bool) {
+    /// Item for a table after `INSERT INTO`: the whole column list and a
+    /// commented VALUES block, as SQL Prompt does.
+    fn insert_item(&mut self, o: &DbObject, name: String, rank: u8) {
+        let insertable = o.columns.iter().any(|c| c.is_insertable());
+        let insert_text = if insertable {
+            script::insert_tail(o, &name, self.dialect, 4, true)
+        } else {
+            crate::snippet::escape_snippet(&name)
+        };
+        self.items.push(CompletionItem {
+            sort_text: format!("{rank}{}", o.name.to_lowercase()),
+            label: o.name.clone(),
+            kind: Self::object_kind(o.kind),
+            detail: if insertable {
+                format!("{}.{} \u{2014} insert all columns", o.schema, o.name)
+            } else {
+                format!("{}.{}", o.schema, o.name)
+            },
+            insert_text,
+            is_snippet: true,
+            replace_start: None,
+            filter_text: None,
+        });
+    }
+
+    /// Column of the replaced text relative to its line's indentation.
+    fn insert_column(&self) -> usize {
+        let line_start = self.src[..self.replace_start]
+            .rfind('\n')
+            .map_or(0, |i| i + 1);
+        let prefix = &self.src[line_start..self.replace_start];
+        let indent = prefix.chars().take_while(|c| c.is_whitespace()).count();
+        prefix.chars().count() - indent
+    }
+
+    fn exec_item(&mut self, o: &DbObject, name: String) {
+        let col = self.insert_column();
+        self.items.push(CompletionItem {
+            sort_text: format!("0{}", o.name.to_lowercase()),
+            label: o.name.clone(),
+            kind: CompletionKind::Procedure,
+            detail: format!("{}.{}", o.schema, o.name),
+            insert_text: script::exec_tail(o, &name, self.dialect, col, true),
+            is_snippet: true,
+            replace_start: None,
+            filter_text: None,
+        });
+    }
+
+    /// `GROUP BY |`: the SELECT items that are not aggregates, as one item.
+    fn group_by(&mut self) {
+        let items = group_by_items(&self.before, self.src);
+        if items.is_empty() {
+            return;
+        }
+        let text = items.join(", ");
+        self.items.push(CompletionItem {
+            sort_text: "0".into(),
+            label: text.clone(),
+            kind: CompletionKind::Expansion,
+            detail: "non-aggregated columns".into(),
+            insert_text: text,
+            is_snippet: false,
+            replace_start: None,
+            filter_text: None,
+        });
+    }
+
+    fn relations(&mut self, alias: bool, join: bool, insert: bool) {
         let alias = alias && self.opts.assign_aliases;
         let taken = self.existing_aliases();
         if join {
@@ -684,6 +786,12 @@ impl<'a> Ctx<'a> {
         }
         if let Some(cat) = self.catalog {
             for o in cat.objects.iter().filter(|o| o.kind.is_relation()) {
+                if insert {
+                    let name = self.qualified_name(o, false);
+                    let rank = if o.kind == ObjectKind::Table { 2 } else { 3 };
+                    self.insert_item(o, name, rank);
+                    continue;
+                }
                 let mut insert = self.qualified_name(o, false);
                 if alias {
                     insert = format!("{insert} {}", make_alias(&o.name, &taken));
@@ -801,42 +909,7 @@ impl<'a> Ctx<'a> {
             .filter(|o| o.kind == ObjectKind::Procedure)
         {
             let name = self.qualified_name(o, false);
-            let params: Vec<String> = o
-                .params
-                .iter()
-                .enumerate()
-                .map(|(i, p)| {
-                    let n = crate::snippet::escape_snippet(&p.name);
-                    if self.dialect == Dialect::MsSql {
-                        format!("{n} = ${{{}:{n}}}", i + 1)
-                    } else {
-                        format!("${{{}:{n}}}", i + 1)
-                    }
-                })
-                .collect();
-            let insert = match (self.dialect, params.is_empty()) {
-                (_, true) => crate::snippet::escape_snippet(&name),
-                (Dialect::MsSql, false) => format!(
-                    "{} {}",
-                    crate::snippet::escape_snippet(&name),
-                    params.join(", ")
-                ),
-                _ => format!(
-                    "{}({})",
-                    crate::snippet::escape_snippet(&name),
-                    params.join(", ")
-                ),
-            };
-            self.items.push(CompletionItem {
-                sort_text: format!("0{}", o.name.to_lowercase()),
-                label: o.name.clone(),
-                kind: CompletionKind::Procedure,
-                detail: format!("{}.{}", o.schema, o.name),
-                insert_text: insert,
-                is_snippet: true,
-                replace_start: None,
-                filter_text: None,
-            });
+            self.exec_item(o, name);
         }
     }
 
@@ -869,6 +942,8 @@ impl<'a> Ctx<'a> {
             .is_some_and(|t| t.kind == TokenKind::Comma)
             && self.clause_keyword() == "FROM");
         let proc_ctx = matches!(kw_before.as_str(), "EXEC" | "EXECUTE" | "CALL");
+        let insert_ctx = kw_before == "INSERT"
+            || (kw_before == "INTO" && j >= 2 && self.before[j - 2].upper() == "INSERT");
 
         match parts.as_slice() {
             [q] => {
@@ -886,7 +961,7 @@ impl<'a> Ctx<'a> {
                 }
                 if let Some(cat) = self.catalog {
                     if cat.is_schema(q) {
-                        self.schema_objects(q, relation_ctx, proc_ctx);
+                        self.schema_objects(q, relation_ctx, proc_ctx, insert_ctx);
                         return;
                     }
                     if !relation_ctx {
@@ -897,6 +972,7 @@ impl<'a> Ctx<'a> {
                             columns: Vec::new(),
                             local: false,
                             start: 0,
+                            ..Default::default()
                         };
                         self.columns(Some(&t));
                     }
@@ -905,7 +981,7 @@ impl<'a> Ctx<'a> {
             [a, b] => {
                 if let Some(cat) = self.catalog {
                     if cat.database.eq_ignore_ascii_case(a) && cat.is_schema(b) {
-                        self.schema_objects(b, relation_ctx, proc_ctx);
+                        self.schema_objects(b, relation_ctx, proc_ctx, insert_ctx);
                         return;
                     }
                 }
@@ -916,6 +992,7 @@ impl<'a> Ctx<'a> {
                     columns: Vec::new(),
                     local: false,
                     start: 0,
+                    ..Default::default()
                 };
                 self.columns(Some(&t));
             }
@@ -927,6 +1004,7 @@ impl<'a> Ctx<'a> {
                     columns: Vec::new(),
                     local: false,
                     start: 0,
+                    ..Default::default()
                 };
                 self.columns(Some(&t));
             }
@@ -934,7 +1012,13 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    fn schema_objects(&mut self, schema: &str, relation_ctx: bool, proc_ctx: bool) {
+    fn schema_objects(
+        &mut self,
+        schema: &str,
+        relation_ctx: bool,
+        proc_ctx: bool,
+        insert_ctx: bool,
+    ) {
         let Some(cat) = self.catalog else { return };
         let taken = self.existing_aliases();
         let alias = relation_ctx
@@ -954,6 +1038,14 @@ impl<'a> Ctx<'a> {
                 o.kind != ObjectKind::Procedure && o.kind != ObjectKind::Trigger
             };
             if !wanted {
+                continue;
+            }
+            if insert_ctx && o.kind.is_relation() {
+                self.insert_item(o, self.quote(&o.name), 0);
+                continue;
+            }
+            if proc_ctx {
+                self.exec_item(o, self.quote(&o.name));
                 continue;
             }
             let mut insert = self.quote(&o.name);
@@ -1027,6 +1119,153 @@ fn join_condition(a: &str, acols: &[String], b: &str, bcols: &[String], d: Diale
         })
         .collect::<Vec<_>>()
         .join(" AND ")
+}
+
+const KEYWORD_PHRASES: &[&str] = &[
+    "INNER JOIN",
+    "LEFT JOIN",
+    "LEFT OUTER JOIN",
+    "RIGHT JOIN",
+    "FULL OUTER JOIN",
+    "CROSS JOIN",
+    "CROSS APPLY",
+    "OUTER APPLY",
+    "GROUP BY",
+    "ORDER BY",
+    "PARTITION BY",
+    "UNION ALL",
+    "IS NULL",
+    "IS NOT NULL",
+    "NOT EXISTS",
+    "NOT IN",
+    "INSERT INTO",
+    "DELETE FROM",
+    "BEGIN TRANSACTION",
+    "COMMIT TRANSACTION",
+    "ROLLBACK TRANSACTION",
+    "BEGIN TRY",
+    "BEGIN CATCH",
+    "SET NOCOUNT ON",
+];
+
+const AGGREGATES: &[&str] = &[
+    "COUNT",
+    "COUNT_BIG",
+    "SUM",
+    "AVG",
+    "MIN",
+    "MAX",
+    "STRING_AGG",
+    "ARRAY_AGG",
+    "GROUP_CONCAT",
+    "JSON_AGG",
+    "JSONB_AGG",
+    "STDEV",
+    "STDEVP",
+    "STDDEV",
+    "VAR",
+    "VARP",
+    "VARIANCE",
+    "LISTAGG",
+    "BOOL_AND",
+    "BOOL_OR",
+    "CHECKSUM_AGG",
+    "GROUPING",
+];
+
+/// SELECT items of the query before `GROUP BY` that are not aggregates,
+/// without their aliases.
+fn group_by_items(before: &[Token<'_>], src: &str) -> Vec<String> {
+    // `before` ends with GROUP BY; find the SELECT of this query level
+    let end = before.len().saturating_sub(2);
+    let mut depth = 0i32;
+    let mut select = None;
+    let mut from = None;
+    for i in (0..end).rev() {
+        match before[i].kind {
+            TokenKind::RParen => depth += 1,
+            TokenKind::LParen => depth -= 1,
+            TokenKind::Word if depth == 0 => match before[i].upper().as_str() {
+                "FROM" => from = Some(i),
+                "SELECT" => {
+                    select = Some(i);
+                    break;
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+        if depth < 0 {
+            break;
+        }
+    }
+    let (Some(sel), Some(from)) = (select, from) else {
+        return Vec::new();
+    };
+    let mut i = sel + 1;
+    while i < from && matches!(before[i].upper().as_str(), "DISTINCT" | "ALL") {
+        i += 1;
+    }
+    if i < from && before[i].upper() == "TOP" {
+        i += 1;
+        if before.get(i).is_some_and(|t| t.kind == TokenKind::LParen) {
+            while i < from && before[i].kind != TokenKind::RParen {
+                i += 1;
+            }
+        }
+        i += 1;
+    }
+    let mut items = Vec::new();
+    let mut current: Vec<Token<'_>> = Vec::new();
+    let mut depth = 0i32;
+    for t in &before[i.min(from)..from] {
+        match t.kind {
+            TokenKind::LParen => depth += 1,
+            TokenKind::RParen => depth -= 1,
+            TokenKind::Comma if depth == 0 => {
+                items.push(std::mem::take(&mut current));
+                continue;
+            }
+            _ => {}
+        }
+        current.push(*t);
+    }
+    items.push(current);
+    items
+        .into_iter()
+        .filter_map(|item| {
+            let is_aggregate = item.windows(2).any(|w| {
+                w[1].kind == TokenKind::LParen && AGGREGATES.contains(&w[0].upper().as_str())
+            });
+            if item.is_empty() || is_aggregate {
+                return None;
+            }
+            let mut toks: &[Token<'_>] = &item;
+            // `alias = expr` (T-SQL)
+            if toks.len() > 2 && toks[0].is_name() && toks[1].text == "=" {
+                toks = &toks[2..];
+            }
+            if let Some(p) = toks.iter().rposition(|t| t.upper() == "AS") {
+                // `expr AS alias`
+                toks = &toks[..p];
+            } else if toks.len() >= 2
+                && toks[toks.len() - 1].is_name()
+                && (toks[toks.len() - 2].is_name()
+                    || toks[toks.len() - 2].kind == TokenKind::RParen)
+            {
+                // `expr alias`
+                toks = &toks[..toks.len() - 1];
+            }
+            let (first, last) = (toks.first()?, toks.last()?);
+            if toks.len() == 1 && matches!(first.kind, TokenKind::Number | TokenKind::String) {
+                return None;
+            }
+            if toks.iter().any(|t| t.text == "*") {
+                return None;
+            }
+            Some(src[first.start..last.end()].to_string())
+        })
+        .collect()
 }
 
 /// Alias from the capitals / word starts of a name: `OrderDetails` -> `od`,
@@ -1126,6 +1365,7 @@ mod tests {
             nullable: false,
             is_primary_key: false,
             is_identity: false,
+            is_computed: false,
         }
     }
 
@@ -1147,7 +1387,11 @@ mod tests {
                     name: "Orders".into(),
                     kind: ObjectKind::Table,
                     columns: vec![
-                        col("Id", "int"),
+                        Column {
+                            is_identity: true,
+                            is_primary_key: true,
+                            ..col("Id", "int")
+                        },
                         col("CustomerId", "int"),
                         col("Total", "money"),
                     ],
@@ -1286,10 +1530,54 @@ mod tests {
     #[test]
     fn exec_inserts_params() {
         let r = run("EXEC Get|");
-        assert_eq!(
-            r.items[0].insert_text,
-            "dbo.GetOrders @CustomerId = ${1:@CustomerId}"
+        let t = &r.items[0].insert_text;
+        assert!(t.starts_with("dbo.GetOrders @CustomerId = ${1:0}"), "{t}");
+        assert!(t.ends_with("-- int"), "{t}");
+    }
+
+    #[test]
+    fn insert_into_expands_columns() {
+        let r = run("INSERT INTO dbo.Ord|");
+        let t = &r.items[0].insert_text;
+        assert!(
+            t.starts_with(
+                "Orders
+(
+    CustomerId,
+    Total
+)
+VALUES
+(   ${1:NULL}, -- CustomerId - int"
+            ),
+            "{t}"
         );
+        let r = run("INSERT INTO Ord|");
+        assert!(
+            r.items[0].insert_text.starts_with(
+                "dbo.Orders
+(
+"
+            ),
+            "{}",
+            r.items[0].insert_text
+        );
+        // SELECT ... INTO is not an INSERT
+        let r = run("SELECT * INTO Ord|");
+        assert!(!r.items.iter().any(|i| i.insert_text.contains("VALUES")));
+    }
+
+    #[test]
+    fn group_by_suggests_non_aggregates() {
+        let r = run(
+            "SELECT o.CustomerId, YEAR(o.Total) AS y, COUNT(*) AS n, SUM(o.Total) total FROM dbo.Orders o GROUP BY |",
+        );
+        assert_eq!(r.items[0].insert_text, "o.CustomerId, YEAR(o.Total)");
+    }
+
+    #[test]
+    fn keyword_phrases() {
+        let r = run("SELECT * FROM a inn|");
+        assert_eq!(r.items[0].label, "INNER JOIN");
     }
 
     #[test]

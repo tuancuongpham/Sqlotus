@@ -6,8 +6,10 @@ use crate::Dialect;
 use crate::keywords;
 use crate::lexer::{Token, TokenKind, tokenize};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TableRef {
+    /// Database part of a three-part name.
+    pub database: Option<String>,
     pub schema: Option<String>,
     pub name: String,
     pub alias: Option<String>,
@@ -17,6 +19,14 @@ pub struct TableRef {
     pub local: bool,
     /// Byte offset of the reference in the source.
     pub start: usize,
+    /// Byte range of the object name token (the last name part).
+    pub name_start: usize,
+    pub name_end: usize,
+    /// Followed by `(`: a table-valued function call.
+    pub is_call: bool,
+    /// Keyword that introduced the reference (`FROM`, `JOIN`, `INTO`,
+    /// `UPDATE`, ...), or `,` for comma-separated FROM lists.
+    pub via: String,
 }
 
 impl TableRef {
@@ -179,7 +189,7 @@ fn analyze_sig(t: &[Token<'_>], dialect: Dialect, scope: &mut Scope) {
                 continue;
             }
             TokenKind::Comma if from_depths.contains(&depth) => {
-                i = table_refs(t, i + 1, dialect, scope);
+                i = table_refs(t, i + 1, dialect, scope, ",");
                 continue;
             }
             TokenKind::Word => {}
@@ -197,7 +207,17 @@ fn analyze_sig(t: &[Token<'_>], dialect: Dialect, scope: &mut Scope) {
                 if upper == "FROM" && !from_depths.contains(&depth) {
                     from_depths.push(depth);
                 }
-                i = table_refs(t, i + 1, dialect, scope).max(i + 1);
+                let via = if upper == "INTO"
+                    && i > 0
+                    && t[i - 1].upper() != "INSERT"
+                    && t[i - 1].upper() != "MERGE"
+                {
+                    // SELECT ... INTO creates the table
+                    "SELECT INTO".to_string()
+                } else {
+                    upper.clone()
+                };
+                i = table_refs(t, i + 1, dialect, scope, &via).max(i + 1);
             }
             "WHERE" | "GROUP" | "ORDER" | "HAVING" | "SELECT" | "UNION" | "EXCEPT"
             | "INTERSECT" | "SET" | "LIMIT" | "WINDOW" | "OPTION" | "VALUES" => {
@@ -210,10 +230,11 @@ fn analyze_sig(t: &[Token<'_>], dialect: Dialect, scope: &mut Scope) {
 }
 
 /// Parse one table reference at `k`; derived tables are also analyzed.
-fn table_refs(t: &[Token<'_>], k: usize, dialect: Dialect, scope: &mut Scope) -> usize {
-    let Some((r, next)) = parse_table_ref(t, k, dialect) else {
+fn table_refs(t: &[Token<'_>], k: usize, dialect: Dialect, scope: &mut Scope, via: &str) -> usize {
+    let Some((mut r, next)) = parse_table_ref(t, k, dialect) else {
         return k;
     };
+    r.via = via.to_string();
     if t.get(k).is_some_and(|x| x.kind == TokenKind::LParen) {
         let close = matching_paren(t, k).min(t.len());
         analyze_sig(&t[k + 1..close], dialect, scope);
@@ -271,6 +292,9 @@ fn parse_ctes(t: &[Token<'_>], mut i: usize, dialect: Dialect, scope: &mut Scope
 fn parse_table_ref(t: &[Token<'_>], mut i: usize, dialect: Dialect) -> Option<(TableRef, usize)> {
     let first = t.get(i)?;
     let start = first.start;
+    let (mut name_start, mut name_end) = (first.start, first.end());
+    let mut is_call = false;
+    let mut database = None;
     let (schema, name, columns, local) = match first.kind {
         TokenKind::LParen => {
             let close = matching_paren(t, i);
@@ -288,6 +312,7 @@ fn parse_table_ref(t: &[Token<'_>], mut i: usize, dialect: Dialect) -> Option<(T
                 match t.get(i + 1).filter(|n| n.is_name()) {
                     Some(n) => {
                         parts.push(n.ident_value());
+                        (name_start, name_end) = (n.start, n.end());
                         i += 2;
                     }
                     None => {
@@ -301,9 +326,11 @@ fn parse_table_ref(t: &[Token<'_>], mut i: usize, dialect: Dialect) -> Option<(T
             // table-valued function arguments
             if t.get(i).is_some_and(|n| n.kind == TokenKind::LParen) {
                 i = matching_paren(t, i) + 1;
+                is_call = true;
             }
             let name = parts.pop().unwrap_or_default();
             let schema = parts.pop();
+            database = parts.pop();
             let local = name.starts_with('#') || name.starts_with('@');
             (schema, name, Vec::new(), local)
         }
@@ -332,6 +359,11 @@ fn parse_table_ref(t: &[Token<'_>], mut i: usize, dialect: Dialect) -> Option<(T
     };
     Some((
         TableRef {
+            database,
+            name_start,
+            name_end,
+            is_call,
+            via: String::new(),
             schema,
             name,
             alias,

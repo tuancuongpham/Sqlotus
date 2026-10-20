@@ -43,6 +43,17 @@ pub struct Column {
     pub is_primary_key: bool,
     #[serde(default)]
     pub is_identity: bool,
+    /// Computed / generated column: cannot be inserted or updated.
+    #[serde(default)]
+    pub is_computed: bool,
+}
+
+impl Column {
+    /// Whether INSERT statements should list this column.
+    pub fn is_insertable(&self) -> bool {
+        let ty = self.data_type.to_ascii_lowercase();
+        !self.is_identity && !self.is_computed && ty != "timestamp" && ty != "rowversion"
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
