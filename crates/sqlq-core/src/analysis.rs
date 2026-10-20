@@ -251,6 +251,7 @@ pub fn diagnostics(src: &str, dialect: Dialect, catalog: Option<&Catalog>) -> Ve
         null_comparison(&t, &mut out);
         if dialect == Dialect::MsSql {
             deprecated_types(&t, &mut out);
+            unicode_without_n(&t, &mut out);
         }
         if let Some(cat) = catalog {
             let scope = analyze_statement(&stmt_tokens, dialect);
@@ -358,6 +359,21 @@ fn null_comparison(t: &[Token<'_>], out: &mut Vec<Diagnostic>) {
                 Severity::Warning,
                 "SQ003",
                 format!("Comparison with NULL is never true; use {fix}"),
+            ));
+        }
+    }
+}
+
+/// `'Nguyễn'` without the N prefix: SQL Server converts the literal to the
+/// database code page first, so characters outside it become `?`.
+fn unicode_without_n(t: &[Token<'_>], out: &mut Vec<Diagnostic>) {
+    for tok in t {
+        if tok.kind == TokenKind::String && tok.text.starts_with('\'') && !tok.text.is_ascii() {
+            out.push(diag(
+                tok,
+                Severity::Warning,
+                "SQ008",
+                "Unicode text without the N prefix may be stored as '?' — write N'…'".into(),
             ));
         }
     }
@@ -1085,6 +1101,19 @@ mod tests {
                 .iter()
                 .all(|c| c == "SQ002")
         );
+    }
+
+    #[test]
+    fn unicode_literals_need_n_prefix() {
+        assert_eq!(
+            codes("SELECT Id FROM dbo.Orders WHERE Total = 'Nguyễn'"),
+            vec!["SQ008"]
+        );
+        assert!(
+            codes("SELECT Id FROM dbo.Orders WHERE Total = N'Nguyễn' OR Total = 'abc'").is_empty()
+        );
+        let pg = diagnostics("SELECT 'Nguyễn'", Dialect::Postgres, None);
+        assert!(pg.is_empty());
     }
 
     #[test]

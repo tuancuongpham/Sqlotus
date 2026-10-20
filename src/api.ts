@@ -1,6 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   CatalogInfo,
+  DbObject,
+  Diagnostic,
+  EditorArgs,
+  RefactorAction,
+  ScriptKind,
+  SignatureInfo,
   CompletionResult,
   ConnectionConfig,
   Dialect,
@@ -72,6 +78,16 @@ export const api = {
   historyMarkClosed: (tabId: string) => invoke<void>("history_mark_closed", { tabId }),
   historyRecentlyClosed: (limit = 20) => invoke<HistoryEntry[]>("history_recently_closed", { limit }),
   historyDelete: (id: number) => invoke<void>("history_delete", { id }),
+
+  diagnostics: (args: EditorArgs) => invoke<Diagnostic[]>("diagnostics", { args }),
+  executionWarnings: (text: string, dialect: Dialect) => invoke<string[]>("execution_warnings", { text, dialect }),
+  hover: (args: EditorArgs) => invoke<{ start: number; end: number; contents: string } | null>("hover", { args }),
+  signatureHelp: (args: EditorArgs) => invoke<SignatureInfo | null>("signature_help", { args }),
+  objectAt: (args: EditorArgs) => invoke<{ schema: string; name: string; kind: string } | null>("object_at", { args }),
+  refactorText: (args: EditorArgs, action: RefactorAction) => invoke<string>("refactor_text", { args, action }),
+  catalogObjects: (connectionId: string, database: string) => invoke<DbObject[]>("catalog_objects", { connectionId, database }),
+  scriptObject: (connectionId: string, database: string, schema: string, name: string, dialect: Dialect, kind: ScriptKind) =>
+    invoke<string>("script_object", { connectionId, database, schema, name, dialect, kind }),
 };
 
 export function errorText(e: unknown): string {

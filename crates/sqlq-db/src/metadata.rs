@@ -220,7 +220,7 @@ async fn load_mssql(conn: &mut Connection) -> Result<CatalogSnapshot> {
              WHERE o.is_ms_shipped = 0",
         )
         .await?;
-    let definitions = defs
+    let definitions: Vec<ObjectDefinition> = defs
         .into_iter()
         .filter_map(|r| {
             Some(ObjectDefinition {
@@ -231,10 +231,65 @@ async fn load_mssql(conn: &mut Connection) -> Result<CatalogSnapshot> {
             })
         })
         .collect();
+    // sys.parameters.has_default_value is only set for CLR modules; read
+    // T-SQL defaults (`@p int = 0`) from the module header instead.
+    for d in &definitions {
+        let defaults = tsql_parameter_defaults(&d.definition);
+        if defaults.is_empty() {
+            continue;
+        }
+        if let Some(o) = cat
+            .objects
+            .iter_mut()
+            .find(|o| o.schema == d.schema && o.name == d.name)
+        {
+            for p in &mut o.params {
+                if defaults.iter().any(|n| n.eq_ignore_ascii_case(&p.name)) {
+                    p.has_default = true;
+                }
+            }
+        }
+    }
     Ok(CatalogSnapshot {
         catalog: cat,
         definitions,
     })
+}
+
+/// Parameters with a default value in a T-SQL CREATE PROCEDURE/FUNCTION
+/// header: `@name type = value` before the body's `AS`.
+fn tsql_parameter_defaults(definition: &str) -> Vec<String> {
+    use sqlq_core::lexer::{TokenKind, tokenize};
+    let tokens: Vec<_> = tokenize(definition, sqlq_core::Dialect::MsSql)
+        .into_iter()
+        .filter(|t| !t.is_trivia())
+        .collect();
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut current: Option<String> = None;
+    let mut seen_param = false;
+    for t in &tokens {
+        match t.kind {
+            TokenKind::LParen => depth += 1,
+            TokenKind::RParen => depth -= 1,
+            TokenKind::Word if t.text.eq_ignore_ascii_case("AS") && depth <= 0 && seen_param => {
+                break;
+            }
+            TokenKind::Word if t.text.eq_ignore_ascii_case("RETURNS") => break,
+            TokenKind::Variable if depth <= 1 => {
+                seen_param = true;
+                current = Some(t.text.to_string());
+            }
+            TokenKind::Comma if depth <= 1 => current = None,
+            TokenKind::Operator if t.text == "=" && depth <= 1 => {
+                if let Some(c) = current.take() {
+                    out.push(c);
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -568,6 +623,14 @@ mod tests {
         assert_eq!(mssql_type("decimal", 9, 18, 2), "decimal(18, 2)");
         assert_eq!(mssql_type("datetime2", 8, 27, 7), "datetime2");
         assert_eq!(mssql_type("int", 4, 10, 0), "int");
+    }
+
+    #[test]
+    fn tsql_defaults() {
+        let d = "CREATE PROCEDURE dbo.p @a INT, @b DATE = NULL, @c NVARCHAR(10) = N'x' OUTPUT AS SELECT @a = 1";
+        assert_eq!(tsql_parameter_defaults(d), vec!["@b", "@c"]);
+        let f = "CREATE FUNCTION dbo.f (@x INT = 0, @y INT) RETURNS INT AS BEGIN RETURN @x END";
+        assert_eq!(tsql_parameter_defaults(f), vec!["@x"]);
     }
 
     #[test]

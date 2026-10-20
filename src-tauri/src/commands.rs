@@ -16,15 +16,15 @@ use tauri::State;
 
 use crate::state::{AppState, Running, Session, Settings};
 
-type CmdResult<T> = Result<T, String>;
+pub(crate) type CmdResult<T> = Result<T, String>;
 
-fn err(e: impl std::fmt::Display) -> String {
+pub(crate) fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
 
 /// Run editor-path code (completion, formatting, ...) so a bug in it becomes
 /// an error for that one request instead of taking the whole app down.
-fn no_panic<T>(what: &str, f: impl FnOnce() -> T) -> CmdResult<T> {
+pub(crate) fn no_panic<T>(what: &str, f: impl FnOnce() -> T) -> CmdResult<T> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(|p| {
         let msg = p
             .downcast_ref::<String>()
@@ -461,7 +461,10 @@ pub struct CompleteArgs {
 }
 
 #[tauri::command]
-pub fn complete(state: State<'_, AppState>, args: CompleteArgs) -> CmdResult<CompletionResult> {
+pub async fn complete(
+    state: State<'_, AppState>,
+    args: CompleteArgs,
+) -> CmdResult<CompletionResult> {
     let catalog = match (&args.connection_id, &args.database) {
         (Some(c), Some(d)) => state.cached_catalog(c, d),
         _ => None,
@@ -584,37 +587,7 @@ pub fn object_script(
         .catalog
         .find(Some(&schema), &name)
         .ok_or("object not found")?;
-    let q = |s: &str| match dialect {
-        Dialect::MsSql => format!("[{}]", s.replace(']', "]]")),
-        _ => dialect.quote_ident(s),
-    };
-    let mut lines: Vec<String> = obj
-        .columns
-        .iter()
-        .map(|c| {
-            let mut l = format!("    {} {}", q(&c.name), c.data_type);
-            if c.is_identity && dialect == Dialect::MsSql {
-                l.push_str(" IDENTITY");
-            }
-            l.push_str(if c.nullable { " NULL" } else { " NOT NULL" });
-            l
-        })
-        .collect();
-    let pk: Vec<String> = obj
-        .columns
-        .iter()
-        .filter(|c| c.is_primary_key)
-        .map(|c| q(&c.name))
-        .collect();
-    if !pk.is_empty() {
-        lines.push(format!("    PRIMARY KEY ({})", pk.join(", ")));
-    }
-    Ok(format!(
-        "CREATE TABLE {}.{} (\n{}\n);",
-        q(&obj.schema),
-        q(&obj.name),
-        lines.join(",\n")
-    ))
+    Ok(sqlq_core::script::create_table_script(obj, dialect))
 }
 
 // ---------------------------------------------------------------------------

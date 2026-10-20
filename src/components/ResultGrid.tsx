@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ResultSet } from "../types";
+import type { Dialect, ResultSet } from "../types";
 
 const ROW_H = 24;
 const OVERSCAN = 10;
@@ -24,12 +24,44 @@ function toTsv(rs: ResultSet, rows: (string | null)[][], headers: boolean): stri
   return lines.join("\r\n");
 }
 
+const NUMERIC = /^(tinyint|smallint|int|bigint|decimal|numeric|money|smallmoney|float|real|bit|integer|double|serial|bigserial|int[248]?|float[48]|LONGLONG|LONG|SHORT|TINY|NEWDECIMAL|DOUBLE|FLOAT)/i;
+
+function sqlLiteral(v: string | null, typeName: string, dialect: Dialect): string {
+  if (v == null) return "NULL";
+  const numeric = typeName ? NUMERIC.test(typeName) : /^-?\d+(\.\d+)?$/.test(v);
+  if (numeric && /^-?\d+(\.\d+)?(e-?\d+)?$/i.test(v)) return v;
+  if (typeName === "varbinary" || typeName === "binary") return v;
+  const quoted = `'${v.replace(/'/g, "''")}'`;
+  return dialect === "mssql" ? `N${quoted}` : quoted;
+}
+
+/** Rows as INSERT statements (1000-row VALUES batches, the SQL Server limit). */
+function toInsert(rs: ResultSet, rows: (string | null)[][], dialect: Dialect): string {
+  const q = (n: string) => (dialect === "mssql" ? `[${n.replace(/]/g, "]]")}]` : dialect === "mysql" ? `\`${n}\`` : `"${n}"`);
+  const target = dialect === "mssql" ? "#Results" : "results";
+  const cols = rs.columns.map((c) => q(c.name || "column")).join(", ");
+  const parts: string[] = [];
+  for (let i = 0; i < rows.length; i += 1000) {
+    const values = rows
+      .slice(i, i + 1000)
+      .map((r) => `(${r.map((v, j) => sqlLiteral(v, rs.columns[j].typeName, dialect)).join(", ")})`)
+      .join(",\n       ");
+    parts.push(`INSERT INTO ${target} (${cols})\nVALUES ${values};`);
+  }
+  return parts.join("\n\n");
+}
+
+function toCsv(rs: ResultSet, rows: (string | null)[][]): string {
+  const esc = (v: string | null) => (v == null ? "" : /[",\r\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+  return [rs.columns.map((c) => esc(c.name)).join(","), ...rows.map((r) => r.map(esc).join(","))].join("\r\n");
+}
+
 interface Cell {
   row: number;
   col: number;
 }
 
-export function ResultGrid({ rs }: { rs: ResultSet }) {
+export function ResultGrid({ rs, dialect = "mssql" }: { rs: ResultSet; dialect?: Dialect }) {
   const [scrollTop, setScrollTop] = useState(0);
   const [height, setHeight] = useState(300);
   const [selected, setSelected] = useState<Cell | null>(null);
@@ -61,6 +93,20 @@ export function ResultGrid({ rs }: { rs: ResultSet }) {
       text = toTsv(rs, rs.rows, headers);
     }
     void navigator.clipboard.writeText(text);
+  };
+
+  const targetRows = () => (selRows.size > 0 ? [...selRows].sort((a, b) => a - b).map((i) => rs.rows[i]) : rs.rows);
+
+  const copyAs = (format: string) => {
+    let text = "";
+    if (format === "insert") text = toInsert(rs, targetRows(), dialect);
+    else if (format === "csv") text = toCsv(rs, targetRows());
+    else if (format === "in") {
+      const col = selected?.col ?? 0;
+      const values = [...new Set(targetRows().map((r) => r[col]))];
+      text = `(${values.map((v) => sqlLiteral(v, rs.columns[col].typeName, dialect)).join(", ")})`;
+    }
+    if (text) void navigator.clipboard.writeText(text);
   };
 
   const onKeyDown = (e: React.KeyboardEvent) => {
@@ -137,6 +183,22 @@ export function ResultGrid({ rs }: { rs: ResultSet }) {
         </span>
         <button onClick={() => copy(false)} title="Ctrl+C">Copy</button>
         <button onClick={() => copy(true)} title="Ctrl+Shift+C">Copy with headers</button>
+        <select
+          className="copy-as"
+          value=""
+          title="Copy the selected rows (or all rows) in another format"
+          onChange={(e) => {
+            copyAs(e.target.value);
+            e.target.value = "";
+          }}
+        >
+          <option value="" disabled>
+            Copy as…
+          </option>
+          <option value="insert">INSERT statements</option>
+          <option value="csv">CSV</option>
+          <option value="in">IN (…) list of the column</option>
+        </select>
       </div>
       <div
         className="grid"

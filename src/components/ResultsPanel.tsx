@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import type { ExecuteResult } from "../types";
+import type { Dialect, ExecuteResult } from "../types";
 import { ResultGrid } from "./ResultGrid";
 
-export function ResultsPanel({ result, running }: { result?: ExecuteResult; running: boolean }) {
+export function ResultsPanel({ result, running, dialect }: { result?: ExecuteResult; running: boolean; dialect?: Dialect }) {
   const sets = result?.batches.flatMap((b) => b.output.resultSets) ?? [];
   const messages = result?.batches.flatMap((b) => b.output.messages) ?? [];
   const failed = result?.batches.some((b) => b.output.failed) ?? false;
@@ -39,7 +39,7 @@ export function ResultsPanel({ result, running }: { result?: ExecuteResult; runn
       </div>
       <div className="results-body">
         {active >= 0 && sets[active] ? (
-          <ResultGrid key={`${result.batches.length}-${active}-${elapsed}`} rs={sets[active]} />
+          <ResultGrid key={`${result.batches.length}-${active}-${elapsed}`} rs={sets[active]} dialect={dialect} />
         ) : (
           <pre className="messages">
             {messages.map((m, i) => (

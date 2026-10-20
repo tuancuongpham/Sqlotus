@@ -1,12 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, errorText, newId } from "./api";
 import { ConnectionDialog } from "./components/ConnectionDialog";
+import { ExplorerPanel } from "./components/ExplorerPanel";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { ResultsPanel } from "./components/ResultsPanel";
 import { SearchPanel } from "./components/SearchPanel";
 import { SettingsDialog } from "./components/SettingsDialog";
-import { bindModelContext, expandWildcard, languageFor, monaco, registerProviders, unbindModelContext } from "./monaco";
-import type { Dialect, HistoryEntry, SavedConnection, Settings, Tab } from "./types";
+import {
+  bindModelContext,
+  editorArgs,
+  expandWildcard,
+  languageFor,
+  monaco,
+  registerProviders,
+  unbindModelContext,
+  updateDiagnostics,
+} from "./monaco";
+import type { Dialect, HistoryEntry, RefactorAction, SavedConnection, Settings, Tab } from "./types";
 
 interface SessionTab {
   id: string;
@@ -17,7 +27,18 @@ interface SessionTab {
   text: string;
 }
 
-type Panel = "search" | "history" | null;
+type Panel = "search" | "history" | "explorer" | null;
+
+const PANEL_TITLE: Record<Exclude<Panel, null>, string> = {
+  search: "SQL Search",
+  history: "SQL History",
+  explorer: "Object Explorer",
+};
+
+interface ConfirmState {
+  messages: string[];
+  resolve: (ok: boolean) => void;
+}
 
 let untitled = 0;
 const nextTitle = () => `SQLQuery${++untitled}.sql`;
@@ -33,6 +54,8 @@ export default function App() {
   const [resultsHeight, setResultsHeight] = useState(280);
   const [panelWidth, setPanelWidth] = useState(520);
   const [status, setStatus] = useState("");
+  const [catalogVersion, setCatalogVersion] = useState(0);
+  const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
   const [cursor, setCursor] = useState({ line: 1, col: 1 });
 
   const editorEl = useRef<HTMLDivElement>(null);
@@ -48,6 +71,19 @@ export default function App() {
   connectionsRef.current = connections;
 
   const activeTab = tabs.find((t) => t.id === activeId);
+
+  /** Resolve once the rendered state of tab `id` satisfies `pred`. */
+  const waitForTab = (id: string, pred: (t: Tab) => boolean, ms = 5000) =>
+    new Promise<boolean>((resolve) => {
+      const end = Date.now() + ms;
+      const tick = () => {
+        const t = tabsRef.current.find((x) => x.id === id);
+        if (t && pred(t)) resolve(true);
+        else if (Date.now() > end) resolve(false);
+        else window.setTimeout(tick, 30);
+      };
+      tick();
+    });
   const connOf = (t?: Tab) => connections.find((c) => c.id === t?.connectionId);
 
   const patchTab = useCallback((id: string, patch: Partial<Tab>) => {
@@ -161,6 +197,7 @@ export default function App() {
     try {
       const info = await api.loadCatalog(tab.connectionId, tab.database, refresh);
       setStatus(`${where}: ${info.objects} objects loaded`);
+      setCatalogVersion((v) => v + 1);
     } catch (e) {
       setStatus(`${where}: object load failed: ${errorText(e)}`);
     }
@@ -236,6 +273,13 @@ export default function App() {
         sql = model.getValue();
       }
       if (!sql.trim()) return;
+      // like SQL Prompt's execution warnings: confirm destructive statements
+      const warnings = await api.executionWarnings(sql, tab.dialect).catch(() => [] as string[]);
+      if (warnings.length > 0) {
+        const ok = await new Promise<boolean>((resolve) => setConfirmState({ messages: warnings, resolve }));
+        setConfirmState(null);
+        if (!ok) return;
+      }
       recordHistory(id, "execute");
       patchTab(id, { running: true });
       setResultsVisible(true);
@@ -278,13 +322,66 @@ export default function App() {
   }, []);
 
   const openText = useCallback(
-    (title: string, text: string, from?: Tab) => {
-      const base = from ?? tabsRef.current.find((t) => t.id === activeRef.current);
+    async (title: string, text: string, run = false) => {
+      const base = tabsRef.current.find((t) => t.id === activeRef.current);
       const tab = createTab({ title, text, dialect: base?.dialect, connectionId: base?.connectionId, database: base?.database });
       const conn = connectionsRef.current.find((c) => c.id === base?.connectionId);
-      if (conn && base?.connected) connectTab(tab.id, conn, null, base.database).catch(() => undefined);
+      if (conn && base?.connected) {
+        try {
+          await connectTab(tab.id, conn, null, base.database);
+          // execute reads tab state from the last render; wait for it
+          if (run && (await waitForTab(tab.id, (t) => t.connected))) await actions.current.execute("auto");
+        } catch {
+          // reported in the status bar
+        }
+      }
     },
     [createTab, connectTab],
+  );
+
+  /** Apply a whole-document refactoring as one undoable edit. */
+  const refactor = useCallback(async (action: RefactorAction) => {
+    const ed = editor.current;
+    const model = ed?.getModel();
+    if (!ed || !model) return;
+    try {
+      const text = await api.refactorText(editorArgs(model), action);
+      if (text === model.getValue()) {
+        setStatus("Nothing to change");
+        return;
+      }
+      ed.pushUndoStop();
+      ed.executeEdits("refactor", [{ range: model.getFullModelRange(), text }]);
+      ed.pushUndoStop();
+    } catch (e) {
+      setStatus(errorText(e));
+    }
+  }, []);
+
+  /** F12: open the definition / CREATE script of the object under the cursor. */
+  const goToDefinition = useCallback(
+    async (kind: "create" | "alter") => {
+      const ed = editor.current;
+      const model = ed?.getModel();
+      const pos = ed?.getPosition();
+      const tab = tabsRef.current.find((t) => t.id === activeRef.current);
+      if (!ed || !model || !pos || !tab?.connected || !tab.connectionId || !tab.database) {
+        setStatus("Connect the tab to open object definitions");
+        return;
+      }
+      try {
+        const obj = await api.objectAt(editorArgs(model, pos));
+        if (!obj) {
+          setStatus("No database object under the cursor");
+          return;
+        }
+        const text = await api.scriptObject(tab.connectionId, tab.database, obj.schema, obj.name, tab.dialect, kind);
+        await openText(`${obj.name}${kind === "alter" ? " (alter)" : ""}`, text);
+      } catch (e) {
+        setStatus(errorText(e));
+      }
+    },
+    [openText],
   );
 
   const openHistory = (e: HistoryEntry) => {
@@ -312,8 +409,8 @@ export default function App() {
   };
 
   // keep the latest handlers reachable from Monaco commands registered once
-  const actions = useRef({ execute, cancel, format, closeTab, createTab, reopenClosed });
-  actions.current = { execute, cancel, format, closeTab, createTab, reopenClosed };
+  const actions = useRef({ execute, cancel, format, closeTab, createTab, reopenClosed, refactor, goToDefinition });
+  actions.current = { execute, cancel, format, closeTab, createTab, reopenClosed, refactor, goToDefinition };
 
   // -- startup ----------------------------------------------------------------
 
@@ -357,6 +454,51 @@ export default function App() {
     );
     ed.onDidChangeCursorPosition((e) => setCursor({ line: e.position.lineNumber, col: e.position.column }));
 
+    // context menu / F1 actions, SQL Prompt style
+    const action = (
+      id: string,
+      label: string,
+      run: () => void,
+      keybindings: number[] = [],
+      group = "1_sqlq",
+      order = 1,
+    ) => ed.addAction({ id, label, keybindings, contextMenuGroupId: group, contextMenuOrder: order, run });
+    action("sqlq.definition", "Go to Definition (script object)", () => void actions.current.goToDefinition("create"), [KC.F12], "0_nav", 1);
+    action("sqlq.alter", "Script as ALTER", () => void actions.current.goToDefinition("alter"), [KM.Alt | KC.F12], "0_nav", 2);
+    action("sqlq.format", "Format SQL", () => actions.current.format(), [], "1_sqlq", 1);
+    action(
+      "sqlq.expandWildcards",
+      "Expand Wildcards",
+      () => void actions.current.refactor("expandWildcards"),
+      [KM.chord(KM.CtrlCmd | KC.KeyB, KM.CtrlCmd | KC.KeyW)],
+      "1_sqlq",
+      2,
+    );
+    action(
+      "sqlq.qualify",
+      "Qualify Object Names",
+      () => void actions.current.refactor("qualifyNames"),
+      [KM.chord(KM.CtrlCmd | KC.KeyB, KM.CtrlCmd | KC.KeyQ)],
+      "1_sqlq",
+      3,
+    );
+    action("sqlq.semicolons", "Insert Semicolons", () => void actions.current.refactor("insertSemicolons"), [], "1_sqlq", 4);
+    action("sqlq.brackets", "Remove Square Brackets", () => void actions.current.refactor("removeBrackets"), [], "1_sqlq", 5);
+    action("sqlq.upper", "Uppercase Keywords", () => void actions.current.refactor("upperKeywords"), [], "1_sqlq", 6);
+    action("sqlq.lower", "Lowercase Keywords", () => void actions.current.refactor("lowerKeywords"), [], "1_sqlq", 7);
+
+    // code analysis while typing
+    let timer: number | undefined;
+    ed.onDidChangeModelContent(() => {
+      window.clearTimeout(timer);
+      const model = ed.getModel();
+      timer = window.setTimeout(() => model && void updateDiagnostics(model), 500);
+    });
+    ed.onDidChangeModel(() => {
+      const model = ed.getModel();
+      if (model) void updateDiagnostics(model);
+    });
+
     (async () => {
       const [s, conns] = await Promise.all([api.getSettings(), api.listConnections()]);
       setSettings(s);
@@ -393,6 +535,12 @@ export default function App() {
     document.documentElement.dataset.theme = settings.editor.theme;
   }, [settings]);
 
+  // re-run code analysis when objects were (re)loaded
+  useEffect(() => {
+    const model = editor.current?.getModel();
+    if (model) void updateDiagnostics(model);
+  }, [catalogVersion, activeId]);
+
   // history autosave
   useEffect(() => {
     const secs = settings?.editor.autosaveSeconds ?? 15;
@@ -428,7 +576,10 @@ export default function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const k = e.key.toLowerCase();
-      if (e.ctrlKey && e.altKey && k === "d") {
+      if (e.key === "F8") {
+        e.preventDefault();
+        setPanel((p) => (p === "explorer" ? null : "explorer"));
+      } else if (e.ctrlKey && e.altKey && k === "d") {
         e.preventDefault();
         setPanel((p) => (p === "search" ? null : "search"));
       } else if (e.ctrlKey && e.shiftKey && k === "h") {
@@ -526,9 +677,16 @@ export default function App() {
         <button className={panel === "history" ? "active" : ""} onClick={() => setPanel(panel === "history" ? null : "history")} title="SQL History (Ctrl+Shift+H)">
           History
         </button>
+        <button
+          className={panel === "explorer" ? "active" : ""}
+          onClick={() => setPanel(panel === "explorer" ? null : "explorer")}
+          title="Object Explorer (F8)"
+        >
+          Explorer
+        </button>
         {activeTab?.connected && (
-          <button onClick={() => loadCatalog(activeTab, true)} title="Reload objects for completion and search">
-            ⟳ Objects
+          <button onClick={() => loadCatalog(activeTab, true)} title="Reload objects for completion, analysis and search">
+            ⟳
           </button>
         )}
         <span className="spacer" />
@@ -585,7 +743,7 @@ export default function App() {
             <>
               <div className="splitter-h" onMouseDown={dragResults} />
               <div className="results-pane" style={{ height: resultsHeight }}>
-                <ResultsPanel result={activeTab?.result} running={!!activeTab?.running} />
+                <ResultsPanel result={activeTab?.result} running={!!activeTab?.running} dialect={activeTab?.dialect} />
               </div>
             </>
           )}
@@ -595,20 +753,30 @@ export default function App() {
             <div className="splitter-v" onMouseDown={dragPanel} />
             <div className="side-panel" style={{ width: panelWidth }}>
               <div className="side-head">
-                <b>{panel === "search" ? "SQL Search" : "SQL History"}</b>
+                <b>{PANEL_TITLE[panel]}</b>
                 <span className="spacer" />
                 <button onClick={() => setPanel(null)}>×</button>
               </div>
-              {panel === "search" ? (
+              {panel === "search" && (
                 <SearchPanel
                   connectionId={activeTab?.connected ? activeTab.connectionId : undefined}
                   database={activeTab?.database}
                   databases={activeTab?.databases ?? []}
                   dialect={activeTab?.dialect ?? "mssql"}
-                  onOpenScript={(title, text) => openText(title, text)}
+                  onOpenScript={(title, text) => void openText(title, text)}
                 />
-              ) : (
-                <HistoryPanel onOpen={openHistory} onInsert={insertText} />
+              )}
+              {panel === "history" && <HistoryPanel onOpen={openHistory} onInsert={insertText} />}
+              {panel === "explorer" && (
+                <ExplorerPanel
+                  connectionId={activeTab?.connected ? activeTab.connectionId : undefined}
+                  database={activeTab?.database}
+                  dialect={activeTab?.dialect ?? "mssql"}
+                  version={catalogVersion}
+                  onOpenScript={(title, text, run) => void openText(title, text, run)}
+                  onInsert={insertText}
+                  onRefresh={() => activeTab && void loadCatalog(activeTab, true)}
+                />
               )}
             </div>
           </>
@@ -635,6 +803,7 @@ export default function App() {
           onClose={() => {
             setDialog(null);
             api.listConnections().then(setConnections);
+            window.setTimeout(() => editor.current?.focus(), 0);
           }}
           onConnect={async (c, pw) => {
             const conns = await api.listConnections();
@@ -644,8 +813,32 @@ export default function App() {
             const id = activeRef.current || createTab().id;
             // failures are reported in the status bar by connectTab
             connectTab(id, c, pw).catch(() => undefined);
+            // back to typing right away
+            window.setTimeout(() => editor.current?.focus(), 0);
           }}
         />
+      )}
+      {confirmState && (
+        <div className="modal-backdrop">
+          <div className="modal confirm-modal" onKeyDown={(e) => e.key === "Escape" && confirmState.resolve(false)}>
+            <div className="modal-title">⚠ Execution warning</div>
+            <div className="confirm-body">
+              {confirmState.messages.map((m, i) => (
+                <div key={i}>{m}</div>
+              ))}
+              <p>Do you want to run it anyway?</p>
+            </div>
+            <div className="modal-actions">
+              <span className="spacer" />
+              <button className="danger" onClick={() => confirmState.resolve(true)}>
+                Execute anyway
+              </button>
+              <button className="primary" autoFocus onClick={() => confirmState.resolve(false)}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
       )}
       {dialog === "settings" && settings && (
         <SettingsDialog settings={settings} dialect={activeTab?.dialect ?? "mssql"} onClose={() => setDialog(null)} onSaved={setSettings} />

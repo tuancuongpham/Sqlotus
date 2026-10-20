@@ -1,4 +1,5 @@
 mod commands;
+mod intel;
 mod state;
 
 use tauri::Manager;
@@ -56,6 +57,14 @@ pub fn run() {
             commands::history_mark_closed,
             commands::history_recently_closed,
             commands::history_delete,
+            intel::diagnostics,
+            intel::execution_warnings,
+            intel::hover,
+            intel::signature_help,
+            intel::object_at,
+            intel::refactor_text,
+            intel::catalog_objects,
+            intel::script_object,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

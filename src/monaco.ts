@@ -9,7 +9,7 @@ import "monaco-editor/languages/definitions/pgsql/register";
 import "monaco-editor/languages/definitions/mysql/register";
 import EditorWorker from "monaco-editor/editor/editor.worker?worker";
 import { api } from "./api";
-import type { CompletionItem, CompletionKind, Dialect } from "./types";
+import type { CompletionItem, CompletionKind, Dialect, EditorArgs } from "./types";
 
 self.MonacoEnvironment = { getWorker: () => new EditorWorker() };
 
@@ -37,6 +37,54 @@ export function unbindModelContext(model: monaco.editor.ITextModel) {
 
 function contextOf(model: monaco.editor.ITextModel): ModelContext {
   return contexts.get(model.uri.toString())?.() ?? { dialect: "mssql" };
+}
+
+/** Arguments for the editor-intelligence commands. */
+export function editorArgs(model: monaco.editor.ITextModel, position?: monaco.IPosition): EditorArgs {
+  const ctx = contextOf(model);
+  return {
+    connectionId: ctx.connectionId,
+    database: ctx.database,
+    dialect: ctx.dialect,
+    text: model.getValue(),
+    offset: position ? model.getOffsetAt(position) : 0,
+  };
+}
+
+const severityMap = {
+  error: monaco.MarkerSeverity.Error,
+  warning: monaco.MarkerSeverity.Warning,
+  info: monaco.MarkerSeverity.Info,
+} as const;
+
+/** Run code analysis and show the results as squiggles. */
+export async function updateDiagnostics(model: monaco.editor.ITextModel) {
+  if (model.isDisposed()) return;
+  const version = model.getVersionId();
+  try {
+    const found = await api.diagnostics(editorArgs(model));
+    if (model.isDisposed() || model.getVersionId() !== version) return;
+    monaco.editor.setModelMarkers(
+      model,
+      "sqlq",
+      found.map((d) => {
+        const s = model.getPositionAt(d.start);
+        const e = model.getPositionAt(d.end);
+        return {
+          startLineNumber: s.lineNumber,
+          startColumn: s.column,
+          endLineNumber: e.lineNumber,
+          endColumn: e.column,
+          severity: severityMap[d.severity],
+          message: d.message,
+          code: d.code,
+          source: "SqlSupportQuery",
+        };
+      }),
+    );
+  } catch {
+    // analysis errors must never disturb typing
+  }
 }
 
 const K = monaco.languages.CompletionItemKind;
@@ -120,6 +168,44 @@ export function registerProviders() {
           return { suggestions: result.items.map((it) => toMonacoItem(model, it, range)), incomplete: false };
         } catch {
           return { suggestions: [] };
+        }
+      },
+    });
+
+    monaco.languages.registerHoverProvider(lang, {
+      async provideHover(model, position) {
+        try {
+          const h = await api.hover(editorArgs(model, position));
+          if (!h) return null;
+          const s = model.getPositionAt(h.start);
+          const e = model.getPositionAt(h.end);
+          return {
+            range: new monaco.Range(s.lineNumber, s.column, e.lineNumber, e.column),
+            contents: [{ value: h.contents }],
+          };
+        } catch {
+          return null;
+        }
+      },
+    });
+
+    monaco.languages.registerSignatureHelpProvider(lang, {
+      signatureHelpTriggerCharacters: ["(", ",", " "],
+      signatureHelpRetriggerCharacters: [","],
+      async provideSignatureHelp(model, position) {
+        try {
+          const sig = await api.signatureHelp(editorArgs(model, position));
+          if (!sig) return null;
+          return {
+            value: {
+              signatures: [{ label: sig.label, parameters: sig.parameters.map((p) => ({ label: p })) }],
+              activeSignature: 0,
+              activeParameter: sig.activeParameter,
+            },
+            dispose() {},
+          };
+        } catch {
+          return null;
         }
       },
     });

@@ -185,3 +185,52 @@ export interface Tab {
   result?: ExecuteResult;
   executedAt?: number;
 }
+
+export interface Diagnostic {
+  start: number;
+  end: number;
+  severity: "error" | "warning" | "info";
+  code: string;
+  message: string;
+}
+
+export interface SignatureInfo {
+  label: string;
+  parameters: string[];
+  activeParameter: number;
+}
+
+export interface CatalogColumn {
+  name: string;
+  dataType: string;
+  nullable: boolean;
+  isPrimaryKey: boolean;
+  isIdentity: boolean;
+  isComputed: boolean;
+}
+
+export interface DbObject {
+  schema: string;
+  name: string;
+  kind: ObjectKind;
+  columns: CatalogColumn[];
+  params: { name: string; dataType: string; isOutput: boolean; hasDefault: boolean }[];
+}
+
+export type RefactorAction =
+  | "expandWildcards"
+  | "qualifyNames"
+  | "insertSemicolons"
+  | "removeBrackets"
+  | "upperKeywords"
+  | "lowerKeywords";
+
+export type ScriptKind = "select" | "insert" | "update" | "delete" | "exec" | "create" | "alter";
+
+export interface EditorArgs {
+  connectionId?: string;
+  database?: string;
+  dialect: Dialect;
+  text: string;
+  offset?: number;
+}

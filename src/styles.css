@@ -791,3 +791,103 @@ mark {
   border-right: 1px solid var(--border);
   padding: 6px;
 }
+
+/* object explorer */
+.explorer-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.explorer-tree {
+  flex: 1;
+  overflow: auto;
+  border-top: 1px solid var(--border);
+  padding: 4px 0;
+  user-select: none;
+}
+
+.tree-group {
+  padding: 4px 8px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.tree-group small,
+.tree-name small,
+.tree-leaf small {
+  color: var(--fg-dim);
+  font-weight: normal;
+}
+
+.tree-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px 2px 16px;
+  cursor: default;
+  white-space: nowrap;
+}
+
+.tree-item:hover {
+  background: var(--hover);
+}
+
+.tree-item.selected {
+  background: var(--selected);
+}
+
+.tree-toggle {
+  width: 14px;
+  cursor: pointer;
+  color: var(--fg-dim);
+}
+
+.tree-icon {
+  width: 22px;
+  text-align: center;
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+
+.tree-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px 8px 6px 52px;
+}
+
+.tree-actions button {
+  padding: 1px 7px;
+  font-size: 12px;
+}
+
+.tree-children {
+  padding-left: 34px;
+}
+
+.tree-leaf {
+  padding: 1px 8px;
+  font: 12.5px Consolas, monospace;
+  white-space: nowrap;
+}
+
+.copy-as {
+  padding: 1px 4px;
+}
+
+.confirm-modal {
+  width: 520px;
+}
+
+.confirm-body {
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.confirm-body div {
+  color: var(--error);
+}
