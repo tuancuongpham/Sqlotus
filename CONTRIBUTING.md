@@ -54,6 +54,17 @@ CI runs the same checks on every pull request.
 to run the live tests and the UI scripts against them. Live tests are skipped when the `SQLOTUS_TEST_*`
 environment variables are not set, so `cargo test` works without Docker.
 
+### Dependencies
+
+When you add or update a dependency, regenerate `THIRD_PARTY_LICENSES.md` (it ships with the installer):
+
+```bash
+cargo install cargo-about --locked --features cli
+node scripts/third-party-licenses.mjs
+```
+
+New dependencies need a permissive license accepted in `about.toml`.
+
 ## Code of conduct
 
 This project follows the [Code of Conduct](CODE_OF_CONDUCT.md).

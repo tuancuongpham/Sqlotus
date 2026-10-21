@@ -2,7 +2,7 @@
   "name": "sqlotus",
   "private": true,
   "version": "0.2.1",
-  "description": "Desktop SQL editor with SQL Prompt-style completion, formatting, search and history for SQL Server, PostgreSQL and MySQL",
+  "description": "Fast desktop SQL editor for SQL Server, PostgreSQL and MySQL",
   "license": "MIT",
   "repository": {
     "type": "git",

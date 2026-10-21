@@ -43,6 +43,10 @@
     "license": "MIT",
     "category": "DeveloperTool",
     "homepage": "https://github.com/tuancuongpham/Sqlotus",
-    "shortDescription": "SQL editor for SQL Server, PostgreSQL and MySQL"
+    "shortDescription": "SQL editor for SQL Server, PostgreSQL and MySQL",
+    "resources": {
+      "../LICENSE": "LICENSE",
+      "../THIRD_PARTY_LICENSES.md": "THIRD_PARTY_LICENSES.md"
+    }
   }
 }

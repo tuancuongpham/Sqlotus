@@ -127,8 +127,8 @@ Cấu trúc:
 - `crates/sqlotus-store` — SQLite: kết nối, cài đặt, snippet, history (FTS5 trigram), cache catalog.
 - `src-tauri` — Tauri commands, phiên kết nối theo tab.
 - `src` — giao diện React + Monaco.
-- `scripts/` — test end-to-end điều khiển app qua DevTools Protocol của WebView2 (`ui-smoke.mjs`, `e2e-*.mjs`) và
-  database test chạy bằng Docker (`test-db/`).
+- `scripts/` — test end-to-end điều khiển app qua DevTools Protocol của WebView2 (`ui-smoke.mjs`, `e2e-*.mjs`) ,
+  database test chạy bằng Docker (`test-db/`) và script tạo danh sách giấy phép bên thứ ba (`third-party-licenses.mjs`).
 
 Test với database thật: đặt biến môi trường `SQLOTUS_TEST_MSSQL` / `SQLOTUS_TEST_PG` / `SQLOTUS_TEST_MYSQL`
 (xem `crates/sqlotus-db/tests/live.rs`).
@@ -142,6 +142,20 @@ Test với database thật: đặt biến môi trường `SQLOTUS_TEST_MSSQL` / 
 - Chưa hỗ trợ kết nối named pipe (LocalDB); dùng TCP.
 - Tính năng AI Assistant chưa làm.
 
+## Quyền riêng tư
+
+Sqlotus không có telemetry. Kết nối, lịch sử và cài đặt nằm trên máy của bạn; mật khẩu đã lưu nằm trong Windows
+Credential Manager. Xem [SECURITY.md](SECURITY.md).
+
+## Đóng góp
+
+Hoan nghênh issue và pull request — xem [CONTRIBUTING.md](CONTRIBUTING.md) và
+[Code of Conduct](CODE_OF_CONDUCT.md). Các thay đổi được ghi trong [CHANGELOG.md](CHANGELOG.md).
+
 ## Giấy phép
 
-[MIT](LICENSE)
+[MIT](LICENSE). Sqlotus dùng các crate và gói npm mã nguồn mở; giấy phép của chúng được tập hợp trong
+[THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) và được cài kèm ứng dụng.
+
+SQL Prompt, SQL Search và SQL History là thương hiệu của Redgate Software Ltd. Sqlotus là dự án độc lập, không liên
+kết và không được Redgate bảo trợ.

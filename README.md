@@ -172,7 +172,8 @@ npx tauri build
 - `src-tauri` — Tauri commands, per-tab database sessions.
 - `src` — React + Monaco UI.
 - `scripts/` — end-to-end UI tests that drive the running app over WebView2's DevTools Protocol
-  (`ui-smoke.mjs`, `e2e-*.mjs`) and Docker test databases (`test-db/`).
+  (`ui-smoke.mjs`, `e2e-*.mjs`), Docker test databases (`test-db/`) and the third-party license
+  generator (`third-party-licenses.mjs`).
 
 ### Testing against real databases
 
@@ -204,4 +205,8 @@ Issues and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) 
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE). Sqlotus is built on open-source crates and npm packages; their licenses are collected in
+[THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) and installed with the app.
+
+SQL Prompt, SQL Search and SQL History are trademarks of Redgate Software Ltd. Sqlotus is an independent project
+and is not affiliated with or endorsed by Redgate.

@@ -1,4 +1,4 @@
-// End-to-end checks of the SQL Prompt-style features against the Docker
+// End-to-end checks of the completion, formatting and refactoring features against the Docker
 // "Shop" database (connection "E2E SQL Server", see scripts/test-db).
 //
 //   node scripts/e2e-features.mjs [screenshot-dir]

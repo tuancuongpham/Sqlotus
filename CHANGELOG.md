@@ -6,6 +6,7 @@
   triggers) and generate a dependency-ordered sync script with data-loss warnings. SQL Server requires
   VIEW DEFINITION, so hidden objects are never mistaken for missing ones.
 - Content Security Policy enabled for release builds.
+- The installer includes the license and third-party licenses (`THIRD_PARTY_LICENSES.md`).
 
 ## 0.2.1
 
