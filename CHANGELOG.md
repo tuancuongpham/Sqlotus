@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.5
+
+- **MySQL `DELIMITER` scripts** (dumps, procedures, triggers) now run: each statement ending in the custom
+  delimiter is sent on its own, as the mysql client does, and Shift+F5 runs a whole procedure.
+- **Backslashes on MySQL**: edited cells, values for undeclared variables, test data, copied INSERT statements and
+  schema-compare defaults now escape `\`, which MySQL reads as an escape character (`C:\temp` was saved as
+  `C:<tab>emp`).
+- **Copy as JSON** keeps long decimals and big integers as strings instead of rounding them; copied INSERT
+  statements quote column names containing `` ` `` or `"`.
+- **Code analysis** reports variables that are assigned but never read, and understands `DECLARE @a AS int, @b …`.
+- **Execution warnings** also cover statements that reach other sessions or the server: `WITH ROLLBACK
+  IMMEDIATE`, `SET OFFLINE`, `KILL`, `SHUTDOWN`. Read-only connections refuse `KILL`, also from the activity monitor.
+- Edited numeric cells accept plain numbers only (`NaN`, `inf` are refused before reaching the server).
+- MySQL: `--` starts a comment only when a space follows (`5--2` is arithmetic).
+- Frontend unit tests (`npm test`) run in CI.
+
 ## 0.2.4
 
 - **Read-only connections** on PostgreSQL and MySQL are now read-only on the server too, so procedures and
