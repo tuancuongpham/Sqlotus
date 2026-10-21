@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { Dialect, EditContext, ExecuteResult, ExplainOutput } from "../types";
 import { PlanView } from "./PlanView";
 import { ResultGrid } from "./ResultGrid";
 
+const PROBLEMS = -3;
 const PLAN = -2;
 const MESSAGES = -1;
 
@@ -13,6 +14,7 @@ export function ResultsPanel({
   running,
   dialect,
   editContext,
+  problems,
 }: {
   result?: ExecuteResult;
   plan?: ExplainOutput;
@@ -22,6 +24,8 @@ export function ResultsPanel({
   dialect?: Dialect;
   /** Lets the grid edit rows of a single-table result. */
   editContext?: EditContext;
+  /** Code-analysis problems of the tab: count, worst severity, and the list view. */
+  problems?: { count: number; worst?: "error" | "warning" | "info"; view: ReactNode };
 }) {
   const sets = result?.batches.flatMap((b) => b.output.resultSets) ?? [];
   const messages = result?.batches.flatMap((b) => b.output.messages) ?? [];
@@ -40,7 +44,8 @@ export function ResultsPanel({
   if (running) {
     return <div className="results-empty">Executing…</div>;
   }
-  if (!result && !plan) {
+  const problemCount = problems?.count ?? 0;
+  if (!result && !plan && active !== PROBLEMS && problemCount === 0) {
     return <div className="results-empty">Run a query with F5 or Ctrl+E · estimated plan with Ctrl+L</div>;
   }
   const planWarnings = plan?.plans.reduce((n, p) => n + p.warnings.length + p.missingIndexes.length, 0) ?? 0;
@@ -62,8 +67,15 @@ export function ResultsPanel({
             Plan {planWarnings > 0 && <small className="plan-tab-warn">⚠ {planWarnings}</small>}
           </button>
         )}
+        {problems && (
+          <button className={"problems-tab" + (active === PROBLEMS ? " active" : "")} onClick={() => setActive(PROBLEMS)}>
+            Problems <small className={problemCount ? `problems-count severity-${problems.worst}` : ""}>({problemCount})</small>
+          </button>
+        )}
         <span className="results-status">
-          {active === PLAN
+          {active === PROBLEMS
+            ? "Code analysis of this tab"
+            : active === PLAN
             ? "Estimated plan — the query was not run"
             : result?.cancelled
               ? "Query cancelled"
@@ -73,7 +85,11 @@ export function ResultsPanel({
         </span>
       </div>
       <div className="results-body">
-        {active === PLAN && plan ? (
+        {active === PROBLEMS && problems ? (
+          problems.view
+        ) : !result && !plan ? (
+          <div className="results-empty">Run a query with F5 or Ctrl+E · estimated plan with Ctrl+L</div>
+        ) : active === PLAN && plan ? (
           <PlanView explain={plan} />
         ) : active >= 0 && sets[active] ? (
           <ResultGrid

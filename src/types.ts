@@ -214,6 +214,8 @@ export interface Settings {
   completion: CompletionOptions;
   editor: { fontSize: number; autosaveSeconds: number; maxRows: number; theme: "dark" | "light" };
   safety: { confirmRowsOver: number; promptVariables: boolean };
+  /** Code analysis rules that are switched off. */
+  analysis?: { disabled: string[] };
 }
 
 /** An editor tab. Text lives in the Monaco model; this is the metadata. */
@@ -315,12 +317,29 @@ export interface ObjectDiff {
   warnings: string[];
 }
 
+/** An object by name (the identical ones in a comparison). */
+export interface ObjectRef {
+  key: string;
+  kind: ObjectKind;
+  schema: string;
+  name: string;
+}
+
 export interface SchemaCompareResult {
   id: string;
   dialect: Dialect;
   source: string;
   target: string;
-  diff: { differences: ObjectDiff[]; identical: number; skipped: string[] };
+  diff: { differences: ObjectDiff[]; identical: number; identicalObjects: ObjectRef[]; skipped: string[] };
+}
+
+/** A comparison set up once and opened again from the list. */
+export interface SavedCompare {
+  name: string;
+  source: { connectionId: string; database: string };
+  target: { connectionId: string; database: string };
+  ignoreWhitespace: boolean;
+  ignoreCase: boolean;
 }
 
 /** What a results grid needs to know to edit rows. */
@@ -341,6 +360,17 @@ export interface Diagnostic {
   severity: "error" | "warning" | "info";
   code: string;
   message: string;
+  /** A safe rewrite of start..end (UTF-16 offsets). */
+  fix?: { title: string; start: number; end: number; text: string };
+}
+
+/** A code analysis rule (Options → Analysis). */
+export interface AnalysisRule {
+  code: string;
+  title: string;
+  severity: Diagnostic["severity"];
+  needsCatalog: boolean;
+  only: Dialect | null;
 }
 
 export interface SignatureInfo {
@@ -479,4 +509,49 @@ export interface Finding {
 export interface Diagnosis {
   summary: string;
   findings: Finding[];
+}
+
+/** The folder a database's schema is kept in (Source control). */
+export interface ScLinkInfo {
+  folder: string;
+  git: boolean;
+  branch: string | null;
+  hasSnapshot: boolean;
+}
+
+/** One object that differs between the database and its folder. */
+export interface ScItem {
+  key: string;
+  kind: ObjectKind;
+  schema: string;
+  name: string;
+  /** local: changed in the database; incoming: changed in the folder; conflict: both. */
+  state: "local" | "incoming" | "conflict";
+  /** The database compared with the folder (added = only in the database). */
+  change: "added" | "removed" | "changed";
+  details: string[];
+  dbText: string | null;
+  folderText: string | null;
+}
+
+export interface ScStatus {
+  id: string;
+  folder: string;
+  dialect: Dialect;
+  items: ScItem[];
+  inSync: number;
+  skipped: string[];
+  handEdited: string[];
+  git: boolean;
+  branch: string | null;
+  firstCommit: boolean;
+  /** A common version of database and folder is known (else differences are all conflicts). */
+  hasBase: boolean;
+}
+
+export interface ScCommitResult {
+  written: number;
+  removed: number;
+  commit: string | null;
+  note: string;
 }

@@ -1889,3 +1889,193 @@ button.diff-changed {
   flex: 1;
   min-height: 200px;
 }
+
+/* Problems (code analysis of the active tab) */
+.problems {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.problems-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.problems-bar label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.problems-filter {
+  width: 220px;
+}
+.problems-list {
+  flex: 1;
+  overflow: auto;
+}
+.problems-group {
+  padding: 3px 8px;
+  font-weight: 600;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+}
+.problem-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.problem-row:hover {
+  background: var(--hover);
+}
+.problem-icon {
+  width: 14px;
+  text-align: center;
+}
+.severity-error .problem-icon,
+.problems-count.severity-error {
+  color: var(--error);
+}
+.severity-warning .problem-icon,
+.problems-count.severity-warning {
+  color: #e5a50a;
+}
+.severity-info .problem-icon,
+.problems-count.severity-info {
+  color: #3794ff;
+}
+.problem-code {
+  font-family: Consolas, "Cascadia Mono", monospace;
+  color: var(--fg-dim);
+}
+.problem-message {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.problem-pos {
+  color: var(--fg-dim);
+  font-variant-numeric: tabular-nums;
+}
+.problem-fix {
+  padding: 0 8px;
+}
+.analysis-rules .check {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.rule-notes {
+  margin-left: auto;
+  color: var(--fg-dim);
+}
+
+/* Schema compare: saved comparisons, filter, identical objects */
+.compare-saved {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 0 6px;
+}
+.compare-saved select {
+  min-width: 320px;
+  max-width: 560px;
+}
+.compare-filter {
+  width: 180px;
+}
+.compare-toggle {
+  cursor: pointer;
+  user-select: none;
+}
+.compare-item.identical {
+  cursor: default;
+  color: var(--fg-dim);
+}
+
+/* Source control */
+.sc-setup {
+  padding: 8px 4px;
+  max-width: 760px;
+}
+.sc-folder {
+  display: flex;
+  gap: 6px;
+}
+.sc-folder input {
+  flex: 1;
+}
+.sc-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 0 6px;
+}
+.sc-head > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 50%;
+}
+.sc-branch {
+  color: var(--fg-dim);
+}
+.sc-note {
+  margin: 0 0 6px;
+}
+.sc-log {
+  max-height: 120px;
+  overflow: auto;
+  margin: 0 0 6px;
+  padding: 6px 8px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+}
+.sc-change {
+  color: var(--fg-dim);
+  white-space: nowrap;
+}
+.sc-conflict .compare-group-head {
+  color: var(--error);
+}
+.compare-item select {
+  max-width: 170px;
+}
+.sc-commit {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+  padding-top: 8px;
+}
+.sc-commit textarea {
+  flex: 1;
+  resize: vertical;
+}
+/* the list shrinks so the commit row and the footer stay visible */
+.source-control-modal {
+  height: 90vh;
+  overflow: hidden;
+}
+.source-control-modal .compare-results {
+  flex: 1 1 0;
+}
+.source-control-modal .sc-head,
+.source-control-modal .sc-commit,
+.source-control-modal .sc-setup {
+  padding-left: 14px;
+  padding-right: 14px;
+}
+.source-control-modal .sc-note,
+.source-control-modal .sc-log {
+  margin-left: 14px;
+  margin-right: 14px;
+}
+.source-control-modal .sc-commit {
+  flex: none;
+  padding-bottom: 8px;
+}

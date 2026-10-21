@@ -49,12 +49,22 @@ pub struct StoredCompare {
 pub struct CompareStore(Mutex<HashMap<String, StoredCompare>>);
 
 async fn load(state: &AppState, e: &Endpoint, label: &str) -> CmdResult<SchemaModel> {
-    let mut conn = open_database(state, &e.connection_id, &e.database)
+    load_model(state, &e.connection_id, &e.database, label).await
+}
+
+/// The schema of one database (for compare and source control).
+pub(crate) async fn load_model(
+    state: &AppState,
+    connection_id: &str,
+    database: &str,
+    label: &str,
+) -> CmdResult<SchemaModel> {
+    let mut conn = open_database(state, connection_id, database)
         .await
-        .map_err(|x| format!("Could not connect to the {label} ({}): {x}", e.database))?;
+        .map_err(|x| format!("Could not connect to the {label} ({database}): {x}"))?;
     let model = sqlotus_db::load_schema(&mut conn)
         .await
-        .map_err(|x| format!("Could not read the {label} schema ({}): {x}", e.database));
+        .map_err(|x| format!("Could not read the {label} schema ({database}): {x}"));
     conn.close().await;
     model
 }
@@ -123,6 +133,46 @@ pub async fn compare_schemas(
         target: format!("{} / {}", tgt_cfg.name, target.database),
         diff,
     })
+}
+
+/// A comparison set up once and opened again from the list.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedSide {
+    connection_id: String,
+    database: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedCompare {
+    name: String,
+    source: SavedSide,
+    target: SavedSide,
+    #[serde(default = "yes")]
+    ignore_whitespace: bool,
+    #[serde(default)]
+    ignore_case: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+const SAVED_COMPARES: &str = "compare.saved";
+
+#[tauri::command]
+pub fn saved_compares(state: State<'_, AppState>) -> CmdResult<Vec<SavedCompare>> {
+    Ok(state
+        .store
+        .get_setting::<Vec<SavedCompare>>(SAVED_COMPARES)
+        .map_err(err)?
+        .unwrap_or_default())
+}
+
+#[tauri::command]
+pub fn save_saved_compares(state: State<'_, AppState>, list: Vec<SavedCompare>) -> CmdResult<()> {
+    state.store.set_setting(SAVED_COMPARES, &list).map_err(err)
 }
 
 /// The script that applies the selected differences to the target.

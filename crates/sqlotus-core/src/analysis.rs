@@ -29,6 +29,19 @@ pub struct Diagnostic {
     pub severity: Severity,
     pub code: String,
     pub message: String,
+    /// A safe rewrite that resolves the problem, when there is one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fix: Option<Fix>,
+}
+
+/// Replace `start..end` (bytes) with `text`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Fix {
+    pub title: String,
+    pub start: usize,
+    pub end: usize,
+    pub text: String,
 }
 
 pub(crate) fn diag(t: &Token<'_>, severity: Severity, code: &str, message: String) -> Diagnostic {
@@ -38,6 +51,7 @@ pub(crate) fn diag(t: &Token<'_>, severity: Severity, code: &str, message: Strin
         severity,
         code: code.into(),
         message,
+        fix: None,
     }
 }
 
@@ -530,12 +544,22 @@ fn null_comparison(t: &[Token<'_>], out: &mut Vec<Diagnostic>) {
             "WHERE" | "ON" | "HAVING" | "WHEN" | "AND" | "OR" | "IF" | "WHILE"
         ) {
             let fix = if tok.text == "=" { "IS NULL" } else { "IS NOT NULL" };
-            out.push(diag(
+            let mut d = diag(
                 tok,
                 Severity::Warning,
                 "SQ003",
                 format!("Comparison with NULL is never true; use {fix}"),
-            ));
+            );
+            // `col = NULL` -> `col IS NULL` (`NULL = col` would need reordering)
+            if next_null {
+                d.fix = Some(Fix {
+                    title: format!("Use {fix}"),
+                    start: tok.start,
+                    end: t[i + 1].end(),
+                    text: fix.into(),
+                });
+            }
+            out.push(d);
         }
     }
 }
@@ -545,12 +569,19 @@ fn null_comparison(t: &[Token<'_>], out: &mut Vec<Diagnostic>) {
 fn unicode_without_n(t: &[Token<'_>], out: &mut Vec<Diagnostic>) {
     for tok in t {
         if tok.kind == TokenKind::String && tok.text.starts_with('\'') && !tok.text.is_ascii() {
-            out.push(diag(
+            let mut d = diag(
                 tok,
                 Severity::Warning,
                 "SQ008",
                 "Unicode text without the N prefix may be stored as '?' — write N'…'".into(),
-            ));
+            );
+            d.fix = Some(Fix {
+                title: "Add the N prefix".into(),
+                start: tok.start,
+                end: tok.start,
+                text: "N".into(),
+            });
+            out.push(d);
         }
     }
 }
@@ -616,9 +647,50 @@ fn unused_variables(src: &str, dialect: Dialect, tokens: &[Token<'_>], out: &mut
             } else {
                 continue;
             };
-            out.push(diag(&t[i], Severity::Info, "SQ005", format!("{} {message}", t[i].text)));
+            let mut d = diag(&t[i], Severity::Info, "SQ005", format!("{} {message}", t[i].text));
+            if declared && idx.len() == 1 {
+                d.fix = remove_declaration(src, dialect, &t, i);
+            }
+            out.push(d);
         }
     }
+}
+
+/// Remove `DECLARE @v type [= value]` when it declares only `@v` and holds
+/// no other statement; the line goes too when nothing else is on it.
+fn remove_declaration(src: &str, dialect: Dialect, t: &[Token<'_>], i: usize) -> Option<Fix> {
+    let span = split_statements(src, dialect)
+        .into_iter()
+        .find(|s| s.start <= t[i].start && t[i].end() <= s.end)?;
+    let stmt: Vec<&Token<'_>> = t
+        .iter()
+        .filter(|x| x.start >= span.start && x.end() <= span.end)
+        .collect();
+    let lone = stmt.len() >= 3
+        && word(stmt.first().copied()) == "DECLARE"
+        && stmt[1].start == t[i].start
+        && stmt[2..].iter().all(|x| {
+            x.kind != TokenKind::Comma
+                && x.kind != TokenKind::Variable
+                && !STATEMENT_KEYWORDS.contains(&x.upper().as_str())
+        });
+    if !lone {
+        return None;
+    }
+    let line_start = src[..span.start].rfind('\n').map_or(0, |n| n + 1);
+    let line_end = src[span.end..].find('\n').map_or(src.len(), |n| span.end + n + 1);
+    let alone = src[line_start..span.start].trim().is_empty() && src[span.end..line_end].trim().is_empty();
+    let (start, end) = if alone {
+        (line_start, line_end)
+    } else {
+        (span.start, span.end)
+    };
+    Some(Fix {
+        title: format!("Remove the declaration of {}", t[i].text),
+        start,
+        end,
+        text: String::new(),
+    })
 }
 
 /// `@v` at `i` is only written: `SET @v = …` (or `+=` etc.), `SELECT @v = …`,
@@ -737,6 +809,7 @@ fn invalid_objects(
             severity: Severity::Warning,
             code: "SQ006".into(),
             message: format!("Invalid object name '{shown}' (reload objects if it was just created)"),
+            fix: None,
         });
     }
 }

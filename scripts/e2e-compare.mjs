@@ -128,6 +128,28 @@ try {
   const r2 = await compareNow();
   check("identical after sync", !!r2 && r2.includes("identical"), r2 ?? "");
 
+  // 2b. identical objects are listed, the list filters, and the setup can be saved
+  await clickButton(".compare-group", "▸");
+  await evaluate(`document.querySelector(".compare-toggle")?.click()`);
+  const same = await until(() => evaluate(`document.querySelectorAll(".compare-item.identical").length`), 3000);
+  check("identical objects listed", same >= 5, String(same));
+  await evaluate(`(() => { const el = document.querySelector(".compare-filter"); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(el, "vcustomer"); el.dispatchEvent(new Event("input", { bubbles: true })); })()`);
+  const filtered = await until(async () => {
+    const n = await evaluate(`document.querySelectorAll(".compare-item.identical").length`);
+    return n > 0 && n < same ? n : null;
+  }, 3000);
+  check("filter narrows the list", filtered === 1, String(filtered));
+  check("export report available", await evaluate(`![...document.querySelectorAll(".schema-compare-modal button")].find((b) => b.textContent.startsWith("Export report")).disabled`));
+  await clickButton(".compare-saved", "Save");
+  const savedName = await until(() => evaluate(`document.querySelector(".compare-saved select").value`), 3000);
+  check("comparison saved", !!savedName && savedName.includes("SqlotusCmp_src") && savedName.includes("SqlotusCmp_tgt"), savedName);
+  const stored = await invoke("saved_compares");
+  check("saved list persisted", stored.some((x) => x.name === savedName && x.source.database === "SqlotusCmp_src"), JSON.stringify(stored));
+  await clickButton(".compare-saved", "Delete");
+  await sleep(300);
+  const after = await invoke("saved_compares");
+  check("saved comparison deleted", !after.some((x) => x.name === savedName), JSON.stringify(after));
+
   // 3. drops are not selected by default
   await side(0, "E2E SQL Server", "SqlotusCmp_none");
   await side(1, "E2E SQL Server", "SqlotusCmp_tgt");

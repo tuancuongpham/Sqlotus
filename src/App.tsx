@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, errorText, newId } from "./api";
 import { ActivityDialog } from "./components/ActivityDialog";
 import { SchemaCompareDialog } from "./components/SchemaCompareDialog";
+import { SourceControlDialog } from "./components/SourceControlDialog";
 import { ConnectionDialog } from "./components/ConnectionDialog";
 import { DoctorDialog } from "./components/DoctorDialog";
 import { Toaster } from "./components/Toaster";
@@ -9,12 +10,15 @@ import { dismiss, toast, update } from "./notify";
 import { ExplorerPanel } from "./components/ExplorerPanel";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { MultiDbDialog } from "./components/MultiDbDialog";
+import { ProblemsView } from "./components/ProblemsView";
 import { ResultsPanel } from "./components/ResultsPanel";
 import { SearchPanel } from "./components/SearchPanel";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { VariablesDialog } from "./components/VariablesDialog";
 import {
+  applyFixes,
   bindModelContext,
+  diagnosticsOf,
   editorArgs,
   expandWildcard,
   languageFor,
@@ -23,6 +27,7 @@ import {
   unbindModelContext,
   updateDiagnostics,
 } from "./monaco";
+import { problemsMarkdown, type Problem } from "./problems";
 import type {
   ConnectionConfig,
   Dialect,
@@ -94,13 +99,14 @@ export default function App() {
   const [activeId, setActiveId] = useState<string>("");
   const [settings, setSettings] = useState<Settings | null>(null);
   const [connections, setConnections] = useState<SavedConnection[]>([]);
-  const [dialog, setDialog] = useState<"connect" | "settings" | "multi" | "activity" | "compare" | null>(null);
+  const [dialog, setDialog] = useState<"connect" | "settings" | "multi" | "activity" | "compare" | "source" | null>(null);
   // the explorer is open by default: the database structure is always in view
   const [panel, setPanel] = useState<Panel>("explorer");
   const [resultsVisible, setResultsVisible] = useState(true);
   const [resultsHeight, setResultsHeight] = useState(280);
   const [panelWidth, setPanelWidth] = useState(520);
   const [status, setStatus] = useState("");
+  const [problems, setProblems] = useState<Problem[]>([]);
   const [catalogVersion, setCatalogVersion] = useState(0);
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
   const [choice, setChoice] = useState<ChoiceState | null>(null);
@@ -855,6 +861,23 @@ ${r.notice}` : failure.text);
     ed.onDidChangeModel(() => {
       const model = ed.getModel();
       if (model) void updateDiagnostics(model);
+      showProblems();
+    });
+    // the Problems list follows the active tab's analysis
+    const showProblems = () => {
+      const model = ed.getModel();
+      setProblems(
+        model
+          ? diagnosticsOf(model).map((d) => {
+              const p = model.getPositionAt(d.start);
+              return { ...d, line: p.lineNumber, column: p.column };
+            })
+          : [],
+      );
+    };
+    monaco.editor.onDidChangeMarkers((uris) => {
+      const model = ed.getModel();
+      if (model && uris.some((u) => u.toString() === model.uri.toString())) showProblems();
     });
 
     (async () => {
@@ -1041,6 +1064,16 @@ ${r.notice}` : failure.text);
           Compare
         </button>
         <button
+          onClick={() =>
+            activeTab?.connected && activeTab.database
+              ? setDialog("source")
+              : toast.info("Connect first", "Source control keeps the schema of the tab's database in a folder (a git repository).")
+          }
+          title="Keep this database's schema in a folder (git): commit changes, get your team's changes"
+        >
+          Source control
+        </button>
+        <button
           onClick={() => (activeTab?.connected ? setDialog("activity") : toast.info("Connect first", "The activity monitor shows the sessions of the tab's server."))}
           title="Sessions, running queries and blocking on this server"
         >
@@ -1166,6 +1199,41 @@ ${r.notice}` : failure.text);
                   showPlan={activeTab?.view === "plan"}
                   running={!!activeTab?.running}
                   dialect={activeTab?.dialect}
+                  problems={{
+                    count: problems.length,
+                    worst: problems.some((p) => p.severity === "error")
+                      ? "error"
+                      : problems.some((p) => p.severity === "warning")
+                        ? "warning"
+                        : problems.length
+                          ? "info"
+                          : undefined,
+                    view: (
+                      <ProblemsView
+                        problems={problems}
+                        onJump={(p) => {
+                          const ed = editor.current;
+                          const model = ed?.getModel();
+                          if (!ed || !model) return;
+                          const range = monaco.Range.fromPositions(model.getPositionAt(p.start), model.getPositionAt(p.end));
+                          ed.setSelection(range);
+                          ed.revealRangeInCenter(range);
+                          ed.focus();
+                        }}
+                        onFix={(p) => {
+                          if (editor.current) applyFixes(editor.current, [p]);
+                        }}
+                        onFixAll={() => {
+                          const n = editor.current ? applyFixes(editor.current, problems) : 0;
+                          toast.success(`${n} problem(s) fixed`, "One undo step (Ctrl+Z) brings them back.");
+                        }}
+                        onCopy={() => {
+                          void navigator.clipboard.writeText(problemsMarkdown(problems, activeTab?.title ?? "Query"));
+                          toast.success("Problems copied", "A Markdown table, ready for a review or a ticket.");
+                        }}
+                      />
+                    ),
+                  }}
                 />
               </div>
             </>
@@ -1288,6 +1356,16 @@ ${r.notice}` : failure.text);
           onClose={() => setDialog(null)}
         />
       )}
+      {dialog === "source" && activeTab?.connected && conn && activeTab.database && (
+        <SourceControlDialog
+          connectionId={conn.id}
+          database={activeTab.database}
+          connectionName={conn.name}
+          dialect={activeTab.dialect}
+          onOpenScript={(title, text) => void openText(title, text, false, { connectionId: conn.id, database: activeTab.database ?? "" })}
+          onClose={() => setDialog(null)}
+        />
+      )}
       {dialog === "activity" && activeTab?.connected && conn && (
         <ActivityDialog
           connectionId={conn.id}
@@ -1347,7 +1425,10 @@ ${r.notice}` : failure.text);
           onClose={() => setDialog(null)}
           onSaved={(s) => {
             setSettings(s);
-            toast.success("Settings saved", "Formatting, completion and editor options are applied.");
+            // analysis rules may have changed
+            const model = editor.current?.getModel();
+            if (model) void updateDiagnostics(model);
+            toast.success("Settings saved", "Formatting, completion, analysis and editor options are applied.");
           }}
         />
       )}

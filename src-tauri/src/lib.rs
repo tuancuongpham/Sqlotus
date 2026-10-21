@@ -6,6 +6,7 @@ mod excel;
 mod health;
 mod intel;
 mod multi;
+mod source_control;
 mod state;
 mod tools;
 
@@ -61,6 +62,7 @@ pub fn run() {
             }
             app.manage(state);
             app.manage(compare::CompareStore::default());
+            app.manage(source_control::SourceControlStore::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -94,6 +96,7 @@ pub fn run() {
             commands::history_recently_closed,
             commands::history_delete,
             intel::diagnostics,
+            intel::analysis_rules,
             intel::execution_warnings,
             intel::hover,
             intel::signature_help,
@@ -124,6 +127,15 @@ pub fn run() {
             activity::close_activity,
             compare::compare_schemas,
             compare::schema_sync_script,
+            compare::saved_compares,
+            compare::save_saved_compares,
+            source_control::sc_link_info,
+            source_control::sc_link,
+            source_control::sc_unlink,
+            source_control::sc_status,
+            source_control::sc_commit,
+            source_control::sc_get_latest_script,
+            source_control::sc_git,
             commands::take_startup_notice,
         ])
         .run(tauri::generate_context!())

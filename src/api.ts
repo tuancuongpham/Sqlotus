@@ -13,6 +13,7 @@ import type {
   Diagnosis,
   TestDataOptions,
   Fix,
+  AnalysisRule,
   Diagnostic,
   EditorArgs,
   ObjectProblem,
@@ -27,6 +28,10 @@ import type {
   HistoryEntry,
   ResultColumn,
   VariableValue,
+  SavedCompare,
+  ScCommitResult,
+  ScLinkInfo,
+  ScStatus,
   SavedConnection,
   SearchHit,
   SearchOptions,
@@ -101,6 +106,7 @@ export const api = {
   historyDelete: (id: number) => invoke<void>("history_delete", { id }),
 
   diagnostics: (args: EditorArgs) => invoke<Diagnostic[]>("diagnostics", { args }),
+  analysisRules: () => invoke<AnalysisRule[]>("analysis_rules"),
   executionWarnings: (text: string, dialect: Dialect) => invoke<string[]>("execution_warnings", { text, dialect }),
   hover: (args: EditorArgs) => invoke<{ start: number; end: number; contents: string } | null>("hover", { args }),
   signatureHelp: (args: EditorArgs) => invoke<SignatureInfo | null>("signature_help", { args }),
@@ -114,6 +120,16 @@ export const api = {
   findInvalidObjects: (connectionId: string, database: string, dialect: Dialect) =>
     invoke<ObjectProblem[]>("find_invalid_objects", { connectionId, database, dialect }),
   saveTextFile: (path: string, contents: string) => invoke<void>("save_text_file", { path, contents }),
+  savedCompares: () => invoke<SavedCompare[]>("saved_compares"),
+  saveSavedCompares: (list: SavedCompare[]) => invoke<void>("save_saved_compares", { list }),
+  scLinkInfo: (connectionId: string, database: string) => invoke<ScLinkInfo | null>("sc_link_info", { connectionId, database }),
+  scLink: (connectionId: string, database: string, folder: string, initGit: boolean) =>
+    invoke<ScLinkInfo>("sc_link", { connectionId, database, folder, initGit }),
+  scUnlink: (connectionId: string, database: string) => invoke<void>("sc_unlink", { connectionId, database }),
+  scStatus: (connectionId: string, database: string) => invoke<ScStatus>("sc_status", { connectionId, database }),
+  scCommit: (id: string, keys: string[], message: string) => invoke<ScCommitResult>("sc_commit", { id, keys, message }),
+  scGetLatestScript: (id: string, keys: string[]) => invoke<{ script: string; warnings: string[]; statements: number }>("sc_get_latest_script", { id, keys }),
+  scGit: (connectionId: string, database: string, action: "pull" | "push" | "log") => invoke<string>("sc_git", { connectionId, database, action }),
   executeMulti: (tabId: string, sql: string, databases: string[]) =>
     invoke<ExecuteResult>("execute_multi", { tabId, sql, databases }),
   diagramModel: (connectionId: string, database: string) => invoke<DiagramModel>("diagram_model", { connectionId, database }),

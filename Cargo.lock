@@ -4096,7 +4096,7 @@ dependencies = [
 
 [[package]]
 name = "sqlotus"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "rust_xlsxwriter",
  "serde",
@@ -4112,8 +4112,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sqlotus-cli"
+version = "0.2.6"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlotus-core",
+]
+
+[[package]]
 name = "sqlotus-core"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "roxmltree",
  "serde",
@@ -4122,7 +4131,7 @@ dependencies = [
 
 [[package]]
 name = "sqlotus-db"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "chrono",
  "futures-util",
@@ -4141,7 +4150,7 @@ dependencies = [
 
 [[package]]
 name = "sqlotus-store"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "keyring",
  "rusqlite",

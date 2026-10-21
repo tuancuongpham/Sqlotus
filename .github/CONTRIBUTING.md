@@ -25,11 +25,12 @@ npx tauri dev
 
 ## Project layout
 
-- `crates/sqlotus-core` — the SQL engine: tokenizer, formatter, completion, analysis, refactorings, plans,
-  schema compare. Pure Rust, no IO — most features and almost all tests live here.
+- `crates/sqlotus-core` — the SQL engine: tokenizer, formatter, completion, analysis and lint rules, refactorings,
+  plans, schema compare, the source-control schema folder. Pure Rust, no IO — most features and tests live here.
+- `crates/sqlotus-cli` — `sqlotus-lint`, the analysis on the command line (for CI).
 - `crates/sqlotus-db` — connections, query execution and metadata loading for each server.
 - `crates/sqlotus-store` — local SQLite storage (connections, settings, snippets, history).
-- `src-tauri` — the desktop app's commands.
+- `src-tauri` — the desktop app's commands (source control runs git from here).
 - `src` — the React + Monaco user interface.
 - `scripts` — end-to-end UI tests, Docker test databases and the third-party license generator.
 - `docs` — README translations and screenshots; `licenses` — third-party licenses shipped with the app.

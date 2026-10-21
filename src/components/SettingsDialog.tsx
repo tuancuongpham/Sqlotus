@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { api, errorText, newId } from "../api";
 import { toast } from "../notify";
-import type { Dialect, Settings, Snippet } from "../types";
+import type { AnalysisRule, Dialect, Settings, Snippet } from "../types";
 
 const SAMPLE = `select o.Id, c.Name, sum(i.Qty * i.Price) as Total from dbo.Orders o inner join dbo.Customers c on c.Id = o.CustomerId left join dbo.OrderItems i on i.OrderId = o.Id where o.CreatedAt >= '2024-01-01' and (c.Country = 'VN' or c.Vip = 1) group by o.Id, c.Name having sum(i.Qty) > 1 order by Total desc`;
 
@@ -15,7 +15,18 @@ interface Props {
 
 export function SettingsDialog({ settings, dialect, onClose, onSaved }: Props) {
   const [s, setS] = useState<Settings>(settings);
-  const [page, setPage] = useState<"format" | "editor" | "safety" | "snippets">("format");
+  const [page, setPage] = useState<"format" | "editor" | "analysis" | "safety" | "snippets">("format");
+  const [rules, setRules] = useState<AnalysisRule[]>([]);
+  useEffect(() => {
+    api.analysisRules().then(setRules).catch(() => undefined);
+  }, []);
+  const disabled = new Set((s.analysis?.disabled ?? []).map((c) => c.toUpperCase()));
+  const setRule = (code: string, on: boolean) => {
+    const next = new Set(disabled);
+    if (on) next.delete(code);
+    else next.add(code);
+    setS({ ...s, analysis: { disabled: [...next].sort() } });
+  };
   const [preview, setPreview] = useState("");
   const [snippets, setSnippets] = useState<Snippet[]>([]);
   const [snip, setSnip] = useState<Snippet | null>(null);
@@ -77,9 +88,9 @@ export function SettingsDialog({ settings, dialect, onClose, onSaved }: Props) {
       <div className="modal settings-modal" onMouseDown={(ev) => ev.stopPropagation()}>
         <div className="modal-title">Options</div>
         <div className="settings-tabs">
-          {(["format", "editor", "safety", "snippets"] as const).map((p) => (
+          {(["format", "editor", "analysis", "safety", "snippets"] as const).map((p) => (
             <button key={p} className={page === p ? "active" : ""} onClick={() => setPage(p)}>
-              {{ format: "Formatting", editor: "Editor & completion", safety: "Safety", snippets: "Snippets" }[p]}
+              {{ format: "Formatting", editor: "Editor & completion", analysis: "Analysis", safety: "Safety", snippets: "Snippets" }[p]}
             </button>
           ))}
         </div>
@@ -178,6 +189,26 @@ export function SettingsDialog({ settings, dialect, onClose, onSaved }: Props) {
               <input type="checkbox" checked={c.assignAliases} onChange={(ev) => setC("assignAliases", ev.target.checked)} />
               Assign table aliases automatically
             </label>
+          </div>
+        )}
+        {page === "analysis" && (
+          <div className="settings-body settings-form analysis-rules">
+            {rules.map((r) => (
+              <label key={r.code} className="check">
+                <input type="checkbox" checked={!disabled.has(r.code)} onChange={(ev) => setRule(r.code, ev.target.checked)} />
+                <b>{r.code}</b>&nbsp;{r.title}
+                <small className="rule-notes">
+                  {r.severity}
+                  {r.needsCatalog ? " · needs a connected database" : ""}
+                  {r.only === "mssql" ? " · SQL Server" : ""}
+                </small>
+              </label>
+            ))}
+            <small className="settings-hint">
+              Switch a rule off for one place with a comment: <code>-- sqlotus-disable-line SQ002</code> at the end of a line,{" "}
+              <code>-- sqlotus-disable-next-line SQ001</code> above it, or <code>-- sqlotus-disable SQ005</code> …{" "}
+              <code>-- sqlotus-enable</code> around a block. The same rules run in CI with <code>sqlotus-lint</code>.
+            </small>
           </div>
         )}
         {page === "safety" && (

@@ -1,0 +1,17 @@
+[package]
+name = "sqlotus-cli"
+description = "sqlotus-lint: the Sqlotus code analysis for SQL files, for CI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "sqlotus-lint"
+path = "src/main.rs"
+
+[dependencies]
+sqlotus-core = { path = "../sqlotus-core" }
+serde.workspace = true
+serde_json.workspace = true

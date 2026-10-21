@@ -58,8 +58,9 @@ Run the newer installer. Connections, saved passwords, history and settings are 
 |---|---|
 | **Write SQL fast** | context-aware completion, foreign-key joins, `INSERT`/`EXEC` generation, wildcard expansion, snippets |
 | **Format and refactor** | configurable formatter, qualify names, rename variables and aliases, go to definition |
-| **Stay safe** | analysis while you type, confirmations for risky statements, read-only and production connections, open-transaction reminders |
+| **Stay safe** | analysis while you type with a Problems list and quick fixes, confirmations for risky statements, read-only and production connections, open-transaction reminders |
 | **Understand the database** | Object Search, Object Explorer, ER diagram, Used by, index health, activity monitor, schema compare |
+| **Work as a team** | the schema in a git repository (commit, get latest, conflicts), the same analysis in CI with `sqlotus-lint` |
 | **Work with results** | virtualized grid, edit rows, copy as INSERT/CSV/JSON/Markdown, Excel, charts, result compare, estimated plans |
 | **Never lose a query** | every tab versioned automatically, full-text history, closed tabs reopened, tabs restored on restart |
 
@@ -126,6 +127,12 @@ Click a group for the details.
 - **Undeclared variables**: running `… WHERE Id = @Id` without a `DECLARE` asks for the value (and type) and
   declares it for you; values are remembered.
 - **Find invalid objects**: views, procedures, functions and triggers that reference missing tables or columns.
+- **Problems** (tab next to Results): every problem of the tab with its rule and position; click to go there, group by
+  rule or severity, filter, copy as a Markdown table. **Quick fixes** (Ctrl+. or Fix / Fix all): `= NULL` →
+  `IS NULL`, add the `N` prefix, remove an unused declaration — Fix all is one undo step.
+- **Rules**: switch rules off in Options → Analysis, or for one place with a comment:
+  `-- sqlotus-disable-line SQ002`, `-- sqlotus-disable-next-line SQ001`, or `-- sqlotus-disable SQ005` …
+  `-- sqlotus-enable` around a block. The light bulb adds the comment for you.
 
 </details>
 
@@ -169,13 +176,33 @@ Click a group for the details.
   ordered by dependencies (foreign keys dropped first and re-created last, missing schemas created), lists
   data-loss warnings at the top, and opens in a tab connected to the target — it is never run for you. Objects
   only in the target are not selected unless you choose to drop them. SQL Server requires VIEW DEFINITION:
-  without it hidden objects would look missing, so the comparison refuses instead.
+  without it hidden objects would look missing, so the comparison refuses instead. Filter the list, open the
+  identical objects, save a comparison to run it again, and export a report (HTML page or Markdown).
 - **Index health**: missing indexes the server suggests, duplicate and overlapping indexes, indexes nobody reads,
   tables read by full scans and large heaps. Fixes are CREATE/DROP scripts opened in a tab, never run directly.
 - **Test data**: realistic rows for a table (Vietnamese or English names, e-mails, phones, addresses, amounts,
   dates); foreign keys use rows that exist in the parent table and non-identity keys continue after the current
   maximum. The INSERT script opens in a new tab to review and run. E-mails use reserved example domains; phone
   numbers follow real formats and may belong to real people, so never send messages to them.
+
+</details>
+
+<details>
+<summary><b>Source control (git)</b></summary>
+
+Keep a database's schema in a folder — usually a git repository shared with your team (toolbar → Source control).
+
+- Sqlotus writes one `.sql` file per table, view, procedure, function and trigger, for people and pull requests,
+  and `sqlotus-schema.json`, the snapshot it compares with.
+- Changes are sorted against the last state the database and the folder agreed on: **changes in the database**
+  (commit them), **changes in the folder** (your team's: get them), and **conflicts** (both sides changed: keep
+  the database version or take the folder version). A side-by-side diff shows each one.
+- **Commit** writes the chosen objects into the folder and runs `git commit` on that folder only. **Get latest**
+  builds a script for the chosen folder changes, between `Scripts/pre-deploy.sql` and `Scripts/post-deploy.sql`
+  (data moves, renames), and opens it in a tab connected to the database — it is never run for you.
+- **Pull**, **Push** and **History** run git in the folder. A folder can only be linked when it is empty or
+  already holds a Sqlotus schema, so a commit never takes other files with it; files edited by hand are reported.
+- Works the same for SQL Server, PostgreSQL and MySQL.
 
 </details>
 
@@ -234,6 +261,33 @@ Click a group for the details.
 
 </details>
 
+## Command line: sqlotus-lint
+
+The same rules, suppression comments and quick fixes for `.sql` files in a repository, for CI or a pre-commit
+check. `sqlotus-lint.exe` comes with each release; on any system with Rust:
+`cargo install --git https://github.com/tuancuongpham/Sqlotus sqlotus-cli --locked`.
+
+```bash
+sqlotus-lint --dialect mssql --fail-on warning sql/
+```
+
+| Option | |
+|---|---|
+| `--dialect mssql\|postgres\|mysql` | SQL dialect (default `mssql`, or the schema folder's) |
+| `--schema <folder>` | a Sqlotus schema folder: also checks table and column names (SQ006, SQ007, SQ011) |
+| `--disable SQ002,SQ005` | switch rules off |
+| `--format text\|json\|github` | `github` prints annotations that GitHub Actions shows on the pull request |
+| `--fail-on error\|warning\|info\|never` | exit code 1 when a problem at this level or above is found (default `warning`) |
+| `--fix` | apply the safe quick fixes in place, then report what is left |
+| `--list-rules` | the rules and what they need |
+
+A GitHub Actions step, with the schema folder committed by Source control:
+
+```yaml
+- run: cargo install --git https://github.com/tuancuongpham/Sqlotus sqlotus-cli --locked
+- run: sqlotus-lint --schema db/schema --format github sql/
+```
+
 ## Screenshots
 
 <table>
@@ -258,7 +312,8 @@ Click a group for the details.
 ## How Sqlotus works
 
 - **The SQL engine** (`crates/sqlotus-core`) is a pure-Rust library with no IO: a fault-tolerant tokenizer that
-  copes with half-typed queries, the formatter, completion, code analysis, refactorings, plans and schema compare.
+  copes with half-typed queries, the formatter, completion, code analysis, refactorings, plans, schema compare and
+  the schema folder of Source control. `sqlotus-lint` (`crates/sqlotus-cli`) runs the same engine on the command line.
 - **Drivers** (`crates/sqlotus-db`) talk to each server directly — tiberius for SQL Server, tokio-postgres and
   mysql_async — and load the metadata that completion and analysis use.
 - **The app** is built with [Tauri 2](https://tauri.app): a small native Rust backend with a React + Monaco
@@ -325,7 +380,9 @@ Yes. **Options → Snippets → Import snippets…** reads a folder of `.json` f
 - SQL Server: `PRINT` messages are not shown yet, and changed-row counts only for scripts that just change rows
   (the tiberius driver does not expose them for other batches).
 - Schema compare treats a renamed column or table as drop + add, and leaves identity / computed column changes
-  to be done by hand.
+  to be done by hand. Source control works the same way: use `Scripts/pre-deploy.sql` for renames and data moves.
+- Source control keeps the schema, not table data, and compares its snapshot: change the database and commit,
+  rather than editing the `.sql` files by hand.
 - Windows only for now.
 - Named-pipe connections (LocalDB) are not supported; use TCP.
 - Test data does not read CHECK or UNIQUE constraints: a value may break a CHECK rule or repeat in a UNIQUE column

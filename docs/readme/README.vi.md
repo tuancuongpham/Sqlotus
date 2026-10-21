@@ -58,8 +58,9 @@ Chạy bộ cài bản mới. Kết nối, mật khẩu đã lưu, lịch sử v
 |---|---|
 | **Viết SQL nhanh** | gợi ý theo ngữ cảnh, JOIN theo khoá ngoại, sinh `INSERT`/`EXEC`, mở rộng `*`, snippet |
 | **Format và refactor** | formatter tuỳ chỉnh, qualify tên, đổi tên biến và alias, đi tới định nghĩa |
-| **An toàn** | phân tích khi gõ, hỏi lại câu lệnh nguy hiểm, kết nối read-only và production, nhắc transaction đang mở |
+| **An toàn** | phân tích khi gõ kèm danh sách Problems và sửa nhanh, hỏi lại câu lệnh nguy hiểm, kết nối read-only và production, nhắc transaction đang mở |
 | **Hiểu database** | Object Search, Object Explorer, sơ đồ ER, Used by, sức khoẻ index, Activity, so sánh schema |
+| **Làm việc nhóm** | schema trong repository git (commit, get latest, xung đột), cùng bộ phân tích chạy trong CI bằng `sqlotus-lint` |
 | **Làm việc với kết quả** | lưới ảo hoá, sửa dữ liệu, copy dạng INSERT/CSV/JSON/Markdown, Excel, biểu đồ, so sánh kết quả, kế hoạch thực thi |
 | **Không mất query** | tự lưu phiên bản mọi tab, tìm full-text, mở lại tab đã đóng, khôi phục tab khi mở lại app |
 
@@ -114,6 +115,12 @@ Bấm vào từng nhóm để xem chi tiết.
   lại (ghi rõ server) trước mọi câu lệnh thay đổi dữ liệu hoặc schema và trước mọi lời gọi procedure (`EXEC` / `CALL`).
 - **Biến chưa khai báo**: chạy `… WHERE Id = @Id` mà chưa `DECLARE` sẽ hỏi giá trị (và kiểu), tự khai báo, nhớ giá trị.
 - **Find invalid objects**: view/proc/function/trigger tham chiếu tới bảng/cột không còn tồn tại.
+- **Problems** (tab cạnh Results): mọi lỗi của tab kèm quy tắc và vị trí; bấm để nhảy tới, nhóm theo quy tắc hoặc mức độ,
+  lọc, copy thành bảng Markdown. **Sửa nhanh** (Ctrl+. hoặc Fix / Fix all): `= NULL` → `IS NULL`, thêm tiền tố `N`, xoá
+  khai báo biến không dùng — Fix all hoàn tác được bằng một lần Undo.
+- **Quy tắc**: tắt trong Options → Analysis, hoặc tắt cho một chỗ bằng comment: `-- sqlotus-disable-line SQ002`,
+  `-- sqlotus-disable-next-line SQ001`, hoặc `-- sqlotus-disable SQ005` … `-- sqlotus-enable` bao quanh một đoạn. Bóng đèn
+  (Ctrl+.) chèn comment này giúp bạn.
 
 </details>
 
@@ -149,7 +156,8 @@ Bấm vào từng nhóm để xem chi tiết.
   default, identity, computed), khoá chính, index, unique, khoá ngoại, check, view, procedure, function, trigger; xem
   khác biệt từng object song song. Script đồng bộ sắp theo phụ thuộc (bỏ khoá ngoại trước, tạo lại sau cùng, tạo schema
   còn thiếu), ghi cảnh báo mất dữ liệu ở đầu, mở ra tab đã kết nối tới database đích và không tự chạy. Object chỉ có ở
-  đích không được chọn sẵn. SQL Server cần quyền VIEW DEFINITION; thiếu quyền thì từ chối so sánh vì object bị ẩn sẽ
+  đích không được chọn sẵn. Có ô lọc danh sách, xem các object giống nhau, lưu cấu hình so sánh để chạy lại, và xuất báo cáo
+  (trang HTML hoặc Markdown). SQL Server cần quyền VIEW DEFINITION; thiếu quyền thì từ chối so sánh vì object bị ẩn sẽ
   trông như không tồn tại.
 - **Sức khoẻ index**: index server gợi ý còn thiếu, index trùng/chồng lấn, index không ai đọc, bảng bị đọc toàn bộ,
   heap lớn. Cách sửa là script CREATE/DROP mở ra tab, không tự chạy.
@@ -157,6 +165,25 @@ Bấm vào từng nhóm để xem chi tiết.
   tiền, ngày); khoá ngoại lấy giá trị có thật ở bảng cha. Script INSERT mở ra tab mới để xem trước rồi mới chạy.
   Email dùng tên miền ví dụ dành riêng; số điện thoại theo định dạng thật nên có thể trùng số của người khác — đừng
   dùng chúng để gửi tin nhắn.
+
+</details>
+
+<details>
+<summary><b>Quản lý schema bằng git (Source control)</b></summary>
+
+Giữ schema của một database trong một thư mục — thường là repository git dùng chung với nhóm (thanh công cụ → Source control).
+
+- Sqlotus ghi mỗi bảng, view, procedure, function, trigger thành một file `.sql` để người đọc và review trong pull request,
+  cùng `sqlotus-schema.json` là snapshot dùng để so sánh.
+- Thay đổi được phân loại theo trạng thái chung gần nhất của database và thư mục: **thay đổi trong database** (commit lên),
+  **thay đổi trong thư mục** (của đồng đội: lấy về), và **xung đột** (cả hai bên cùng đổi: giữ bản database hoặc lấy bản
+  trong thư mục). Mỗi thay đổi có diff song song.
+- **Commit** ghi các object đã chọn vào thư mục và chạy `git commit` chỉ cho thư mục đó. **Get latest** sinh script cho các
+  thay đổi đã chọn, đặt giữa `Scripts/pre-deploy.sql` và `Scripts/post-deploy.sql` (chuyển dữ liệu, đổi tên), rồi mở ra tab
+  đã kết nối tới database — không bao giờ tự chạy.
+- **Pull**, **Push** và **History** chạy git trong thư mục. Chỉ liên kết được với thư mục trống hoặc đã có schema của
+  Sqlotus, nên commit không bao giờ kéo theo file khác; file bị sửa tay sẽ được báo.
+- Dùng giống nhau cho SQL Server, PostgreSQL và MySQL.
 
 </details>
 
@@ -207,6 +234,33 @@ Bấm vào từng nhóm để xem chi tiết.
 
 </details>
 
+## Dòng lệnh: sqlotus-lint
+
+Cùng các quy tắc, comment bỏ qua lỗi và sửa nhanh, chạy trên file `.sql` trong repository, cho CI hoặc kiểm tra trước khi
+commit. Mỗi bản phát hành có kèm `sqlotus-lint.exe`; trên máy bất kỳ có Rust:
+`cargo install --git https://github.com/tuancuongpham/Sqlotus sqlotus-cli --locked`.
+
+```bash
+sqlotus-lint --dialect mssql --fail-on warning sql/
+```
+
+| Tuỳ chọn | |
+|---|---|
+| `--dialect mssql\|postgres\|mysql` | loại SQL (mặc định `mssql`, hoặc theo thư mục schema) |
+| `--schema <thư mục>` | thư mục schema của Sqlotus: kiểm tra thêm tên bảng và cột (SQ006, SQ007, SQ011) |
+| `--disable SQ002,SQ005` | tắt quy tắc |
+| `--format text\|json\|github` | `github` in chú thích để GitHub Actions hiển thị ngay trên pull request |
+| `--fail-on error\|warning\|info\|never` | trả mã 1 khi có lỗi từ mức này trở lên (mặc định `warning`) |
+| `--fix` | áp dụng các sửa nhanh an toàn ngay trong file, rồi báo phần còn lại |
+| `--list-rules` | danh sách quy tắc và yêu cầu của từng quy tắc |
+
+Một bước GitHub Actions, với thư mục schema do Source control commit:
+
+```yaml
+- run: cargo install --git https://github.com/tuancuongpham/Sqlotus sqlotus-cli --locked
+- run: sqlotus-lint --schema db/schema --format github sql/
+```
+
 ## Ảnh chụp màn hình
 
 <table>
@@ -231,7 +285,8 @@ Bấm vào từng nhóm để xem chi tiết.
 ## Sqlotus hoạt động thế nào
 
 - **Bộ máy SQL** (`crates/sqlotus-core`) là thư viện Rust thuần, không IO: tokenizer chịu lỗi (hiểu cả query đang gõ
-  dở), formatter, gợi ý code, phân tích code, refactor, kế hoạch thực thi và so sánh schema.
+  dở), formatter, gợi ý code, phân tích code, refactor, kế hoạch thực thi, so sánh schema và thư mục schema của Source
+  control. `sqlotus-lint` (`crates/sqlotus-cli`) chạy cùng bộ máy này trên dòng lệnh.
 - **Driver** (`crates/sqlotus-db`) kết nối thẳng tới từng server — tiberius cho SQL Server, tokio-postgres và
   mysql_async — và nạp metadata cho gợi ý và phân tích.
 - **Ứng dụng** dùng [Tauri 2](https://tauri.app): backend Rust gọn nhẹ với giao diện React + Monaco. Bộ cài dưới 10 MB.
@@ -295,7 +350,10 @@ Có. **Options → Snippets → Import snippets…** đọc một thư mục cá
 
 - SQL Server: chưa hiển thị thông báo `PRINT`; số dòng thay đổi chỉ có với script chỉ thay đổi dữ liệu (driver tiberius
   chưa cung cấp cho batch khác).
-- So sánh schema coi đổi tên cột/bảng là xoá + thêm; identity / cột computed khác nhau phải sửa tay.
+- So sánh schema coi đổi tên cột/bảng là xoá + thêm; identity / cột computed khác nhau phải sửa tay. Source control cũng
+  vậy: dùng `Scripts/pre-deploy.sql` để đổi tên hoặc chuyển dữ liệu.
+- Source control giữ schema, không giữ dữ liệu trong bảng, và so sánh theo snapshot: hãy sửa database rồi commit, đừng sửa
+  tay các file `.sql`.
 - Hiện chỉ chạy trên Windows.
 - Chưa hỗ trợ kết nối named pipe (LocalDB); dùng TCP.
 - Dữ liệu test chưa đọc ràng buộc CHECK và UNIQUE: giá trị có thể vi phạm điều kiện CHECK hoặc bị trùng ở cột UNIQUE (mã

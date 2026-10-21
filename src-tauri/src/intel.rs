@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use sqlotus_core::analysis::{self, ObjectAt, Severity, SignatureInfo};
 use sqlotus_core::catalog::DbObject;
 use sqlotus_core::format::KeywordCase;
+use sqlotus_core::lint::{self, RULES, Rule};
 use sqlotus_core::{Dialect, byte_to_utf16, refactor, script, utf16_to_byte};
 use sqlotus_db::CatalogSnapshot;
 use tauri::State;
@@ -51,13 +52,27 @@ pub struct DiagnosticDto {
     severity: Severity,
     code: String,
     message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fix: Option<FixDto>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FixDto {
+    title: String,
+    start: usize,
+    end: usize,
+    text: String,
+}
+
+/// Code analysis of the editor text, without switched-off rules and lines
+/// suppressed by `-- sqlotus-disable…` comments.
 #[tauri::command]
 pub async fn diagnostics(state: State<'_, AppState>, args: EditorArgs) -> CmdResult<Vec<DiagnosticDto>> {
     let snap = args.catalog(&state);
+    let options = state.settings().analysis;
     let found = no_panic("code analysis", || {
-        analysis::diagnostics(&args.text, args.dialect, snap.as_ref().map(|s| &s.catalog))
+        lint::lint(&args.text, args.dialect, snap.as_ref().map(|s| &s.catalog), &options)
     })?;
     Ok(found
         .into_iter()
@@ -67,8 +82,20 @@ pub async fn diagnostics(state: State<'_, AppState>, args: EditorArgs) -> CmdRes
             severity: d.severity,
             code: d.code,
             message: d.message,
+            fix: d.fix.map(|f| FixDto {
+                title: f.title,
+                start: args.u16(f.start),
+                end: args.u16(f.end),
+                text: f.text,
+            }),
         })
         .collect())
+}
+
+/// The analysis rules (for Options → Analysis).
+#[tauri::command]
+pub fn analysis_rules() -> Vec<Rule> {
+    RULES.to_vec()
 }
 
 #[tauri::command]

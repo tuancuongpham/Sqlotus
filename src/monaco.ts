@@ -9,7 +9,8 @@ import "monaco-editor/languages/definitions/pgsql/register";
 import "monaco-editor/languages/definitions/mysql/register";
 import EditorWorker from "monaco-editor/editor/editor.worker?worker";
 import { api } from "./api";
-import type { CompletionItem, CompletionKind, Dialect, EditorArgs } from "./types";
+import { ignoreOnLineEdit, nonOverlappingFixes } from "./problems";
+import type { CompletionItem, CompletionKind, Diagnostic, Dialect, EditorArgs } from "./types";
 
 self.MonacoEnvironment = { getWorker: () => new EditorWorker() };
 
@@ -33,6 +34,30 @@ export function bindModelContext(model: monaco.editor.ITextModel, get: () => Mod
 
 export function unbindModelContext(model: monaco.editor.ITextModel) {
   contexts.delete(model.uri.toString());
+  found.delete(model.uri.toString());
+}
+
+/** The latest analysis of each model (with quick fixes), for Problems and code actions. */
+const found = new Map<string, Diagnostic[]>();
+
+export function diagnosticsOf(model: monaco.editor.ITextModel): Diagnostic[] {
+  return found.get(model.uri.toString()) ?? [];
+}
+
+/** Apply every quick fix that does not overlap another, as one undo step. */
+export function applyFixes(editor: monaco.editor.IStandaloneCodeEditor, list: Diagnostic[]): number {
+  const model = editor.getModel();
+  if (!model) return 0;
+  const fixes = nonOverlappingFixes(list);
+  if (fixes.length === 0) return 0;
+  const range = (start: number, end: number) => monaco.Range.fromPositions(model.getPositionAt(start), model.getPositionAt(end));
+  editor.pushUndoStop();
+  editor.executeEdits(
+    "sqlotus-fix",
+    fixes.map((f) => ({ range: range(f.start, f.end), text: f.text })),
+  );
+  editor.pushUndoStop();
+  return fixes.length;
 }
 
 function contextOf(model: monaco.editor.ITextModel): ModelContext {
@@ -62,12 +87,13 @@ export async function updateDiagnostics(model: monaco.editor.ITextModel) {
   if (model.isDisposed()) return;
   const version = model.getVersionId();
   try {
-    const found = await api.diagnostics(editorArgs(model));
+    const list = await api.diagnostics(editorArgs(model));
     if (model.isDisposed() || model.getVersionId() !== version) return;
+    found.set(model.uri.toString(), list);
     monaco.editor.setModelMarkers(
       model,
       "sqlotus",
-      found.map((d) => {
+      list.map((d) => {
         const s = model.getPositionAt(d.start);
         const e = model.getPositionAt(d.end);
         return {
@@ -169,6 +195,59 @@ export function registerProviders() {
         } catch {
           return { suggestions: [] };
         }
+      },
+    });
+
+    // the light bulb: the quick fix of a problem, and switching its rule off on that line
+    monaco.languages.registerCodeActionProvider(lang, {
+      provideCodeActions(model, _range, context) {
+        const actions: monaco.languages.CodeAction[] = [];
+        const list = diagnosticsOf(model);
+        for (const marker of context.markers) {
+          if (marker.source !== "Sqlotus") continue;
+          const code = String(typeof marker.code === "object" ? marker.code.value : (marker.code ?? ""));
+          const start = model.getOffsetAt({ lineNumber: marker.startLineNumber, column: marker.startColumn });
+          const d = list.find((x) => x.code === code && x.start === start);
+          if (d?.fix) {
+            const f = d.fix;
+            actions.push({
+              title: f.title,
+              kind: "quickfix",
+              isPreferred: true,
+              diagnostics: [marker],
+              edit: {
+                edits: [
+                  {
+                    resource: model.uri,
+                    versionId: model.getVersionId(),
+                    textEdit: { range: monaco.Range.fromPositions(model.getPositionAt(f.start), model.getPositionAt(f.end)), text: f.text },
+                  },
+                ],
+              },
+            });
+          }
+          const ignore = ignoreOnLineEdit(model.getLineContent(marker.startLineNumber), code);
+          if (ignore) {
+            actions.push({
+              title: `Ignore ${code} on this line`,
+              kind: "quickfix",
+              diagnostics: [marker],
+              edit: {
+                edits: [
+                  {
+                    resource: model.uri,
+                    versionId: model.getVersionId(),
+                    textEdit: {
+                      range: new monaco.Range(marker.startLineNumber, ignore.column, marker.startLineNumber, ignore.column),
+                      text: ignore.text,
+                    },
+                  },
+                ],
+              },
+            });
+          }
+        }
+        return { actions, dispose: () => undefined };
       },
     });
 

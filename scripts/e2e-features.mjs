@@ -142,6 +142,22 @@ await press("Tab");
 const starHint = await until(() => evaluate(`[...document.querySelectorAll(".toast")].some((t) => t.textContent.includes("No columns to expand yet"))`), 4000);
 check("Tab after * without FROM explains", !!starHint && (await editorText()).trimEnd() === "SELECT *", JSON.stringify(await editorText()));
 
+// 4c. Problems: the list of the tab's analysis, quick fixes, and suppression comments
+await setText("SELECT Id FROM dbo.Orders WHERE Total = NULL AND CustomerId <> NULL");
+const problemsTab = () => evaluate(`document.querySelector(".problems-tab")?.textContent ?? ""`);
+const listed = await until(async () => ((await problemsTab()).includes("(2)") ? problemsTab() : null), 6000);
+check("Problems tab counts the problems", !!listed, await problemsTab());
+await evaluate(`document.querySelector(".problems-tab").click()`);
+const problemRows = await until(() => evaluate(`[...document.querySelectorAll(".problem-row")].map((r) => r.innerText.replace(/\\s+/g, " "))`), 3000);
+check("Problems lists rule, message and position", !!problemRows && problemRows.length === 2 && problemRows[0].includes("SQ003") && problemRows[0].includes("1:"), JSON.stringify(problemRows));
+await evaluate(`[...document.querySelectorAll(".problems-bar button")].find((b) => b.textContent.startsWith("Fix all")).click()`);
+await sleep(600);
+check("Fix all rewrites = NULL", (await editorText()).includes("Total IS NULL AND CustomerId IS NOT NULL"), JSON.stringify(await editorText()));
+await setText("DELETE FROM dbo.Orders -- sqlotus-disable-line SQ001");
+await sleep(1200);
+check("a suppression comment hides the problem", (await problemsTab()).includes("(0)"), await problemsTab());
+await setText("SELECT 1");
+
 // 5. expand wildcards (Ctrl+B, Ctrl+W) and qualify names (Ctrl+B, Ctrl+Q)
 await setText("SELECT * FROM Customers");
 await press("Control+B");

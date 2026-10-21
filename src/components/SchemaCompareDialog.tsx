@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { save } from "@tauri-apps/plugin-dialog";
 import { api, errorText } from "../api";
+import { compareReportHtml, compareReportMarkdown, matchesFilter } from "../compareReport";
 import { monaco } from "../monaco";
 import { toast, update } from "../notify";
-import type { Dialect, ObjectDiff, SavedConnection, SchemaCompareResult } from "../types";
+import type { Dialect, ObjectDiff, SavedCompare, SavedConnection, SchemaCompareResult } from "../types";
 
 const LANGUAGE: Record<Dialect, string> = { mssql: "sql", postgres: "pgsql", mysql: "mysql" };
 const CHANGE_LABEL: Record<ObjectDiff["change"], string> = {
@@ -17,7 +19,7 @@ interface Side {
 }
 
 /** Side-by-side diff of one object's definition in both databases. */
-function ObjectDiffView({ diff, dialect }: { diff: ObjectDiff; dialect: Dialect }) {
+export function ObjectDiffView({ diff, dialect }: { diff: Pick<ObjectDiff, "sourceText" | "targetText">; dialect: Dialect }) {
   const el = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const left = monaco.editor.createModel(diff.targetText ?? "", LANGUAGE[dialect]);
@@ -70,6 +72,56 @@ export function SchemaCompareDialog({
   const [error, setError] = useState("");
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [current, setCurrent] = useState<string | null>(null);
+  const [filter, setFilter] = useState("");
+  const [showIdentical, setShowIdentical] = useState(false);
+  const [saved, setSaved] = useState<SavedCompare[]>([]);
+  const [savedName, setSavedName] = useState("");
+  useEffect(() => {
+    api.savedCompares().then(setSaved).catch(() => undefined);
+  }, []);
+
+  const connName = (id: string) => connections.find((c) => c.id === id)?.name ?? "?";
+  const storeSaved = async (list: SavedCompare[]) => {
+    setSaved(list);
+    await api.saveSavedCompares(list).catch((e) => toast.error("Could not save the list", errorText(e)));
+  };
+  const saveCurrent = async () => {
+    const name = `${connName(source.connectionId)} / ${source.database} → ${connName(target.connectionId)} / ${target.database}`;
+    const entry: SavedCompare = { name, source, target, ignoreWhitespace, ignoreCase };
+    await storeSaved([...saved.filter((x) => x.name !== name), entry].sort((a, b) => a.name.localeCompare(b.name)));
+    setSavedName(name);
+    toast.success("Comparison saved", name);
+  };
+  const openSaved = (name: string) => {
+    setSavedName(name);
+    const x = saved.find((s) => s.name === name);
+    if (!x) return;
+    setSource(x.source);
+    setTarget(x.target);
+    setIgnoreWhitespace(x.ignoreWhitespace);
+    setIgnoreCase(x.ignoreCase);
+    setResult(null);
+  };
+  const exportReport = async () => {
+    if (!result) return;
+    const base = `schema-compare-${source.database}-${target.database}`.replace(/[^\w.-]+/g, "_");
+    const path = await save({
+      defaultPath: `${base}.html`,
+      filters: [
+        { name: "HTML page", extensions: ["html"] },
+        { name: "Markdown", extensions: ["md"] },
+      ],
+    });
+    if (!path) return;
+    const now = new Date();
+    const text = /\.md$/i.test(path) ? compareReportMarkdown(result, now) : compareReportHtml(result, now);
+    try {
+      await api.saveTextFile(path, text);
+      toast.success("Report saved", path);
+    } catch (e) {
+      toast.error("Could not save the report", errorText(e));
+    }
+  };
 
   // databases of each connection used (from a test connection)
   useEffect(() => {
@@ -138,9 +190,10 @@ export function SchemaCompareDialog({
 
   const groups = useMemo(() => {
     const out: Record<ObjectDiff["change"], ObjectDiff[]> = { changed: [], added: [], removed: [] };
-    for (const d of result?.diff.differences ?? []) out[d.change].push(d);
+    for (const d of result?.diff.differences ?? []) if (matchesFilter(d, filter)) out[d.change].push(d);
     return out;
-  }, [result]);
+  }, [result, filter]);
+  const identical = useMemo(() => (result?.diff.identicalObjects ?? []).filter((o) => matchesFilter(o, filter)), [result, filter]);
   const selected = result?.diff.differences.find((d) => d.key === current) ?? null;
   const toggle = (key: string, on: boolean) =>
     setPicked((p) => {
@@ -185,6 +238,28 @@ export function SchemaCompareDialog({
     <div className="modal-backdrop" onMouseDown={onClose} onKeyDown={(e) => e.key === "Escape" && onClose()}>
       <div className="modal schema-compare-modal" onMouseDown={(e) => e.stopPropagation()}>
         <div className="modal-title">Schema compare</div>
+        <div className="compare-saved">
+          <select value={savedName} onChange={(e) => openSaved(e.target.value)} title="Comparisons you saved">
+            <option value="">{saved.length ? "Saved comparisons…" : "No saved comparisons"}</option>
+            {saved.map((x) => (
+              <option key={x.name} value={x.name}>
+                {x.name}
+              </option>
+            ))}
+          </select>
+          <button onClick={() => void saveCurrent()} disabled={!source.database || !target.database} title="Save this source, target and options">
+            Save
+          </button>
+          <button
+            onClick={() => {
+              void storeSaved(saved.filter((x) => x.name !== savedName));
+              setSavedName("");
+            }}
+            disabled={!savedName}
+          >
+            Delete
+          </button>
+        </div>
         <div className="compare-setup">
           {sidePicker("Source", source, setSource)}
           <button
@@ -224,6 +299,7 @@ export function SchemaCompareDialog({
                 <span>· {result.diff.identical} identical</span>
                 {result.diff.skipped.length > 0 && <span title={result.diff.skipped.join(", ")}>· {result.diff.skipped.length} not readable (skipped)</span>}
                 <span className="spacer" />
+                <input className="compare-filter" placeholder="Filter objects…" value={filter} onChange={(e) => setFilter(e.target.value)} />
                 <button onClick={() => setPicked(new Set(result.diff.differences.map((d) => d.key)))}>All</button>
                 <button onClick={() => setPicked(new Set())}>None</button>
               </div>
@@ -256,6 +332,23 @@ export function SchemaCompareDialog({
                     ))}
                   </div>
                 ),
+              )}
+              {identical.length > 0 && (
+                <div className="compare-group change-identical">
+                  <div className="compare-group-head compare-toggle" onClick={() => setShowIdentical((v) => !v)}>
+                    {showIdentical ? "▾" : "▸"} Identical ({identical.length})
+                  </div>
+                  {showIdentical &&
+                    identical.map((o) => (
+                      <div key={o.key} className="compare-item identical" title="The same in both databases">
+                        <span className="compare-kind">{o.kind === "table" ? "▦" : o.kind === "view" ? "◫" : o.kind === "trigger" ? "⚡" : "ƒ"}</span>
+                        <span className="compare-name">
+                          {o.schema ? <small>{o.schema}.</small> : null}
+                          {o.name}
+                        </span>
+                      </div>
+                    ))}
+                </div>
               )}
             </div>
             <div className="compare-detail">
@@ -295,6 +388,9 @@ export function SchemaCompareDialog({
         <div className="modal-actions">
           <small>Nothing is changed here: the script opens in a tab connected to the target for you to review and run.</small>
           <span className="spacer" />
+          <button onClick={() => void exportReport()} disabled={!result} title="Save the comparison as an HTML page or Markdown">
+            Export report…
+          </button>
           <button className="primary" onClick={() => void generate()} disabled={!result || picked.size === 0}>
             Generate script ({picked.size})
           </button>

@@ -134,12 +134,35 @@ pub struct ObjectDiff {
     pub warnings: Vec<String>,
 }
 
+/// An object by name, for lists of identical objects.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ObjectRef {
+    pub key: String,
+    pub kind: ObjectKind,
+    pub schema: String,
+    pub name: String,
+}
+
+impl ObjectRef {
+    fn new(kind: ObjectKind, schema: &str, name: &str) -> Self {
+        Self {
+            key: object_key(kind, schema, name),
+            kind,
+            schema: schema.into(),
+            name: name.into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SchemaDiff {
     pub differences: Vec<ObjectDiff>,
     /// Objects present in both and identical.
     pub identical: usize,
+    /// The identical objects themselves (sorted like the differences).
+    pub identical_objects: Vec<ObjectRef>,
     /// Objects not compared because one side could not read them.
     pub skipped: Vec<String>,
 }
@@ -283,7 +306,8 @@ fn kind_word(k: ObjectKind) -> &'static str {
     }
 }
 
-fn object_key(kind: ObjectKind, schema: &str, name: &str) -> String {
+/// Stable id of an object: `table:dbo.orders` (names lower-cased).
+pub fn object_key(kind: ObjectKind, schema: &str, name: &str) -> String {
     format!("{}:{}.{}", kind_word(kind), schema.to_lowercase(), name.to_lowercase())
 }
 
@@ -757,6 +781,8 @@ pub fn compare(source: &SchemaModel, target: &SchemaModel, dialect: Dialect, opt
                 // a different column order alone is not worth a change
                 if details.iter().all(|d| d.starts_with("column order")) {
                     out.identical += 1;
+                    out.identical_objects
+                        .push(ObjectRef::new(ObjectKind::Table, &s.schema, &s.name));
                     continue;
                 }
                 out.differences.push(ObjectDiff {
@@ -823,7 +849,10 @@ pub fn compare(source: &SchemaModel, target: &SchemaModel, dialect: Dialect, opt
                     Some(t.definition.clone()),
                 ))
             }
-            Some(_) => out.identical += 1,
+            Some(_) => {
+                out.identical += 1;
+                out.identical_objects.push(ObjectRef::new(s.kind, &s.schema, &s.name));
+            }
         }
     }
     for (k, t) in &tmods {
@@ -846,6 +875,8 @@ pub fn compare(source: &SchemaModel, target: &SchemaModel, dialect: Dialect, opt
         Change::Added => 1,
         Change::Removed => 2,
     };
+    out.identical_objects
+        .sort_by_key(|o| (kind_word(o.kind), o.schema.to_lowercase(), o.name.to_lowercase()));
     out.differences.sort_by(|a, b| {
         (
             order(a.change),
@@ -1502,6 +1533,16 @@ mod tests {
         let d = compare(&model(), &model(), MS, &opts);
         assert!(d.differences.is_empty());
         assert_eq!(d.identical, 3);
+        // the identical objects are listed, sorted, with the same keys as differences
+        assert_eq!(d.identical_objects.len(), 3);
+        let keys: Vec<&str> = d.identical_objects.iter().map(|o| o.key.as_str()).collect();
+        let mut sorted = keys.clone();
+        sorted.sort_unstable();
+        assert!(
+            keys.iter().all(|k| k.contains(':') && k.to_lowercase() == **k),
+            "{keys:?}"
+        );
+        assert_eq!(keys, sorted);
         let empty = compare(&SchemaModel::default(), &SchemaModel::default(), MS, &opts);
         assert!(empty.differences.is_empty() && empty.identical == 0);
         let s = sync_script(&model(), &model(), &d, &[], MS, &opts);

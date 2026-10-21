@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
 use serde::{Deserialize, Serialize};
+use sqlotus_core::lint::LintOptions;
 use sqlotus_core::{CompletionOptions, FormatOptions};
 use sqlotus_db::{CancelHandle, CatalogSnapshot, Connection, ConnectionConfig};
 use sqlotus_store::Store;
@@ -56,6 +57,8 @@ pub struct Settings {
     pub completion: CompletionOptions,
     pub editor: EditorSettings,
     pub safety: SafetySettings,
+    /// Code analysis rules that are switched off.
+    pub analysis: LintOptions,
 }
 
 /// A tab's connection. The connection sits behind an async mutex because a
