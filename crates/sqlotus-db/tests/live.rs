@@ -15,9 +15,7 @@ use serde::Deserialize;
 use sqlotus_core::catalog::ObjectKind;
 use sqlotus_core::search::{MatchIn, SearchOptions, search};
 use sqlotus_core::{CompletionKind, CompletionOptions, complete};
-use sqlotus_db::{
-    BatchOutput, Connection, ConnectionConfig, Limits, MessageKind, execute_script, load_catalog,
-};
+use sqlotus_db::{BatchOutput, Connection, ConnectionConfig, Limits, MessageKind, execute_script, load_catalog};
 
 #[derive(Deserialize)]
 struct Env {
@@ -74,27 +72,18 @@ async fn exercise(var: &str, script: &str, expected_sets: usize, names: Names) {
 
     // unicode round trip
     let rows = conn
-        .query_strings(&format!(
-            "SELECT name FROM {} WHERE id = 1",
-            names.customers
-        ))
+        .query_strings(&format!("SELECT name FROM {} WHERE id = 1", names.customers))
         .await
         .expect("query");
     assert_eq!(rows[0][0].as_deref(), Some("Nguyễn Văn A"));
 
     // errors come back as messages, and the connection stays usable
     let bad = conn
-        .execute(
-            "SELECT * FROM table_that_does_not_exist",
-            &Limits::default(),
-        )
+        .execute("SELECT * FROM table_that_does_not_exist", &Limits::default())
         .await;
     assert!(bad.failed, "{bad:?}");
     let err = first_error(&bad);
-    assert!(
-        err.to_lowercase().contains("table_that_does_not_exist"),
-        "{err}"
-    );
+    assert!(err.to_lowercase().contains("table_that_does_not_exist"), "{err}");
     assert!(conn.query_strings("SELECT 1").await.is_ok());
 
     // row limit
@@ -113,9 +102,7 @@ async fn exercise(var: &str, script: &str, expected_sets: usize, names: Names) {
     // catalog
     let snap = load_catalog(&mut conn).await.expect("catalog");
     let cat = &snap.catalog;
-    let orders = cat
-        .find(None, names.orders_table)
-        .expect("orders in catalog");
+    let orders = cat.find(None, names.orders_table).expect("orders in catalog");
     assert_eq!(orders.kind, ObjectKind::Table);
     assert!(
         orders
@@ -124,14 +111,8 @@ async fn exercise(var: &str, script: &str, expected_sets: usize, names: Names) {
             .any(|c| c.name.eq_ignore_ascii_case(names.fk_column)),
         "{orders:?}"
     );
-    assert!(
-        orders.columns.iter().any(|c| c.is_primary_key),
-        "{orders:?}"
-    );
-    assert!(
-        cat.objects.iter().any(|o| o.kind == ObjectKind::View),
-        "no view"
-    );
+    assert!(orders.columns.iter().any(|c| c.is_primary_key), "{orders:?}");
+    assert!(cat.objects.iter().any(|o| o.kind == ObjectKind::View), "no view");
     let proc = cat
         .objects
         .iter()
@@ -151,22 +132,13 @@ async fn exercise(var: &str, script: &str, expected_sets: usize, names: Names) {
         "no view definition"
     );
     assert!(
-        snap.definitions
-            .iter()
-            .any(|d| d.kind == ObjectKind::Procedure),
+        snap.definitions.iter().any(|d| d.kind == ObjectKind::Procedure),
         "no proc definition"
     );
 
     // completion on the real catalog: FK join after JOIN
     let src = format!("SELECT * FROM {} o JOIN ", names.orders);
-    let r = complete(
-        &src,
-        src.len(),
-        dialect,
-        Some(cat),
-        &[],
-        &CompletionOptions::default(),
-    );
+    let r = complete(&src, src.len(), dialect, Some(cat), &[], &CompletionOptions::default());
     let join = r
         .items
         .iter()
@@ -175,18 +147,9 @@ async fn exercise(var: &str, script: &str, expected_sets: usize, names: Names) {
     assert!(join.insert_text.contains(" ON "), "{join:?}");
     // columns after alias dot
     let src = format!("SELECT o. FROM {} o", names.orders);
-    let r = complete(
-        &src,
-        9,
-        dialect,
-        Some(cat),
-        &[],
-        &CompletionOptions::default(),
-    );
+    let r = complete(&src, 9, dialect, Some(cat), &[], &CompletionOptions::default());
     assert!(
-        r.items
-            .iter()
-            .any(|i| i.label.eq_ignore_ascii_case(names.fk_column)),
+        r.items.iter().any(|i| i.label.eq_ignore_ascii_case(names.fk_column)),
         "{:?}",
         r.items
     );
@@ -200,16 +163,10 @@ async fn exercise(var: &str, script: &str, expected_sets: usize, names: Names) {
         &SearchOptions::default(),
     );
     assert!(hits.iter().any(|h| h.matched_in == MatchIn::Column));
-    assert!(
-        hits.iter().any(|h| h.matched_in == MatchIn::Definition),
-        "{hits:?}"
-    );
+    assert!(hits.iter().any(|h| h.matched_in == MatchIn::Definition), "{hits:?}");
 
     let dbs = conn.list_databases().await.expect("databases");
-    assert!(
-        dbs.iter().any(|d| d.eq_ignore_ascii_case(&cat.database)),
-        "{dbs:?}"
-    );
+    assert!(dbs.iter().any(|d| d.eq_ignore_ascii_case(&cat.database)), "{dbs:?}");
     conn.close().await;
 }
 
@@ -276,8 +233,7 @@ async fn mssql_cancel_by_abort() {
     let started = Instant::now();
     let task = tokio::spawn(async move {
         let mut conn = conn;
-        conn.execute("WAITFOR DELAY '00:00:30'", &Limits::default())
-            .await
+        conn.execute("WAITFOR DELAY '00:00:30'", &Limits::default()).await
     });
     tokio::time::sleep(Duration::from_millis(500)).await;
     task.abort();
@@ -303,9 +259,7 @@ async fn postgres_notice_and_cancel() {
         return;
     };
     let mut conn = connect(&e).await;
-    let out = conn
-        .execute("CALL touch_customer(1)", &Limits::default())
-        .await;
+    let out = conn.execute("CALL touch_customer(1)", &Limits::default()).await;
     assert!(!out.failed, "{out:?}");
     // the notice arrives on the connection task; give it a moment, then the next batch reports it
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -324,14 +278,9 @@ async fn postgres_notice_and_cancel() {
         tokio::time::sleep(Duration::from_millis(500)).await;
         cancel.cancel().await.expect("cancel");
     });
-    let out = conn
-        .execute("SELECT pg_sleep(30)", &Limits::default())
-        .await;
+    let out = conn.execute("SELECT pg_sleep(30)", &Limits::default()).await;
     canceller.await.unwrap();
-    assert!(
-        out.failed && first_error(&out).contains("cancel"),
-        "{out:?}"
-    );
+    assert!(out.failed && first_error(&out).contains("cancel"), "{out:?}");
     assert!(started.elapsed() < Duration::from_secs(5));
     assert!(conn.query_strings("SELECT 1").await.is_ok());
 }
@@ -343,7 +292,13 @@ async fn mysql() {
         "SELECT 1 AS a, NOW() AS b; CREATE TEMPORARY TABLE t(id int); INSERT INTO t VALUES (1); SELECT * FROM t; \
          CALL get_customer_orders(1);",
         3,
-        Names { customers: "customers", orders: "orders", customers_table: "customers", orders_table: "orders", fk_column: "customer_id" },
+        Names {
+            customers: "customers",
+            orders: "orders",
+            customers_table: "customers",
+            orders_table: "orders",
+            fk_column: "customer_id",
+        },
     )
     .await;
 }
@@ -379,7 +334,10 @@ async fn safety_features(var: &str, customers: &str) {
     // a counted change inside a transaction, then rolled back
     let begin = conn.begin_statement();
     assert!(!conn.execute(begin, &limits).await.failed);
-    let options = sqlotus_db::ScriptOptions { counted: true, ..Default::default() };
+    let options = sqlotus_db::ScriptOptions {
+        counted: true,
+        ..Default::default()
+    };
     let out = sqlotus_db::execute_script_with(
         &mut conn,
         &format!("UPDATE {customers} SET name = name WHERE id IN (1, 2)"),
@@ -395,12 +353,17 @@ async fn safety_features(var: &str, customers: &str) {
     assert_eq!(conn.open_transactions().await.unwrap(), 0);
 
     // estimated plan
-    let plan = conn.explain(&format!("SELECT name FROM {customers} WHERE name LIKE 'A%'")).await;
+    let plan = conn
+        .explain(&format!("SELECT name FROM {customers} WHERE name LIKE 'A%'"))
+        .await;
     assert!(plan.errors.is_empty(), "{:?}", plan.errors);
     assert_eq!(plan.plans.len(), 1, "{plan:#?}");
     assert!(plan.plans[0].root.is_some());
     // nothing ran and the session is back to normal
-    assert_eq!(conn.query_strings("SELECT 1").await.unwrap()[0][0].as_deref(), Some("1"));
+    assert_eq!(
+        conn.query_strings("SELECT 1").await.unwrap()[0][0].as_deref(),
+        Some("1")
+    );
 
     // values for undeclared variables
     if dialect != sqlotus_core::Dialect::Postgres {
@@ -414,7 +377,10 @@ async fn safety_features(var: &str, customers: &str) {
         };
         let out = sqlotus_db::execute_script_with(&mut conn, "SELECT @x + 1 AS v", &limits, &options).await;
         assert!(errors(&out).is_empty(), "{:?}", errors(&out));
-        assert_eq!(out[0].output.result_sets.last().unwrap().rows[0][0].as_deref(), Some("6"));
+        assert_eq!(
+            out[0].output.result_sets.last().unwrap().rows[0][0].as_deref(),
+            Some("6")
+        );
     }
 }
 
@@ -433,7 +399,6 @@ async fn mysql_safety() {
     safety_features("SQLOTUS_TEST_MYSQL", "customers").await;
 }
 
-
 #[tokio::test]
 async fn postgres_failed_transaction_is_detected() {
     let Some(e) = env("SQLOTUS_TEST_PG") else {
@@ -446,7 +411,13 @@ async fn postgres_failed_transaction_is_detected() {
     // a failed transaction still counts as open, and other queries are refused
     assert_eq!(conn.open_transactions().await.unwrap(), 1);
     let probe = conn.execute("SELECT 1", &limits).await;
-    assert!(probe.messages.iter().any(|m| m.text.contains("current transaction is aborted")), "{probe:?}");
+    assert!(
+        probe
+            .messages
+            .iter()
+            .any(|m| m.text.contains("current transaction is aborted")),
+        "{probe:?}"
+    );
     assert!(!conn.execute("ROLLBACK", &limits).await.failed);
     assert_eq!(conn.open_transactions().await.unwrap(), 0);
 }

@@ -3,9 +3,7 @@
 use mysql_async::prelude::Queryable;
 use mysql_async::{Conn, Opts, OptsBuilder, SslOpts, Value};
 
-use crate::{
-    BatchOutput, ConnectionConfig, DbError, Limits, Result, ResultColumn, ResultSet, clip,
-};
+use crate::{BatchOutput, ConnectionConfig, DbError, Limits, Result, ResultColumn, ResultSet, clip};
 
 pub struct MySqlConn {
     conn: Conn,
@@ -37,11 +35,14 @@ impl MySqlConn {
     /// last OK packet (information_schema.innodb_trx also lists the query
     /// that asks).
     pub async fn in_transaction(&mut self) -> Result<bool> {
-        self.conn.query_drop("DO 0").await.map_err(|e| DbError::Query(e.to_string()))?;
-        Ok(self
-            .conn
-            .last_ok_packet()
-            .is_some_and(|ok| ok.status_flags().contains(mysql_async::consts::StatusFlags::SERVER_STATUS_IN_TRANS)))
+        self.conn
+            .query_drop("DO 0")
+            .await
+            .map_err(|e| DbError::Query(e.to_string()))?;
+        Ok(self.conn.last_ok_packet().is_some_and(|ok| {
+            ok.status_flags()
+                .contains(mysql_async::consts::StatusFlags::SERVER_STATUS_IN_TRANS)
+        }))
     }
 
     pub async fn open(cfg: &ConnectionConfig, password: Option<&str>) -> Result<Self> {
@@ -121,19 +122,13 @@ impl MySqlConn {
                         }
                     }
                     let n = rs.rows.len();
-                    out.info(format!(
-                        "({n} row{} returned)",
-                        if n == 1 { "" } else { "s" }
-                    ));
+                    out.info(format!("({n} row{} returned)", if n == 1 { "" } else { "s" }));
                     out.result_sets.push(rs);
                 }
                 _ => {
                     let n = result.affected_rows();
                     out.rows_affected += n;
-                    out.info(format!(
-                        "({n} row{} affected)",
-                        if n == 1 { "" } else { "s" }
-                    ));
+                    out.info(format!("({n} row{} affected)", if n == 1 { "" } else { "s" }));
                     // consume the empty set and move to the next one
                     if let Err(e) = result.next().await {
                         out.error(e.to_string());

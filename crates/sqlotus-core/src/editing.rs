@@ -37,21 +37,46 @@ pub struct EditSource {
 }
 
 const NOT_EDITABLE: &[&str] = &[
-    "JOIN", "UNION", "INTERSECT", "EXCEPT", "GROUP", "HAVING", "DISTINCT", "INTO", "PIVOT", "UNPIVOT", "APPLY", "OVER", "FOR",
+    "JOIN",
+    "UNION",
+    "INTERSECT",
+    "EXCEPT",
+    "GROUP",
+    "HAVING",
+    "DISTINCT",
+    "INTO",
+    "PIVOT",
+    "UNPIVOT",
+    "APPLY",
+    "OVER",
+    "FOR",
 ];
 
 /// The table behind `sql` if its result can be edited row by row.
 /// `result_columns` are the names of the columns the server returned.
-pub fn editable_source(sql: &str, dialect: Dialect, catalog: &Catalog, result_columns: &[String]) -> Result<EditSource, String> {
+pub fn editable_source(
+    sql: &str,
+    dialect: Dialect,
+    catalog: &Catalog,
+    result_columns: &[String],
+) -> Result<EditSource, String> {
     let spans: Vec<_> = split_statements(sql, dialect)
         .into_iter()
-        .filter(|s| tokenize(s.text(sql), dialect).iter().any(|t| !t.is_trivia() && t.kind != TokenKind::Semicolon))
+        .filter(|s| {
+            tokenize(s.text(sql), dialect)
+                .iter()
+                .any(|t| !t.is_trivia() && t.kind != TokenKind::Semicolon)
+        })
         .collect();
     if spans.len() != 1 {
         return Err("Only the result of a single SELECT statement can be edited.".into());
     }
     let tokens = tokenize(sql, dialect);
-    let stmt: Vec<Token<'_>> = tokens.iter().filter(|t| t.start >= spans[0].start && t.end() <= spans[0].end).copied().collect();
+    let stmt: Vec<Token<'_>> = tokens
+        .iter()
+        .filter(|t| t.start >= spans[0].start && t.end() <= spans[0].end)
+        .copied()
+        .collect();
     let t = sig(&stmt);
     if word(t.first()) != "SELECT" {
         return Err("Only SELECT results can be edited.".into());
@@ -62,7 +87,10 @@ pub fn editable_source(sql: &str, dialect: Dialect, catalog: &Catalog, result_co
             TokenKind::LParen => depth += 1,
             TokenKind::RParen => depth -= 1,
             TokenKind::Word if depth == 0 && NOT_EDITABLE.contains(&x.upper().as_str()) => {
-                return Err(format!("A result with {} cannot be edited: it must come from one table, row for row.", x.upper()));
+                return Err(format!(
+                    "A result with {} cannot be edited: it must come from one table, row for row.",
+                    x.upper()
+                ));
             }
             _ => {}
         }
@@ -75,10 +103,23 @@ pub fn editable_source(sql: &str, dialect: Dialect, catalog: &Catalog, result_co
     let table = catalog
         .find(r.schema.as_deref(), &r.name)
         .filter(|o| o.kind == ObjectKind::Table)
-        .ok_or_else(|| format!("{} is not a table in the loaded objects (views cannot be edited; reload objects if it is new).", r.name))?;
-    let keys: Vec<&str> = table.columns.iter().filter(|c| c.is_primary_key).map(|c| c.name.as_str()).collect();
+        .ok_or_else(|| {
+            format!(
+                "{} is not a table in the loaded objects (views cannot be edited; reload objects if it is new).",
+                r.name
+            )
+        })?;
+    let keys: Vec<&str> = table
+        .columns
+        .iter()
+        .filter(|c| c.is_primary_key)
+        .map(|c| c.name.as_str())
+        .collect();
     if keys.is_empty() {
-        return Err(format!("{}.{} has no primary key, so rows cannot be identified safely.", table.schema, table.name));
+        return Err(format!(
+            "{}.{} has no primary key, so rows cannot be identified safely.",
+            table.schema, table.name
+        ));
     }
 
     // the select list, item by item, at depth 0 between SELECT [TOP n] and FROM
@@ -87,7 +128,11 @@ pub fn editable_source(sql: &str, dialect: Dialect, catalog: &Catalog, result_co
         i += 1;
     }
     if word(t.get(i)) == "TOP" {
-        i += if t.get(i + 1).is_some_and(|x| x.kind == TokenKind::LParen) { 4 } else { 2 };
+        i += if t.get(i + 1).is_some_and(|x| x.kind == TokenKind::LParen) {
+            4
+        } else {
+            2
+        };
         if word(t.get(i)) == "PERCENT" {
             i += 1;
         }
@@ -100,7 +145,11 @@ pub fn editable_source(sql: &str, dialect: Dialect, catalog: &Catalog, result_co
         }
         Some((k, *d, x))
     });
-    let from = from.filter(|(_, d, x)| *d == 0 && word(Some(x)) == "FROM").map(|(k, _, _)| k).next().ok_or("SELECT without FROM cannot be edited.")?;
+    let from = from
+        .filter(|(_, d, x)| *d == 0 && word(Some(x)) == "FROM")
+        .map(|(k, _, _)| k)
+        .next()
+        .ok_or("SELECT without FROM cannot be edited.")?;
     let mut items: Vec<Vec<Token<'_>>> = vec![Vec::new()];
     let mut d = 0i32;
     for x in &t[i..from] {
@@ -126,7 +175,9 @@ pub fn editable_source(sql: &str, dialect: Dialect, catalog: &Catalog, result_co
             _ => {
                 // [q.]col [[AS] alias]
                 let (col, rest) = match item.as_slice() {
-                    [q, dot, c, rest @ ..] if dot.kind == TokenKind::Dot && c.is_name() && qualifier_ok(q) => (Some(c), rest),
+                    [q, dot, c, rest @ ..] if dot.kind == TokenKind::Dot && c.is_name() && qualifier_ok(q) => {
+                        (Some(c), rest)
+                    }
                     [c, rest @ ..] if c.is_name() => (Some(c), rest),
                     _ => (None, &item[..0]),
                 };
@@ -138,14 +189,21 @@ pub fn editable_source(sql: &str, dialect: Dialect, catalog: &Catalog, result_co
                 };
                 let column = col
                     .filter(|_| plain)
-                    .and_then(|c| table.columns.iter().find(|x| x.name.eq_ignore_ascii_case(&c.ident_value())))
+                    .and_then(|c| {
+                        table
+                            .columns
+                            .iter()
+                            .find(|x| x.name.eq_ignore_ascii_case(&c.ident_value()))
+                    })
                     .map(|c| c.name.clone());
                 sources.push(column);
             }
         }
     }
     if sources.len() != result_columns.len() {
-        return Err("The result columns do not match the table's columns; reload objects and run the query again.".into());
+        return Err(
+            "The result columns do not match the table's columns; reload objects and run the query again.".into(),
+        );
     }
     let columns: Vec<EditColumn> = sources
         .iter()
@@ -157,16 +215,27 @@ pub fn editable_source(sql: &str, dialect: Dialect, catalog: &Catalog, result_co
                 data_type: c.map(|c| c.data_type.clone()).unwrap_or_default(),
                 nullable: c.is_some_and(|c| c.nullable),
                 is_key: c.is_some_and(|c| c.is_primary_key),
-                read_only: c.is_none_or(|c| c.is_identity || c.is_computed || ty.starts_with("timestamp") && dialect == Dialect::MsSql || ty.starts_with("rowversion")),
+                read_only: c.is_none_or(|c| {
+                    c.is_identity
+                        || c.is_computed
+                        || ty.starts_with("timestamp") && dialect == Dialect::MsSql
+                        || ty.starts_with("rowversion")
+                }),
             }
         })
         .collect();
     for k in keys {
         if !columns.iter().any(|c| c.column.as_deref() == Some(k)) {
-            return Err(format!("The primary key column {k} must be in the result to edit rows."));
+            return Err(format!(
+                "The primary key column {k} must be in the result to edit rows."
+            ));
         }
     }
-    Ok(EditSource { schema: table.schema.clone(), table: table.name.clone(), columns })
+    Ok(EditSource {
+        schema: table.schema.clone(),
+        table: table.name.clone(),
+        columns,
+    })
 }
 
 /// One edit of a result row. Values are keyed by table column name.
@@ -174,9 +243,16 @@ pub fn editable_source(sql: &str, dialect: Dialect, catalog: &Catalog, result_co
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum RowEdit {
     /// `original`: the row as loaded; `values`: the changed columns.
-    Update { original: HashMap<String, Option<String>>, values: HashMap<String, Option<String>> },
-    Insert { values: HashMap<String, Option<String>> },
-    Delete { original: HashMap<String, Option<String>> },
+    Update {
+        original: HashMap<String, Option<String>>,
+        values: HashMap<String, Option<String>>,
+    },
+    Insert {
+        values: HashMap<String, Option<String>>,
+    },
+    Delete {
+        original: HashMap<String, Option<String>>,
+    },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -197,15 +273,52 @@ fn max_len(t: &str) -> Option<usize> {
 }
 
 const NUMERIC: &[&str] = &[
-    "int", "integer", "bigint", "smallint", "tinyint", "mediumint", "decimal", "numeric", "money", "smallmoney", "float", "real",
-    "double", "double precision", "int2", "int4", "int8", "float4", "float8", "serial", "bigserial",
+    "int",
+    "integer",
+    "bigint",
+    "smallint",
+    "tinyint",
+    "mediumint",
+    "decimal",
+    "numeric",
+    "money",
+    "smallmoney",
+    "float",
+    "real",
+    "double",
+    "double precision",
+    "int2",
+    "int4",
+    "int8",
+    "float4",
+    "float8",
+    "serial",
+    "bigserial",
 ];
 
 /// Types whose text form round-trips exactly, so WHERE col = <value seen> is reliable.
 fn comparable(t: &str) -> bool {
     let b = base(t);
-    (NUMERIC.contains(&b.as_str()) && !matches!(b.as_str(), "float" | "real" | "double" | "double precision" | "float4" | "float8"))
-        || matches!(b.as_str(), "char" | "varchar" | "nchar" | "nvarchar" | "character" | "character varying" | "bit" | "bool" | "boolean" | "date" | "uniqueidentifier" | "uuid")
+    (NUMERIC.contains(&b.as_str())
+        && !matches!(
+            b.as_str(),
+            "float" | "real" | "double" | "double precision" | "float4" | "float8"
+        ))
+        || matches!(
+            b.as_str(),
+            "char"
+                | "varchar"
+                | "nchar"
+                | "nvarchar"
+                | "character"
+                | "character varying"
+                | "bit"
+                | "bool"
+                | "boolean"
+                | "date"
+                | "uniqueidentifier"
+                | "uuid"
+        )
 }
 
 fn literal(v: &Option<String>, col: &EditColumn, dialect: Dialect, problems: &mut Vec<String>) -> String {
@@ -234,9 +347,19 @@ fn literal(v: &Option<String>, col: &EditColumn, dialect: Dialect, problems: &mu
                 false
             }
         };
-        return if dialect == Dialect::Postgres { if on { "TRUE" } else { "FALSE" } } else if on { "1" } else { "0" }.into();
+        return if dialect == Dialect::Postgres {
+            if on { "TRUE" } else { "FALSE" }
+        } else if on {
+            "1"
+        } else {
+            "0"
+        }
+        .into();
     }
-    if matches!(b.as_str(), "varbinary" | "binary" | "image" | "bytea" | "blob" | "longblob") {
+    if matches!(
+        b.as_str(),
+        "varbinary" | "binary" | "image" | "bytea" | "blob" | "longblob"
+    ) {
         if !v.starts_with("0x") || !v[2..].chars().all(|c| c.is_ascii_hexdigit()) {
             problems.push(format!("{name}: binary values are written as 0x…"));
         }
@@ -245,13 +368,25 @@ fn literal(v: &Option<String>, col: &EditColumn, dialect: Dialect, problems: &mu
             _ => v.clone(),
         };
     }
-    if let Some(n) = max_len(&col.data_type).filter(|_| matches!(b.as_str(), "char" | "varchar" | "nchar" | "nvarchar" | "character" | "character varying"))
-        && v.chars().count() > n
+    if let Some(n) = max_len(&col.data_type).filter(|_| {
+        matches!(
+            b.as_str(),
+            "char" | "varchar" | "nchar" | "nvarchar" | "character" | "character varying"
+        )
+    }) && v.chars().count() > n
     {
-        problems.push(format!("{name}: {} characters do not fit {}.", v.chars().count(), col.data_type));
+        problems.push(format!(
+            "{name}: {} characters do not fit {}.",
+            v.chars().count(),
+            col.data_type
+        ));
     }
     let quoted = format!("'{}'", v.replace('\'', "''"));
-    if dialect == Dialect::MsSql && matches!(b.as_str(), "nchar" | "nvarchar" | "ntext") { format!("N{quoted}") } else { quoted }
+    if dialect == Dialect::MsSql && matches!(b.as_str(), "nchar" | "nvarchar" | "ntext") {
+        format!("N{quoted}")
+    } else {
+        quoted
+    }
 }
 
 /// Statements for the edits, with every value checked against its column.
@@ -261,41 +396,60 @@ pub fn edit_statements(source: &EditSource, edits: &[RowEdit], dialect: Dialect)
     let target = format!("{}.{}", q(&source.schema), q(&source.table));
     let col_of = |name: &str| source.columns.iter().find(|c| c.column.as_deref() == Some(name));
     let keys: Vec<&EditColumn> = source.columns.iter().filter(|c| c.is_key).collect();
-    let condition = |original: &HashMap<String, Option<String>>, check: &[&String], problems: &mut Vec<String>| -> String {
-        let mut parts = Vec::new();
-        for k in &keys {
-            let n = k.column.as_deref().unwrap_or_default();
-            match original.get(n) {
-                Some(Some(v)) => parts.push(format!("{} = {}", q(n), literal(&Some(v.clone()), k, dialect, problems))),
-                _ => problems.push(format!("The row has no value for key column {n}.")),
+    let condition =
+        |original: &HashMap<String, Option<String>>, check: &[&String], problems: &mut Vec<String>| -> String {
+            let mut parts = Vec::new();
+            for k in &keys {
+                let n = k.column.as_deref().unwrap_or_default();
+                match original.get(n) {
+                    Some(Some(v)) => parts.push(format!(
+                        "{} = {}",
+                        q(n),
+                        literal(&Some(v.clone()), k, dialect, problems)
+                    )),
+                    _ => problems.push(format!("The row has no value for key column {n}.")),
+                }
             }
-        }
-        // optimistic check: the columns being changed still hold what the user saw
-        for name in check {
-            let Some(c) = col_of(name).filter(|c| !c.is_key && comparable(&c.data_type)) else { continue };
-            match original.get(*name) {
-                Some(None) => parts.push(format!("{} IS NULL", q(name))),
-                Some(v) => parts.push(format!("{} = {}", q(name), literal(v, c, dialect, &mut Vec::new()))),
-                None => {}
+            // optimistic check: the columns being changed still hold what the user saw
+            for name in check {
+                let Some(c) = col_of(name).filter(|c| !c.is_key && comparable(&c.data_type)) else {
+                    continue;
+                };
+                match original.get(*name) {
+                    Some(None) => parts.push(format!("{} IS NULL", q(name))),
+                    Some(v) => parts.push(format!("{} = {}", q(name), literal(v, c, dialect, &mut Vec::new()))),
+                    None => {}
+                }
             }
-        }
-        parts.join(" AND ")
-    };
+            parts.join(" AND ")
+        };
     for (n, e) in edits.iter().enumerate() {
         let mut problems = Vec::new();
         let stmt = match e {
             RowEdit::Update { original, values } => {
-                let mut names: Vec<&String> = values.keys().filter(|k| col_of(k).is_some_and(|c| !c.read_only)).collect();
+                let mut names: Vec<&String> = values
+                    .keys()
+                    .filter(|k| col_of(k).is_some_and(|c| !c.read_only))
+                    .collect();
                 names.sort();
                 if names.is_empty() {
                     continue;
                 }
                 let set = names
                     .iter()
-                    .map(|k| format!("{} = {}", q(k), literal(&values[*k], col_of(k).expect("checked"), dialect, &mut problems)))
+                    .map(|k| {
+                        format!(
+                            "{} = {}",
+                            q(k),
+                            literal(&values[*k], col_of(k).expect("checked"), dialect, &mut problems)
+                        )
+                    })
                     .collect::<Vec<_>>()
                     .join(", ");
-                format!("UPDATE {target} SET {set} WHERE {};", condition(original, &names, &mut problems))
+                format!(
+                    "UPDATE {target} SET {set} WHERE {};",
+                    condition(original, &names, &mut problems)
+                )
             }
             RowEdit::Insert { values } => {
                 // only the columns the user filled in: the others keep their defaults
@@ -307,15 +461,35 @@ pub fn edit_statements(source: &EditSource, edits: &[RowEdit], dialect: Dialect)
                 if cols.is_empty() {
                     format!("INSERT INTO {target} DEFAULT VALUES;")
                 } else {
-                    let names: Vec<String> = cols.iter().map(|c| q(c.column.as_deref().unwrap_or_default())).collect();
-                    let vals: Vec<String> =
-                        cols.iter().map(|c| literal(&values[c.column.as_deref().unwrap_or_default()], c, dialect, &mut problems)).collect();
-                    format!("INSERT INTO {target} ({}) VALUES ({});", names.join(", "), vals.join(", "))
+                    let names: Vec<String> = cols
+                        .iter()
+                        .map(|c| q(c.column.as_deref().unwrap_or_default()))
+                        .collect();
+                    let vals: Vec<String> = cols
+                        .iter()
+                        .map(|c| {
+                            literal(
+                                &values[c.column.as_deref().unwrap_or_default()],
+                                c,
+                                dialect,
+                                &mut problems,
+                            )
+                        })
+                        .collect();
+                    format!(
+                        "INSERT INTO {target} ({}) VALUES ({});",
+                        names.join(", "),
+                        vals.join(", ")
+                    )
                 }
             }
-            RowEdit::Delete { original } => format!("DELETE FROM {target} WHERE {};", condition(original, &[], &mut problems)),
+            RowEdit::Delete { original } => format!(
+                "DELETE FROM {target} WHERE {};",
+                condition(original, &[], &mut problems)
+            ),
         };
-        plan.problems.extend(problems.into_iter().map(|p| format!("Row {}: {p}", n + 1)));
+        plan.problems
+            .extend(problems.into_iter().map(|p| format!("Row {}: {p}", n + 1)));
         plan.statements.push(stmt);
     }
     plan
@@ -352,7 +526,13 @@ mod tests {
                     ],
                     params: vec![],
                 },
-                DbObject { schema: "dbo".into(), name: "Logs".into(), kind: ObjectKind::Table, columns: vec![col("Msg", "nvarchar(100)", true, false, false)], params: vec![] },
+                DbObject {
+                    schema: "dbo".into(),
+                    name: "Logs".into(),
+                    kind: ObjectKind::Table,
+                    columns: vec![col("Msg", "nvarchar(100)", true, false, false)],
+                    params: vec![],
+                },
             ],
             foreign_keys: vec![],
         }
@@ -366,24 +546,77 @@ mod tests {
     fn decides_what_can_be_edited() {
         let cat = catalog();
         let ms = Dialect::MsSql;
-        let s = editable_source("SELECT TOP (200) * FROM dbo.Customers WHERE Id > 1;", ms, &cat, &names(&["Id", "Name", "Country", "Score"])).unwrap();
-        assert_eq!(s.columns.iter().map(|c| c.column.clone().unwrap()).collect::<Vec<_>>(), names(&["Id", "Name", "Country", "Score"]));
+        let s = editable_source(
+            "SELECT TOP (200) * FROM dbo.Customers WHERE Id > 1;",
+            ms,
+            &cat,
+            &names(&["Id", "Name", "Country", "Score"]),
+        )
+        .unwrap();
+        assert_eq!(
+            s.columns.iter().map(|c| c.column.clone().unwrap()).collect::<Vec<_>>(),
+            names(&["Id", "Name", "Country", "Score"])
+        );
         assert!(s.columns[0].is_key && s.columns[0].read_only);
-        let s = editable_source("SELECT c.Id, c.Name AS N, UPPER(c.Country) AS Country FROM dbo.Customers c", ms, &cat, &names(&["Id", "N", "Country"])).unwrap();
+        let s = editable_source(
+            "SELECT c.Id, c.Name AS N, UPPER(c.Country) AS Country FROM dbo.Customers c",
+            ms,
+            &cat,
+            &names(&["Id", "N", "Country"]),
+        )
+        .unwrap();
         assert_eq!(s.columns[1].column.as_deref(), Some("Name"));
         assert_eq!(s.columns[2].column, None, "an expression is never written back");
-        assert!(editable_source("SELECT Name FROM dbo.Customers", ms, &cat, &names(&["Name"])).unwrap_err().contains("primary key column Id"));
-        assert!(editable_source("SELECT * FROM dbo.Logs", ms, &cat, &names(&["Msg"])).unwrap_err().contains("no primary key"));
-        assert!(editable_source("SELECT c.* FROM dbo.Customers c JOIN dbo.Logs l ON 1 = 1", ms, &cat, &[]).is_err());
-        assert!(editable_source("SELECT Country, COUNT(*) FROM dbo.Customers GROUP BY Country", ms, &cat, &[]).is_err());
+        assert!(
+            editable_source("SELECT Name FROM dbo.Customers", ms, &cat, &names(&["Name"]))
+                .unwrap_err()
+                .contains("primary key column Id")
+        );
+        assert!(
+            editable_source("SELECT * FROM dbo.Logs", ms, &cat, &names(&["Msg"]))
+                .unwrap_err()
+                .contains("no primary key")
+        );
+        assert!(
+            editable_source(
+                "SELECT c.* FROM dbo.Customers c JOIN dbo.Logs l ON 1 = 1",
+                ms,
+                &cat,
+                &[]
+            )
+            .is_err()
+        );
+        assert!(
+            editable_source(
+                "SELECT Country, COUNT(*) FROM dbo.Customers GROUP BY Country",
+                ms,
+                &cat,
+                &[]
+            )
+            .is_err()
+        );
         assert!(editable_source("SELECT 1; SELECT * FROM dbo.Customers", ms, &cat, &[]).is_err());
-        assert!(editable_source("SELECT Id, Name FROM dbo.Customers WHERE Id IN (SELECT 1)", ms, &cat, &names(&["Id", "Name"])).is_ok());
+        assert!(
+            editable_source(
+                "SELECT Id, Name FROM dbo.Customers WHERE Id IN (SELECT 1)",
+                ms,
+                &cat,
+                &names(&["Id", "Name"])
+            )
+            .is_ok()
+        );
     }
 
     #[test]
     fn builds_checked_statements() {
         let cat = catalog();
-        let src = editable_source("SELECT * FROM dbo.Customers", Dialect::MsSql, &cat, &names(&["Id", "Name", "Country", "Score"])).unwrap();
+        let src = editable_source(
+            "SELECT * FROM dbo.Customers",
+            Dialect::MsSql,
+            &cat,
+            &names(&["Id", "Name", "Country", "Score"]),
+        )
+        .unwrap();
         let row = |id: &str, name: &str, country: Option<&str>| -> HashMap<String, Option<String>> {
             HashMap::from([
                 ("Id".into(), Some(id.into())),
@@ -393,9 +626,19 @@ mod tests {
             ])
         };
         let edits = vec![
-            RowEdit::Update { original: row("1", "An", None), values: HashMap::from([("Country".into(), Some("VN".into())), ("Score".into(), Some("2".into()))]) },
-            RowEdit::Insert { values: HashMap::from([("Name".into(), Some("O'Ne".into()))]) },
-            RowEdit::Delete { original: row("3", "Bo", Some("US")) },
+            RowEdit::Update {
+                original: row("1", "An", None),
+                values: HashMap::from([
+                    ("Country".into(), Some("VN".into())),
+                    ("Score".into(), Some("2".into())),
+                ]),
+            },
+            RowEdit::Insert {
+                values: HashMap::from([("Name".into(), Some("O'Ne".into()))]),
+            },
+            RowEdit::Delete {
+                original: row("3", "Bo", Some("US")),
+            },
         ];
         let plan = edit_statements(&src, &edits, Dialect::MsSql);
         assert_eq!(
@@ -408,9 +651,18 @@ mod tests {
         );
         assert!(plan.problems.is_empty(), "{:?}", plan.problems);
         let bad = vec![
-            RowEdit::Update { original: row("1", "An", None), values: HashMap::from([("Name".into(), None)]) },
-            RowEdit::Update { original: row("1", "An", None), values: HashMap::from([("Name".into(), Some("toolong".into()))]) },
-            RowEdit::Update { original: row("1", "An", None), values: HashMap::from([("Score".into(), Some("abc".into()))]) },
+            RowEdit::Update {
+                original: row("1", "An", None),
+                values: HashMap::from([("Name".into(), None)]),
+            },
+            RowEdit::Update {
+                original: row("1", "An", None),
+                values: HashMap::from([("Name".into(), Some("toolong".into()))]),
+            },
+            RowEdit::Update {
+                original: row("1", "An", None),
+                values: HashMap::from([("Score".into(), Some("abc".into()))]),
+            },
         ];
         let plan = edit_statements(&src, &bad, Dialect::MsSql);
         assert_eq!(plan.problems.len(), 3, "{:?}", plan.problems);

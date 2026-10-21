@@ -27,9 +27,9 @@ fn sig<'a>(tokens: &[Token<'a>]) -> Vec<Token<'a>> {
 /// Occurrences of the renameable symbol under `offset`, if any.
 pub fn rename_target(src: &str, offset: usize, dialect: Dialect) -> Option<RenameTarget> {
     let tokens = tokenize(src, dialect);
-    let tok = *tokens.iter().find(|t| {
-        t.start <= offset && offset <= t.end() && (t.is_name() || t.kind == TokenKind::Variable)
-    })?;
+    let tok = *tokens
+        .iter()
+        .find(|t| t.start <= offset && offset <= t.end() && (t.is_name() || t.kind == TokenKind::Variable))?;
 
     if tok.kind == TokenKind::Variable {
         if tok.text.starts_with("@@") {
@@ -67,11 +67,11 @@ pub fn rename_target(src: &str, offset: usize, dialect: Dialect) -> Option<Renam
         return None;
     }
 
-    if scope.tables.iter().any(|r| {
-        r.alias
-            .as_ref()
-            .is_some_and(|a| a.eq_ignore_ascii_case(&name))
-    }) {
+    if scope
+        .tables
+        .iter()
+        .any(|r| r.alias.as_ref().is_some_and(|a| a.eq_ignore_ascii_case(&name)))
+    {
         let ranges = t
             .iter()
             .enumerate()
@@ -94,11 +94,7 @@ pub fn rename_target(src: &str, offset: usize, dialect: Dialect) -> Option<Renam
         });
     }
 
-    if scope
-        .ctes
-        .iter()
-        .any(|c| c.name.eq_ignore_ascii_case(&name))
-    {
+    if scope.ctes.iter().any(|c| c.name.eq_ignore_ascii_case(&name)) {
         let ranges = t
             .iter()
             .enumerate()
@@ -123,9 +119,7 @@ fn alias_token(t: &[Token<'_>], name_end: usize, i: usize) -> bool {
     if prev.end() == name_end || prev.kind == TokenKind::RParen {
         return true;
     }
-    prev.upper() == "AS"
-        && i >= 2
-        && (t[i - 2].end() == name_end || t[i - 2].kind == TokenKind::RParen)
+    prev.upper() == "AS" && i >= 2 && (t[i - 2].end() == name_end || t[i - 2].kind == TokenKind::RParen)
 }
 
 /// Apply a rename to `src`; returns `None` when nothing is renameable.

@@ -34,9 +34,16 @@ async fn connect(e: &Env, database: Option<&str>) -> Connection {
 
 async fn run(conn: &mut Connection, script: &str, what: &str) {
     let out = execute_script(conn, script, &Limits::default()).await;
-    let errors: Vec<String> =
-        out.iter().flat_map(|b| &b.output.messages).filter(|m| m.kind == MessageKind::Error).map(|m| m.text.clone()).collect();
-    assert!(errors.is_empty(), "{what} failed: {errors:#?}\n--- script ---\n{script}");
+    let errors: Vec<String> = out
+        .iter()
+        .flat_map(|b| &b.output.messages)
+        .filter(|m| m.kind == MessageKind::Error)
+        .map(|m| m.text.clone())
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "{what} failed: {errors:#?}\n--- script ---\n{script}"
+    );
 }
 
 async fn recreate(e: &Env, dialect: Dialect, db: &str) {
@@ -45,7 +52,10 @@ async fn recreate(e: &Env, dialect: Dialect, db: &str) {
         Dialect::MsSql => vec![format!(
             "IF DB_ID('{db}') IS NOT NULL BEGIN ALTER DATABASE [{db}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{db}]; END; CREATE DATABASE [{db}];"
         )],
-        Dialect::Postgres => vec![format!("DROP DATABASE IF EXISTS {db} WITH (FORCE)"), format!("CREATE DATABASE {db}")],
+        Dialect::Postgres => vec![
+            format!("DROP DATABASE IF EXISTS {db} WITH (FORCE)"),
+            format!("CREATE DATABASE {db}"),
+        ],
         Dialect::MySql => vec![format!("DROP DATABASE IF EXISTS {db}; CREATE DATABASE {db};")],
     };
     for s in statements {
@@ -63,7 +73,10 @@ async fn schema(e: &Env, db: &str) -> SchemaModel {
 }
 
 fn options(dialect: Dialect) -> CompareOptions {
-    CompareOptions { case_insensitive_names: dialect != Dialect::Postgres, ..Default::default() }
+    CompareOptions {
+        case_insensitive_names: dialect != Dialect::Postgres,
+        ..Default::default()
+    }
 }
 
 /// Compare, sync everything into `target`, compare again: must be identical.
@@ -78,8 +91,16 @@ async fn sync_all(e: &Env, dialect: Dialect, source: &str, target: &str) -> (usi
     run(&mut conn, &script.script, &format!("sync {source} → {target}")).await;
     conn.close().await;
     let after = compare(&src, &schema(e, target).await, dialect, &opts);
-    let left: Vec<String> = after.differences.iter().map(|d| format!("{:?} {} {:?}", d.change, d.key, d.details)).collect();
-    assert!(left.is_empty(), "{source} → {target} still differs after sync:\n{left:#?}\n--- script ---\n{}", script.script);
+    let left: Vec<String> = after
+        .differences
+        .iter()
+        .map(|d| format!("{:?} {} {:?}", d.change, d.key, d.details))
+        .collect();
+    assert!(
+        left.is_empty(),
+        "{source} → {target} still differs after sync:\n{left:#?}\n--- script ---\n{}",
+        script.script
+    );
     (diff.differences.len(), script.script)
 }
 
@@ -89,7 +110,11 @@ async fn round_trip(var: &str, prefix: &str, source_ddl: &str, target_ddl: &str,
         return;
     };
     let dialect = e.config.dialect;
-    let (src, tgt, empty) = (format!("{prefix}_src"), format!("{prefix}_tgt"), format!("{prefix}_empty"));
+    let (src, tgt, empty) = (
+        format!("{prefix}_src"),
+        format!("{prefix}_tgt"),
+        format!("{prefix}_empty"),
+    );
     for db in [&src, &tgt, &empty] {
         recreate(&e, dialect, db).await;
     }
@@ -111,10 +136,23 @@ async fn round_trip(var: &str, prefix: &str, source_ddl: &str, target_ddl: &str,
     let diff = compare(&s, &schema(&e, &tgt).await, dialect, &opts);
     for (key, change) in expect {
         let found = diff.differences.iter().find(|d| d.key == *key);
-        assert_eq!(found.map(|d| d.change), Some(*change), "{key}: {:#?}", diff.differences.iter().map(|d| (&d.key, d.change)).collect::<Vec<_>>());
+        assert_eq!(
+            found.map(|d| d.change),
+            Some(*change),
+            "{key}: {:#?}",
+            diff.differences.iter().map(|d| (&d.key, d.change)).collect::<Vec<_>>()
+        );
     }
-    let customers = diff.differences.iter().find(|d| d.key.ends_with(".customers")).expect("customers differ");
-    assert!(customers.warnings.iter().any(|w| w.contains("dropped")), "{:?}", customers.warnings);
+    let customers = diff
+        .differences
+        .iter()
+        .find(|d| d.key.ends_with(".customers"))
+        .expect("customers differ");
+    assert!(
+        customers.warnings.iter().any(|w| w.contains("dropped")),
+        "{:?}",
+        customers.warnings
+    );
 
     // 2. target becomes the source
     let (n, script) = sync_all(&e, dialect, &src, &tgt).await;
@@ -335,8 +373,14 @@ async fn mssql_login_without_view_definition() {
     cfg.database = Some(db.into());
     cfg.user = Some("sqlotus_reader".into());
     let mut reader = Connection::open(&cfg, Some(&password)).await.expect("reader connects");
-    let refused = load_schema(&mut reader).await.expect_err("must refuse without VIEW DEFINITION").to_string();
-    assert!(refused.contains("VIEW DEFINITION") && refused.contains("would drop them"), "{refused}");
+    let refused = load_schema(&mut reader)
+        .await
+        .expect_err("must refuse without VIEW DEFINITION")
+        .to_string();
+    assert!(
+        refused.contains("VIEW DEFINITION") && refused.contains("would drop them"),
+        "{refused}"
+    );
     reader.close().await;
     // with the permission the reader sees everything the owner sees
     let mut c = connect(&e, Some(db)).await;
@@ -345,11 +389,20 @@ async fn mssql_login_without_view_definition() {
     let mut reader = Connection::open(&cfg, Some(&password)).await.expect("reader connects");
     let reader_view = load_schema(&mut reader).await.expect("reader loads");
     reader.close().await;
-    eprintln!("reader sees {} tables, {} modules, unreadable {:?}", reader_view.tables.len(), reader_view.modules.len(), reader_view.unreadable);
+    eprintln!(
+        "reader sees {} tables, {} modules, unreadable {:?}",
+        reader_view.tables.len(),
+        reader_view.modules.len(),
+        reader_view.unreadable
+    );
     assert!(reader_view.unreadable.is_empty(), "{:?}", reader_view.unreadable);
     for (src, tgt) in [(&reader_view, &admin_view), (&admin_view, &reader_view)] {
         let d = compare(src, tgt, Dialect::MsSql, &options(Dialect::MsSql));
-        let wrong: Vec<String> = d.differences.iter().map(|x| format!("{:?} {} {:?}", x.change, x.key, x.details)).collect();
+        let wrong: Vec<String> = d
+            .differences
+            .iter()
+            .map(|x| format!("{:?} {} {:?}", x.change, x.key, x.details))
+            .collect();
         assert!(wrong.is_empty(), "the reader must see the same schema: {wrong:#?}");
     }
     let mut admin = connect(&e, None).await;

@@ -1,5 +1,7 @@
 # Sqlotus
 
+[![CI](https://github.com/tuancuongpham/Sqlotus/actions/workflows/ci.yml/badge.svg)](https://github.com/tuancuongpham/Sqlotus/actions/workflows/ci.yml)
+
 **English** · [Tiếng Việt](README.vi.md)
 
 A fast desktop SQL editor inspired by Redgate SQL Prompt, SQL Search and SQL History — for
@@ -169,25 +171,36 @@ npx tauri build
 - `crates/sqlotus-store` — SQLite storage: connections, settings, snippets, history (FTS5 trigram), catalog cache.
 - `src-tauri` — Tauri commands, per-tab database sessions.
 - `src` — React + Monaco UI.
-- `scripts/` — UI tests over WebView2's DevTools Protocol (`ui-smoke.mjs`, `e2e-db.mjs`, `e2e-features.mjs`)
-  and Docker test databases (`test-db/`).
-- `docs/redgate-comparison.md` — feature comparison with Redgate and ideas (Vietnamese).
-- `docs/pain-points.md` — common SQL tool pain points, which paid tools address them, and what Sqlotus does (Vietnamese).
-- `docs/feature-proposals.md` — researched feature proposals with an assessment of each (Vietnamese).
-- `docs/review-2026-10.md` — code review: bugs found and fixed, remaining risks (Vietnamese).
+- `scripts/` — end-to-end UI tests that drive the running app over WebView2's DevTools Protocol
+  (`ui-smoke.mjs`, `e2e-*.mjs`) and Docker test databases (`test-db/`).
 
 ### Testing against real databases
 
 `scripts/test-db/README.md` starts SQL Server, PostgreSQL and MySQL in Docker with a sample schema. Then set
 `SQLOTUS_TEST_MSSQL` / `SQLOTUS_TEST_PG` / `SQLOTUS_TEST_MYSQL` (see `crates/sqlotus-db/tests/live.rs`) and run
-`cargo test -p sqlotus-db --test live`. The UI scripts need the app running with
-`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222`.
+`cargo test -p sqlotus-db` (the live tests are skipped when the variables are not set). The UI scripts need the
+app running with `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222` and
+`SQLOTUS_E2E_PASSWORD` set to the test databases' password.
 
 ## Known limitations
 
-- SQL Server: `PRINT` messages and DML row counts are not shown yet (not exposed by tiberius).
+- SQL Server: `PRINT` messages are not shown yet, and changed-row counts only for scripts that just change rows
+  (the tiberius driver does not expose them for other batches).
+- Schema compare treats a renamed column or table as drop + add, and leaves identity / computed column changes
+  to be done by hand.
+- Windows only for now (the Connection Doctor and Windows Authentication use Windows APIs).
 - Named-pipe connections (LocalDB) are not supported; use TCP.
 - No AI assistant yet.
+
+## Privacy
+
+Sqlotus has no telemetry. Connections, history and settings stay on your computer; saved passwords are kept in
+the Windows Credential Manager. See [SECURITY.md](SECURITY.md).
+
+## Contributing
+
+Issues and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) and the
+[Code of Conduct](CODE_OF_CONDUCT.md). Changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 

@@ -26,5 +26,4 @@ dist-ssr
 # Rust
 /target/
 smoke-out/
-smoke-out/
 e2e-out/

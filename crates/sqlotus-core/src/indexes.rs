@@ -59,22 +59,40 @@ fn q(dialect: Dialect, s: &str) -> String {
 }
 
 fn table_name(dialect: Dialect, schema: &str, table: &str) -> String {
-    if schema.is_empty() { q(dialect, table) } else { format!("{}.{}", q(dialect, schema), q(dialect, table)) }
+    if schema.is_empty() {
+        q(dialect, table)
+    } else {
+        format!("{}.{}", q(dialect, schema), q(dialect, table))
+    }
 }
 
 pub fn drop_index_sql(dialect: Dialect, schema: &str, table: &str, name: &str) -> String {
     match dialect {
-        Dialect::MsSql => format!("DROP INDEX {} ON {};", q(dialect, name), table_name(dialect, schema, table)),
+        Dialect::MsSql => format!(
+            "DROP INDEX {} ON {};",
+            q(dialect, name),
+            table_name(dialect, schema, table)
+        ),
         Dialect::Postgres => format!("DROP INDEX {};", table_name(dialect, schema, name)),
-        Dialect::MySql => format!("DROP INDEX {} ON {};", q(dialect, name), table_name(dialect, schema, table)),
+        Dialect::MySql => format!(
+            "DROP INDEX {} ON {};",
+            q(dialect, name),
+            table_name(dialect, schema, table)
+        ),
     }
 }
 
 pub fn create_index_sql(dialect: Dialect, schema: &str, table: &str, keys: &[String], include: &[String]) -> String {
-    let clean = |c: &String| c.trim_matches(|x| x == '[' || x == ']' || x == '"' || x == '`').to_string();
+    let clean = |c: &String| {
+        c.trim_matches(|x| x == '[' || x == ']' || x == '"' || x == '`')
+            .to_string()
+    };
     let keys: Vec<String> = keys.iter().map(clean).collect();
     let include: Vec<String> = include.iter().map(clean).filter(|c| !keys.contains(c)).collect();
-    let name = format!("IX_{}_{}", table, keys.join("_")).chars().take(120).collect::<String>();
+    let name = format!("IX_{}_{}", table, keys.join("_"))
+        .chars()
+        .take(120)
+        .collect::<String>();
     let cols = keys.iter().map(|c| q(dialect, c)).collect::<Vec<_>>().join(", ");
     let mut s = format!(
         "CREATE {}INDEX {} ON {} ({cols})",
@@ -83,7 +101,10 @@ pub fn create_index_sql(dialect: Dialect, schema: &str, table: &str, keys: &[Str
         table_name(dialect, schema, table)
     );
     if !include.is_empty() && dialect != Dialect::MySql {
-        s.push_str(&format!(" INCLUDE ({})", include.iter().map(|c| q(dialect, c)).collect::<Vec<_>>().join(", ")));
+        s.push_str(&format!(
+            " INCLUDE ({})",
+            include.iter().map(|c| q(dialect, c)).collect::<Vec<_>>().join(", ")
+        ));
     }
     s.push(';');
     s
@@ -117,12 +138,20 @@ pub fn redundant_indexes(indexes: &[IndexInfo], dialect: Dialect) -> Vec<IndexFi
             }
             let overlapping = !duplicate && bk.len() > ak.len() && bk[..ak.len()] == ak[..] && covers_includes;
             if duplicate || overlapping {
-                let kind = if duplicate { FindingKind::Duplicate } else { FindingKind::Overlapping };
+                let kind = if duplicate {
+                    FindingKind::Duplicate
+                } else {
+                    FindingKind::Overlapping
+                };
                 let detail = format!(
                     "{} ({}) {} {} ({}){}",
                     a.name,
                     a.key_columns.join(", "),
-                    if duplicate { "has the same keys as" } else { "is the leading part of" },
+                    if duplicate {
+                        "has the same keys as"
+                    } else {
+                        "is the leading part of"
+                    },
                     b.name,
                     b.key_columns.join(", "),
                     match a.size_kb {
@@ -171,7 +200,10 @@ pub fn unused_indexes(indexes: &[IndexInfo], dialect: Dialect) -> Vec<IndexFindi
                 i.name,
                 i.key_columns.join(", "),
                 i.writes.unwrap_or(0),
-                i.size_kb.filter(|k| *k > 0).map(|k| format!("; size {}", size(k))).unwrap_or_default()
+                i.size_kb
+                    .filter(|k| *k > 0)
+                    .map(|k| format!("; size {}", size(k)))
+                    .unwrap_or_default()
             ),
             score: 10.0 + i.writes.unwrap_or(0) as f64 / 1000.0,
             script: Some(drop_index_sql(dialect, &i.schema, &i.table, &i.name)),
@@ -199,7 +231,11 @@ mod tests {
 
     #[test]
     fn finds_duplicates_and_overlaps() {
-        let pk = IndexInfo { primary: true, clustered: true, ..ix("PK_Orders", &["Id"], &[]) };
+        let pk = IndexInfo {
+            primary: true,
+            clustered: true,
+            ..ix("PK_Orders", &["Id"], &[])
+        };
         let list = vec![
             pk,
             ix("IX_a", &["CustomerId"], &[]),
@@ -210,8 +246,10 @@ mod tests {
             ix("IX_e", &["Status", "OrderDate"], &[]),
             ix("IX_id", &["Id"], &[]),
         ];
-        let found: Vec<(String, FindingKind)> =
-            redundant_indexes(&list, Dialect::MsSql).into_iter().map(|f| (f.index.unwrap(), f.kind)).collect();
+        let found: Vec<(String, FindingKind)> = redundant_indexes(&list, Dialect::MsSql)
+            .into_iter()
+            .map(|f| (f.index.unwrap(), f.kind))
+            .collect();
         assert_eq!(
             found,
             vec![
@@ -232,14 +270,27 @@ mod tests {
         a.reads = Some(0);
         let mut b = ix("IX_unknown", &["Note2"], &[]);
         b.reads = None;
-        let pk = IndexInfo { primary: true, reads: Some(0), ..ix("PK", &["Id"], &[]) };
+        let pk = IndexInfo {
+            primary: true,
+            reads: Some(0),
+            ..ix("PK", &["Id"], &[])
+        };
         let found = unused_indexes(&[a, b, pk], Dialect::Postgres);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].script.as_deref(), Some("DROP INDEX dbo.\"IX_unused\";"));
         assert_eq!(
-            create_index_sql(Dialect::MsSql, "dbo", "Orders", &["[CustomerId]".into()], &["[Total]".into(), "[CustomerId]".into()]),
+            create_index_sql(
+                Dialect::MsSql,
+                "dbo",
+                "Orders",
+                &["[CustomerId]".into()],
+                &["[Total]".into(), "[CustomerId]".into()]
+            ),
             "CREATE NONCLUSTERED INDEX IX_Orders_CustomerId ON dbo.Orders (CustomerId) INCLUDE (Total);"
         );
-        assert_eq!(create_index_sql(Dialect::MySql, "", "orders", &["status".into()], &["total".into()]), "CREATE INDEX IX_orders_status ON orders (status);");
+        assert_eq!(
+            create_index_sql(Dialect::MySql, "", "orders", &["status".into()], &["total".into()]),
+            "CREATE INDEX IX_orders_status ON orders (status);"
+        );
     }
 }

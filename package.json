@@ -2,6 +2,12 @@
   "name": "sqlotus",
   "private": true,
   "version": "0.2.1",
+  "description": "Desktop SQL editor with SQL Prompt-style completion, formatting, search and history for SQL Server, PostgreSQL and MySQL",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tuancuongpham/Sqlotus.git"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -25,7 +31,5 @@
     "@vitejs/plugin-react": "^6.0.2",
     "typescript": "~6.0.3",
     "vite": "^8.0.16"
-  },
-  "license": "MIT",
-  "description": "Desktop SQL editor with SQL Prompt-style completion, formatting, search and history for SQL Server, PostgreSQL and MySQL"
+  }
 }

@@ -79,7 +79,10 @@ fn finish(mut plan: StatementPlan) -> StatementPlan {
             walk(c, total, out);
         }
     }
-    let total = plan.cost.or_else(|| plan.root.as_ref().and_then(|r| r.cost)).unwrap_or(0.0);
+    let total = plan
+        .cost
+        .or_else(|| plan.root.as_ref().and_then(|r| r.cost))
+        .unwrap_or(0.0);
     plan.cost = plan.cost.or(Some(total)).filter(|c| *c > 0.0);
     let mut found = Vec::new();
     if let Some(root) = plan.root.as_mut() {
@@ -142,7 +145,9 @@ fn relop(n: roxmltree::Node<'_, '_>) -> PlanNode {
     let object = own_descendants(n, "Object").into_iter().next().map(|o| {
         let table = format!(
             "{}{}",
-            o.attribute("Schema").map(|s| format!("{}.", unbracket(s))).unwrap_or_default(),
+            o.attribute("Schema")
+                .map(|s| format!("{}.", unbracket(s)))
+                .unwrap_or_default(),
             unbracket(o.attribute("Table").unwrap_or("?"))
         );
         match o.attribute("Index") {
@@ -158,7 +163,10 @@ fn relop(n: roxmltree::Node<'_, '_>) -> PlanNode {
             .next()
     };
     let predicate = scalar("Predicate");
-    let detail = predicate.clone().or_else(|| scalar("SeekPredicates")).or_else(|| scalar("ProbeResidual"));
+    let detail = predicate
+        .clone()
+        .or_else(|| scalar("SeekPredicates"))
+        .or_else(|| scalar("ProbeResidual"));
     let rows = attr_f64(n, "EstimateRows");
     let mut node = PlanNode {
         op,
@@ -188,7 +196,8 @@ fn relop(n: roxmltree::Node<'_, '_>) -> PlanNode {
     }
     for w in own_descendants(n, "Warnings") {
         if w.attribute("NoJoinPredicate") == Some("true") || w.children().any(|c| is(c, "NoJoinPredicate")) {
-            node.warnings.push("No join predicate: every row is joined with every row of the other input".into());
+            node.warnings
+                .push("No join predicate: every row is joined with every row of the other input".into());
         }
         for c in w.children().filter(|c| is(*c, "ColumnsWithNoStatistics")) {
             let cols: Vec<String> = c
@@ -196,7 +205,8 @@ fn relop(n: roxmltree::Node<'_, '_>) -> PlanNode {
                 .filter(|d| is(*d, "ColumnReference"))
                 .filter_map(|d| d.attribute("Column").map(unbracket))
                 .collect();
-            node.warnings.push(format!("Columns without statistics: {}", cols.join(", ")));
+            node.warnings
+                .push(format!("Columns without statistics: {}", cols.join(", ")));
         }
     }
     node.children = own_descendants(n, "RelOp").into_iter().map(relop).collect();
@@ -225,12 +235,19 @@ fn missing_indexes(plan: roxmltree::Node<'_, '_>) -> Vec<MissingIndex> {
                 unbracket(table),
                 keys.iter().map(|k| unbracket(k)).collect::<Vec<_>>().join("_")
             );
-            let mut create = format!("CREATE NONCLUSTERED INDEX [{name}] ON {schema}.{table} ({})", keys.join(", "));
+            let mut create = format!(
+                "CREATE NONCLUSTERED INDEX [{name}] ON {schema}.{table} ({})",
+                keys.join(", ")
+            );
             if !include.is_empty() {
                 create.push_str(&format!(" INCLUDE ({})", include.join(", ")));
             }
             create.push(';');
-            out.push(MissingIndex { table: format!("{}.{}", unbracket(schema), unbracket(table)), impact, create_statement: create });
+            out.push(MissingIndex {
+                table: format!("{}.{}", unbracket(schema), unbracket(table)),
+                impact,
+                create_statement: create,
+            });
         }
     }
     out
@@ -241,7 +258,9 @@ pub fn parse_showplan_xml(xml: &str) -> Result<Vec<StatementPlan>, String> {
     let doc = roxmltree::Document::parse(xml).map_err(|e| format!("invalid showplan XML: {e}"))?;
     let mut out = Vec::new();
     for stmt in doc.descendants().filter(|d| is(*d, "StmtSimple")) {
-        let Some(qp) = stmt.children().find(|c| is(*c, "QueryPlan")) else { continue };
+        let Some(qp) = stmt.children().find(|c| is(*c, "QueryPlan")) else {
+            continue;
+        };
         let mut warnings = Vec::new();
         if let Some(w) = qp.children().find(|c| is(*c, "Warnings")) {
             for c in w.children().filter(|c| is(*c, "PlanAffectingConvert")) {
@@ -296,17 +315,30 @@ fn pg_node(v: &serde_json::Value) -> PlanNode {
             None => c,
         })
         .or_else(|| filter.clone())
-        .or_else(|| v.get("Sort Key").and_then(|k| k.as_array()).map(|a| {
-            a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")
-        }));
-    let mut node = PlanNode { op, object: object.clone(), detail, rows: f("Plan Rows"), cost: f("Total Cost"), ..Default::default() };
+        .or_else(|| {
+            v.get("Sort Key")
+                .and_then(|k| k.as_array())
+                .map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", "))
+        });
+    let mut node = PlanNode {
+        op,
+        object: object.clone(),
+        detail,
+        rows: f("Plan Rows"),
+        cost: f("Total Cost"),
+        ..Default::default()
+    };
     if node_type == "Seq Scan" && filter.is_some() {
         node.warnings.push(format!(
             "Seq Scan of {} reads the whole table to apply the filter: an index on the filtered columns may help",
             object.as_deref().unwrap_or("the table")
         ));
     }
-    node.children = v.get("Plans").and_then(|p| p.as_array()).map(|a| a.iter().map(pg_node).collect()).unwrap_or_default();
+    node.children = v
+        .get("Plans")
+        .and_then(|p| p.as_array())
+        .map(|a| a.iter().map(pg_node).collect())
+        .unwrap_or_default();
     node
 }
 
@@ -315,7 +347,12 @@ pub fn parse_pg_json(statement: &str, json: &str) -> Result<StatementPlan, Strin
     let v: serde_json::Value = serde_json::from_str(json).map_err(|e| format!("invalid EXPLAIN output: {e}"))?;
     let plan = v.get(0).and_then(|x| x.get("Plan")).ok_or("EXPLAIN returned no plan")?;
     let root = pg_node(plan);
-    Ok(finish(StatementPlan { statement: statement.trim().to_string(), cost: root.cost, root: Some(root), ..Default::default() }))
+    Ok(finish(StatementPlan {
+        statement: statement.trim().to_string(),
+        cost: root.cost,
+        root: Some(root),
+        ..Default::default()
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -331,10 +368,16 @@ fn mysql_tree_node(text: &str) -> PlanNode {
     let stat = |key: &str| -> Option<f64> {
         let at = stats.find(&format!("{key}="))? + key.len() + 1;
         let rest = &stats[at..];
-        let end = rest.find(|c: char| !(c.is_ascii_digit() || c == '.' || c == 'e' || c == '+' || c == '-')).unwrap_or(rest.len());
+        let end = rest
+            .find(|c: char| !(c.is_ascii_digit() || c == '.' || c == 'e' || c == '+' || c == '-'))
+            .unwrap_or(rest.len());
         rest[..end].parse().ok()
     };
-    let mut node = PlanNode { rows: stat("rows"), cost: stat("cost"), ..Default::default() };
+    let mut node = PlanNode {
+        rows: stat("rows"),
+        cost: stat("cost"),
+        ..Default::default()
+    };
     if let Some((op, rest)) = body.split_once(": ") {
         node.op = op.to_string();
         node.detail = Some(rest.to_string());
@@ -364,10 +407,11 @@ fn mysql_tree_node(text: &str) -> PlanNode {
 pub fn parse_mysql_tree(statement: &str, text: &str) -> StatementPlan {
     let mut stack: Vec<(usize, PlanNode)> = Vec::new();
     let mut root: Option<PlanNode> = None;
-    let attach = |stack: &mut Vec<(usize, PlanNode)>, root: &mut Option<PlanNode>, node: PlanNode| match stack.last_mut() {
-        Some((_, parent)) => parent.children.push(node),
-        None => *root = Some(node),
-    };
+    let attach =
+        |stack: &mut Vec<(usize, PlanNode)>, root: &mut Option<PlanNode>, node: PlanNode| match stack.last_mut() {
+            Some((_, parent)) => parent.children.push(node),
+            None => *root = Some(node),
+        };
     for line in text.lines() {
         let Some(at) = line.find("-> ") else { continue };
         let indent = at;
@@ -381,7 +425,12 @@ pub fn parse_mysql_tree(statement: &str, text: &str) -> StatementPlan {
     while let Some((_, done)) = stack.pop() {
         attach(&mut stack, &mut root, done);
     }
-    finish(StatementPlan { statement: statement.trim().to_string(), cost: root.as_ref().and_then(|r| r.cost), root, ..Default::default() })
+    finish(StatementPlan {
+        statement: statement.trim().to_string(),
+        cost: root.as_ref().and_then(|r| r.cost),
+        root,
+        ..Default::default()
+    })
 }
 
 /// Classic tabular `EXPLAIN` (MariaDB, MySQL 5.x): one node per table.
@@ -421,8 +470,16 @@ pub fn parse_mysql_table(statement: &str, columns: &[String], rows: &[Vec<Option
             node
         })
         .collect();
-    let root = PlanNode { op: "Query".into(), children, ..Default::default() };
-    finish(StatementPlan { statement: statement.trim().to_string(), root: Some(root), ..Default::default() })
+    let root = PlanNode {
+        op: "Query".into(),
+        children,
+        ..Default::default()
+    };
+    finish(StatementPlan {
+        statement: statement.trim().to_string(),
+        root: Some(root),
+        ..Default::default()
+    })
 }
 
 #[cfg(test)]
@@ -493,7 +550,10 @@ mod tests {
         assert_eq!(root.op, "Hash Join");
         assert_eq!(root.detail.as_deref(), Some("(o.customer_id = c.id)"));
         assert_eq!(root.children[0].object.as_deref(), Some("public.orders"));
-        assert_eq!(root.children[1].children[0].object.as_deref(), Some("public.customers (customers_pkey)"));
+        assert_eq!(
+            root.children[1].children[0].object.as_deref(),
+            Some("public.customers (customers_pkey)")
+        );
         assert!(p.warnings[0].starts_with("Seq Scan of public.orders"));
     }
 
@@ -507,14 +567,28 @@ mod tests {
         assert_eq!(root.children.len(), 2);
         assert_eq!(root.children[0].op, "Filter");
         assert_eq!(root.children[0].children[0].object.as_deref(), Some("o"));
-        assert_eq!(root.children[1].detail.as_deref(), Some("using PRIMARY (Id=o.CustomerId)"));
+        assert_eq!(
+            root.children[1].detail.as_deref(),
+            Some("using PRIMARY (Id=o.CustomerId)")
+        );
         assert!(p.warnings[0].starts_with("Full table scan of o"));
     }
 
     #[test]
     fn mysql_table_plan() {
-        let cols: Vec<String> = ["id", "select_type", "table", "type", "key", "rows", "Extra"].iter().map(|s| s.to_string()).collect();
-        let rows = vec![vec![Some("1".into()), Some("SIMPLE".into()), Some("t".into()), Some("ALL".into()), None, Some("20".into()), Some("Using where".into())]];
+        let cols: Vec<String> = ["id", "select_type", "table", "type", "key", "rows", "Extra"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let rows = vec![vec![
+            Some("1".into()),
+            Some("SIMPLE".into()),
+            Some("t".into()),
+            Some("ALL".into()),
+            None,
+            Some("20".into()),
+            Some("Using where".into()),
+        ]];
         let p = parse_mysql_table("SELECT 1", &cols, &rows);
         assert_eq!(p.root.as_ref().unwrap().children[0].op, "Full table scan");
         assert_eq!(p.warnings.len(), 1);

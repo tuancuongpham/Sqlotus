@@ -173,9 +173,7 @@ impl Store {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.execute_batch(SCHEMA)?;
-        Ok(Self {
-            db: Mutex::new(conn),
-        })
+        Ok(Self { db: Mutex::new(conn) })
     }
 
     fn with<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
@@ -200,9 +198,7 @@ impl Store {
     pub fn get_connection(&self, id: &str) -> Result<Option<ConnectionConfig>> {
         self.with(|db| {
             let json: Option<String> = db
-                .query_row("SELECT json FROM connections WHERE id = ?1", [id], |r| {
-                    r.get(0)
-                })
+                .query_row("SELECT json FROM connections WHERE id = ?1", [id], |r| r.get(0))
                 .optional()?;
             Ok(json.map(|j| serde_json::from_str(&j)).transpose()?)
         })
@@ -232,12 +228,10 @@ impl Store {
     // -- passwords --------------------------------------------------------
 
     pub fn set_password(&self, connection_id: &str, password: Option<&str>) -> Result<()> {
-        let entry = keyring::Entry::new(KEYRING_SERVICE, connection_id)
-            .map_err(|e| StoreError::Keyring(e.to_string()))?;
+        let entry =
+            keyring::Entry::new(KEYRING_SERVICE, connection_id).map_err(|e| StoreError::Keyring(e.to_string()))?;
         match password {
-            Some(p) => entry
-                .set_password(p)
-                .map_err(|e| StoreError::Keyring(e.to_string())),
+            Some(p) => entry.set_password(p).map_err(|e| StoreError::Keyring(e.to_string())),
             None => match entry.delete_credential() {
                 Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
                 Err(e) => Err(StoreError::Keyring(e.to_string())),
@@ -247,8 +241,7 @@ impl Store {
 
     pub fn get_password(&self, connection_id: &str) -> Result<Option<String>> {
         let read = |service: &str| -> Result<Option<String>> {
-            let entry = keyring::Entry::new(service, connection_id)
-                .map_err(|e| StoreError::Keyring(e.to_string()))?;
+            let entry = keyring::Entry::new(service, connection_id).map_err(|e| StoreError::Keyring(e.to_string()))?;
             match entry.get_password() {
                 Ok(p) => Ok(Some(p)),
                 Err(keyring::Error::NoEntry) => Ok(None),
@@ -274,9 +267,7 @@ impl Store {
     pub fn get_setting<T: DeserializeOwned>(&self, key: &str) -> Result<Option<T>> {
         self.with(|db| {
             let v: Option<String> = db
-                .query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| {
-                    r.get(0)
-                })
+                .query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| r.get(0))
                 .optional()?;
             Ok(v.map(|v| serde_json::from_str(&v)).transpose()?)
         })
@@ -343,9 +334,7 @@ impl Store {
             let Ok(text) = std::fs::read_to_string(&path) else {
                 continue;
             };
-            let Ok(mut snippet) =
-                serde_json::from_str::<Snippet>(text.trim_start_matches('\u{feff}'))
-            else {
+            let Ok(mut snippet) = serde_json::from_str::<Snippet>(text.trim_start_matches('\u{feff}')) else {
                 continue;
             };
             if snippet.id.is_empty() {
@@ -444,14 +433,7 @@ impl Store {
                 sql.push_str(&format!(" ORDER BY h.updated_at DESC LIMIT {limit}"));
                 let patterns: Vec<String> = terms
                     .iter()
-                    .map(|t| {
-                        format!(
-                            "%{}%",
-                            t.replace('\\', "\\\\")
-                                .replace('%', "\\%")
-                                .replace('_', "\\_")
-                        )
-                    })
+                    .map(|t| format!("%{}%", t.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")))
                     .collect();
                 let mut stmt = db.prepare(&sql)?;
                 for r in stmt.query_map(rusqlite::params_from_iter(patterns.iter()), history_row)? {
@@ -515,12 +497,7 @@ impl Store {
 
     // -- catalog cache ----------------------------------------------------
 
-    pub fn save_catalog(
-        &self,
-        connection_id: &str,
-        database: &str,
-        snap: &CatalogSnapshot,
-    ) -> Result<()> {
+    pub fn save_catalog(&self, connection_id: &str, database: &str, snap: &CatalogSnapshot) -> Result<()> {
         let json = serde_json::to_string(snap)?;
         self.with(|db| {
             db.execute(
@@ -532,11 +509,7 @@ impl Store {
         })
     }
 
-    pub fn load_catalog(
-        &self,
-        connection_id: &str,
-        database: &str,
-    ) -> Result<Option<(CatalogSnapshot, i64)>> {
+    pub fn load_catalog(&self, connection_id: &str, database: &str) -> Result<Option<(CatalogSnapshot, i64)>> {
         self.with(|db| {
             let row: Option<(String, i64)> = db
                 .query_row(
@@ -607,37 +580,21 @@ mod tests {
             .unwrap();
         // autosave right after: same entry updated
         let b = s
-            .record_history(&entry(
-                "t1",
-                "SELECT * FROM Orders WHERE Id = 1",
-                HistoryKind::Autosave,
-            ))
+            .record_history(&entry("t1", "SELECT * FROM Orders WHERE Id = 1", HistoryKind::Autosave))
             .unwrap();
         assert_eq!(a, b);
         // execute: new version
         let c = s
-            .record_history(&entry(
-                "t1",
-                "SELECT * FROM Orders WHERE Id = 2",
-                HistoryKind::Execute,
-            ))
+            .record_history(&entry("t1", "SELECT * FROM Orders WHERE Id = 2", HistoryKind::Execute))
             .unwrap();
         assert_ne!(b, c);
         // same text again: no new version
         let d = s
-            .record_history(&entry(
-                "t1",
-                "SELECT * FROM Orders WHERE Id = 2",
-                HistoryKind::Autosave,
-            ))
+            .record_history(&entry("t1", "SELECT * FROM Orders WHERE Id = 2", HistoryKind::Autosave))
             .unwrap();
         assert_eq!(c, d);
-        s.record_history(&entry(
-            "t2",
-            "UPDATE Customers SET Name = 'x'",
-            HistoryKind::Execute,
-        ))
-        .unwrap();
+        s.record_history(&entry("t2", "UPDATE Customers SET Name = 'x'", HistoryKind::Execute))
+            .unwrap();
 
         assert_eq!(s.tab_history("t1").unwrap().len(), 2);
         let hits = s.search_history("orders id", 10).unwrap();

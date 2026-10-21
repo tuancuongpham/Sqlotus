@@ -55,8 +55,7 @@ impl Dialect {
         let Some(first) = chars.next() else {
             return true;
         };
-        let first_ok =
-            first.is_alphabetic() || first == '_' || (self == Dialect::MsSql && first == '#');
+        let first_ok = first.is_alphabetic() || first == '_' || (self == Dialect::MsSql && first == '#');
         if !first_ok
             || !name
                 .chars()
@@ -73,9 +72,7 @@ impl Dialect {
 }
 
 pub use catalog::Catalog;
-pub use completion::{
-    CompletionItem, CompletionKind, CompletionOptions, CompletionResult, complete,
-};
+pub use completion::{CompletionItem, CompletionKind, CompletionOptions, CompletionResult, complete};
 pub use format::{FormatOptions, format_sql};
 pub use lexer::{Token, TokenKind, tokenize};
 
@@ -171,14 +168,7 @@ mod ime_tests {
             }
             // raw byte offsets inside a multi-byte char
             for off in 0..=text.len() + 2 {
-                let _ = complete(
-                    text,
-                    off,
-                    Dialect::MsSql,
-                    None,
-                    &[],
-                    &CompletionOptions::default(),
-                );
+                let _ = complete(text, off, Dialect::MsSql, None, &[], &CompletionOptions::default());
                 let _ = statements::statement_at(text, Dialect::MsSql, off);
             }
         }

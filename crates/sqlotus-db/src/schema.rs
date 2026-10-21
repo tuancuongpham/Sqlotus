@@ -4,7 +4,9 @@
 
 use sqlotus_core::Dialect;
 use sqlotus_core::catalog::ObjectKind;
-use sqlotus_core::schemadiff::{CheckDef, ColumnDef, ForeignKeyDef, IndexDef, KeyDef, ModuleDef, SchemaModel, TableDef};
+use sqlotus_core::schemadiff::{
+    CheckDef, ColumnDef, ForeignKeyDef, IndexDef, KeyDef, ModuleDef, SchemaModel, TableDef,
+};
 
 use crate::{Connection, DbError, Result};
 
@@ -23,14 +25,21 @@ fn b(r: &Row, i: usize) -> bool {
     matches!(s(r, i).to_ascii_lowercase().as_str(), "1" | "true" | "t" | "yes")
 }
 fn list(v: &str) -> Vec<String> {
-    v.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()
+    v.split(',')
+        .map(|x| x.trim().to_string())
+        .filter(|x| !x.is_empty())
+        .collect()
 }
 
 fn table_mut<'a>(tables: &'a mut Vec<TableDef>, schema: &str, name: &str) -> &'a mut TableDef {
     if let Some(i) = tables.iter().position(|t| t.schema == schema && t.name == name) {
         return &mut tables[i];
     }
-    tables.push(TableDef { schema: schema.to_string(), name: name.to_string(), ..Default::default() });
+    tables.push(TableDef {
+        schema: schema.to_string(),
+        name: name.to_string(),
+        ..Default::default()
+    });
     tables.last_mut().expect("just pushed")
 }
 
@@ -50,10 +59,18 @@ pub async fn load_schema(conn: &mut Connection) -> Result<SchemaModel> {
 fn mssql_type(t: &str, max_length: i64, precision: i64, scale: i64) -> String {
     match t {
         "varchar" | "char" | "varbinary" | "binary" => {
-            if max_length < 0 { format!("{t}(max)") } else { format!("{t}({max_length})") }
+            if max_length < 0 {
+                format!("{t}(max)")
+            } else {
+                format!("{t}({max_length})")
+            }
         }
         "nvarchar" | "nchar" => {
-            if max_length < 0 { format!("{t}(max)") } else { format!("{t}({})", max_length / 2) }
+            if max_length < 0 {
+                format!("{t}(max)")
+            } else {
+                format!("{t}({})", max_length / 2)
+            }
         }
         "decimal" | "numeric" => format!("{t}({precision}, {scale})"),
         "datetime2" | "time" | "datetimeoffset" => format!("{t}({scale})"),
@@ -71,7 +88,9 @@ fn mssql_action(a: &str) -> Option<String> {
 async fn mssql(conn: &mut Connection) -> Result<SchemaModel> {
     // without VIEW DEFINITION, SQL Server hides routines and blanks defaults
     // and checks: objects would look missing and a sync script would drop them
-    let allowed = conn.query_strings("SELECT HAS_PERMS_BY_NAME(DB_NAME(), 'DATABASE', 'VIEW DEFINITION')").await?;
+    let allowed = conn
+        .query_strings("SELECT HAS_PERMS_BY_NAME(DB_NAME(), 'DATABASE', 'VIEW DEFINITION')")
+        .await?;
     if allowed.first().map(|r| s(r, 0)) != Some("1".to_string()) {
         let db = conn.current_database().await.unwrap_or_default();
         return Err(DbError::Query(format!(
@@ -119,7 +138,10 @@ async fn mssql(conn: &mut Connection) -> Result<SchemaModel> {
         let t = table_mut(&mut tables, &s(&r, 0), &s(&r, 1));
         let (name, col, desc, included) = (s(&r, 2), s(&r, 8), b(&r, 9), b(&r, 10));
         if b(&r, 3) {
-            let pk = t.primary_key.get_or_insert_with(|| KeyDef { name: name.clone(), columns: vec![] });
+            let pk = t.primary_key.get_or_insert_with(|| KeyDef {
+                name: name.clone(),
+                columns: vec![],
+            });
             pk.columns.push(col);
             continue;
         }
@@ -183,7 +205,10 @@ async fn mssql(conn: &mut Connection) -> Result<SchemaModel> {
         )
         .await?;
     for r in checks {
-        table_mut(&mut tables, &s(&r, 0), &s(&r, 1)).checks.push(CheckDef { name: s(&r, 2), definition: s(&r, 3) });
+        table_mut(&mut tables, &s(&r, 0), &s(&r, 1)).checks.push(CheckDef {
+            name: s(&r, 2),
+            definition: s(&r, 3),
+        });
     }
     let mods = conn
         .query_strings(
@@ -195,14 +220,26 @@ async fn mssql(conn: &mut Connection) -> Result<SchemaModel> {
     let mut modules = Vec::new();
     let mut unreadable = Vec::new();
     for r in mods {
-        let Some(kind) = crate::kind_from_mssql(&s(&r, 2)) else { continue };
+        let Some(kind) = crate::kind_from_mssql(&s(&r, 2)) else {
+            continue;
+        };
         // without VIEW DEFINITION the text is NULL
         match opt(&r, 3) {
-            Some(definition) => modules.push(ModuleDef { schema: s(&r, 0), name: s(&r, 1), kind, definition, table: opt(&r, 4) }),
+            Some(definition) => modules.push(ModuleDef {
+                schema: s(&r, 0),
+                name: s(&r, 1),
+                kind,
+                definition,
+                table: opt(&r, 4),
+            }),
             None => unreadable.push(format!("{}.{}", s(&r, 0), s(&r, 1))),
         }
     }
-    Ok(SchemaModel { tables, modules, unreadable })
+    Ok(SchemaModel {
+        tables,
+        modules,
+        unreadable,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -269,7 +306,13 @@ async fn postgres(conn: &mut Connection) -> Result<SchemaModel> {
         let (name, kind, cols) = (s(&r, 2), s(&r, 3), list(&s(&r, 4)));
         match kind.as_str() {
             "p" => t.primary_key = Some(KeyDef { name, columns: cols }),
-            "u" => t.indexes.push(IndexDef { name, columns: cols, unique: true, constraint: true, ..Default::default() }),
+            "u" => t.indexes.push(IndexDef {
+                name,
+                columns: cols,
+                unique: true,
+                constraint: true,
+                ..Default::default()
+            }),
             "f" => t.foreign_keys.push(ForeignKeyDef {
                 name,
                 columns: cols,
@@ -279,7 +322,10 @@ async fn postgres(conn: &mut Connection) -> Result<SchemaModel> {
                 on_delete: pg_action(&s(&r, 8)),
                 on_update: pg_action(&s(&r, 9)),
             }),
-            _ => t.checks.push(CheckDef { name, definition: s(&r, 10) }),
+            _ => t.checks.push(CheckDef {
+                name,
+                definition: s(&r, 10),
+            }),
         }
     }
     let idx = conn
@@ -320,7 +366,12 @@ async fn postgres(conn: &mut Connection) -> Result<SchemaModel> {
     for r in views {
         let (schema, name) = (s(&r, 0), s(&r, 1));
         modules.push(ModuleDef {
-            definition: format!("CREATE OR REPLACE VIEW {}.{} AS\n{}", dialect.quote_ident(&schema), dialect.quote_ident(&name), s(&r, 2).trim_end()),
+            definition: format!(
+                "CREATE OR REPLACE VIEW {}.{} AS\n{}",
+                dialect.quote_ident(&schema),
+                dialect.quote_ident(&name),
+                s(&r, 2).trim_end()
+            ),
             schema,
             name,
             kind: ObjectKind::View,
@@ -342,7 +393,13 @@ async fn postgres(conn: &mut Connection) -> Result<SchemaModel> {
             _ => ObjectKind::ScalarFunction,
         };
         if let Some(def) = opt(&r, 4) {
-            modules.push(ModuleDef { schema: s(&r, 0), name: s(&r, 1), kind, definition: def, table: None });
+            modules.push(ModuleDef {
+                schema: s(&r, 0),
+                name: s(&r, 1),
+                kind,
+                definition: def,
+                table: None,
+            });
         }
     }
     let triggers = conn
@@ -353,9 +410,19 @@ async fn postgres(conn: &mut Connection) -> Result<SchemaModel> {
         ))
         .await?;
     for r in triggers {
-        modules.push(ModuleDef { schema: s(&r, 0), name: s(&r, 1), kind: ObjectKind::Trigger, definition: s(&r, 2), table: opt(&r, 3) });
+        modules.push(ModuleDef {
+            schema: s(&r, 0),
+            name: s(&r, 1),
+            kind: ObjectKind::Trigger,
+            definition: s(&r, 2),
+            table: opt(&r, 3),
+        });
     }
-    Ok(SchemaModel { tables, modules, unreadable: Vec::new() })
+    Ok(SchemaModel {
+        tables,
+        modules,
+        unreadable: Vec::new(),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -372,7 +439,9 @@ fn mysql_portable(def: &str, db: &str) -> String {
         let end = rest.find(' ').map(|i| start + i + 1).unwrap_or(out.len());
         out.replace_range(start..end, "");
     }
-    out = out.replace("ALGORITHM=UNDEFINED ", "").replace("SQL SECURITY DEFINER ", "");
+    out = out
+        .replace("ALGORITHM=UNDEFINED ", "")
+        .replace("SQL SECURITY DEFINER ", "");
     if !db.is_empty() {
         out = out.replace(&format!("`{db}`."), "");
     }
@@ -385,10 +454,20 @@ fn mysql_default(r: &Row, type_col: usize, default_col: usize, extra_col: usize)
     let ty = s(r, type_col).to_ascii_lowercase();
     if extra.contains("DEFAULT_GENERATED") {
         let up = raw.to_ascii_uppercase();
-        return Some(if up.starts_with("CURRENT_TIMESTAMP") || raw.starts_with('(') { raw } else { format!("({raw})") });
+        return Some(if up.starts_with("CURRENT_TIMESTAMP") || raw.starts_with('(') {
+            raw
+        } else {
+            format!("({raw})")
+        });
     }
-    let numeric = ["int", "decimal", "numeric", "float", "double", "bit", "real"].iter().any(|t| ty.starts_with(t) || ty.contains(&format!(" {t}")));
-    Some(if numeric { raw } else { format!("'{}'", raw.replace('\'', "''")) })
+    let numeric = ["int", "decimal", "numeric", "float", "double", "bit", "real"]
+        .iter()
+        .any(|t| ty.starts_with(t) || ty.contains(&format!(" {t}")));
+    Some(if numeric {
+        raw
+    } else {
+        format!("'{}'", raw.replace('\'', "''"))
+    })
 }
 
 fn mysql_action(a: &str) -> Option<String> {
@@ -443,12 +522,23 @@ async fn mysql(conn: &mut Connection) -> Result<SchemaModel> {
             col.push_str(" DESC");
         }
         if name == "PRIMARY" {
-            t.primary_key.get_or_insert_with(|| KeyDef { name: "PRIMARY".into(), columns: vec![] }).columns.push(col);
+            t.primary_key
+                .get_or_insert_with(|| KeyDef {
+                    name: "PRIMARY".into(),
+                    columns: vec![],
+                })
+                .columns
+                .push(col);
             continue;
         }
         match t.indexes.iter_mut().find(|i| i.name == name) {
             Some(i) => i.columns.push(col),
-            None => t.indexes.push(IndexDef { name, columns: vec![col], unique: s(&r, 2) == "0", ..Default::default() }),
+            None => t.indexes.push(IndexDef {
+                name,
+                columns: vec![col],
+                unique: s(&r, 2) == "0",
+                ..Default::default()
+            }),
         }
     }
     let fks = conn
@@ -498,15 +588,30 @@ async fn mysql(conn: &mut Connection) -> Result<SchemaModel> {
     let mut modules = Vec::new();
     let mut unreadable = Vec::new();
     let mut objects: Vec<(ObjectKind, String, &str, usize, Option<String>)> = Vec::new();
-    for r in conn.query_strings("SELECT TABLE_NAME FROM information_schema.VIEWS WHERE TABLE_SCHEMA = DATABASE()").await? {
+    for r in conn
+        .query_strings("SELECT TABLE_NAME FROM information_schema.VIEWS WHERE TABLE_SCHEMA = DATABASE()")
+        .await?
+    {
         objects.push((ObjectKind::View, s(&r, 0), "VIEW", 1, None));
     }
     for r in conn
-        .query_strings("SELECT ROUTINE_NAME, ROUTINE_TYPE FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = DATABASE()")
+        .query_strings(
+            "SELECT ROUTINE_NAME, ROUTINE_TYPE FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = DATABASE()",
+        )
         .await?
     {
         let proc = s(&r, 1) == "PROCEDURE";
-        objects.push((if proc { ObjectKind::Procedure } else { ObjectKind::ScalarFunction }, s(&r, 0), if proc { "PROCEDURE" } else { "FUNCTION" }, 2, None));
+        objects.push((
+            if proc {
+                ObjectKind::Procedure
+            } else {
+                ObjectKind::ScalarFunction
+            },
+            s(&r, 0),
+            if proc { "PROCEDURE" } else { "FUNCTION" },
+            2,
+            None,
+        ));
     }
     for r in conn
         .query_strings("SELECT TRIGGER_NAME, EVENT_OBJECT_TABLE FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = DATABASE()")
@@ -516,13 +621,27 @@ async fn mysql(conn: &mut Connection) -> Result<SchemaModel> {
     }
     for (kind, name, what, col, table) in objects {
         // without the privilege the definition is empty or SHOW CREATE fails: never guess
-        let def = conn.query_strings(&format!("SHOW CREATE {what} {}", quote(&name))).await.ok().and_then(|rows| rows.first().and_then(|r| opt(r, col)));
+        let def = conn
+            .query_strings(&format!("SHOW CREATE {what} {}", quote(&name)))
+            .await
+            .ok()
+            .and_then(|rows| rows.first().and_then(|r| opt(r, col)));
         match def {
-            Some(def) => modules.push(ModuleDef { schema: String::new(), name, kind, definition: mysql_portable(&def, &db), table }),
+            Some(def) => modules.push(ModuleDef {
+                schema: String::new(),
+                name,
+                kind,
+                definition: mysql_portable(&def, &db),
+                table,
+            }),
             None => unreadable.push(format!(".{name}")),
         }
     }
-    Ok(SchemaModel { tables, modules, unreadable })
+    Ok(SchemaModel {
+        tables,
+        modules,
+        unreadable,
+    })
 }
 
 #[cfg(test)]
@@ -532,10 +651,19 @@ mod tests {
     #[test]
     fn mysql_definitions_are_portable() {
         assert_eq!(
-            mysql_portable("CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`%` SQL SECURITY DEFINER VIEW `v` AS select `shop`.`t`.`a` AS `a` from `shop`.`t`", "shop"),
+            mysql_portable(
+                "CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`%` SQL SECURITY DEFINER VIEW `v` AS select `shop`.`t`.`a` AS `a` from `shop`.`t`",
+                "shop"
+            ),
             "CREATE VIEW `v` AS select `t`.`a` AS `a` from `t`"
         );
-        assert_eq!(mysql_portable("CREATE DEFINER=`app`@`localhost` PROCEDURE `p`() BEGIN SELECT 1; END", "x"), "CREATE PROCEDURE `p`() BEGIN SELECT 1; END");
+        assert_eq!(
+            mysql_portable(
+                "CREATE DEFINER=`app`@`localhost` PROCEDURE `p`() BEGIN SELECT 1; END",
+                "x"
+            ),
+            "CREATE PROCEDURE `p`() BEGIN SELECT 1; END"
+        );
     }
 
     #[test]

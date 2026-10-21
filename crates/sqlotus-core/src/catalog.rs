@@ -119,10 +119,10 @@ impl Catalog {
     /// Find an object by optional schema and name (case-insensitive). Without
     /// a schema the default schema wins over other matches.
     pub fn find(&self, schema: Option<&str>, name: &str) -> Option<&DbObject> {
-        let mut candidates = self.objects.iter().filter(|o| {
-            o.name.eq_ignore_ascii_case(name)
-                && schema.is_none_or(|s| o.schema.eq_ignore_ascii_case(s))
-        });
+        let mut candidates = self
+            .objects
+            .iter()
+            .filter(|o| o.name.eq_ignore_ascii_case(name) && schema.is_none_or(|s| o.schema.eq_ignore_ascii_case(s)));
         let first = candidates.next()?;
         if schema.is_some() || first.schema.eq_ignore_ascii_case(&self.default_schema) {
             return Some(first);
@@ -139,14 +139,10 @@ impl Catalog {
         b: &'a DbObject,
     ) -> impl Iterator<Item = &'a ForeignKey> {
         self.foreign_keys.iter().filter(move |fk| {
-            let from_a = fk.from_schema.eq_ignore_ascii_case(&a.schema)
-                && fk.from_table.eq_ignore_ascii_case(&a.name);
-            let to_a = fk.to_schema.eq_ignore_ascii_case(&a.schema)
-                && fk.to_table.eq_ignore_ascii_case(&a.name);
-            let from_b = fk.from_schema.eq_ignore_ascii_case(&b.schema)
-                && fk.from_table.eq_ignore_ascii_case(&b.name);
-            let to_b = fk.to_schema.eq_ignore_ascii_case(&b.schema)
-                && fk.to_table.eq_ignore_ascii_case(&b.name);
+            let from_a = fk.from_schema.eq_ignore_ascii_case(&a.schema) && fk.from_table.eq_ignore_ascii_case(&a.name);
+            let to_a = fk.to_schema.eq_ignore_ascii_case(&a.schema) && fk.to_table.eq_ignore_ascii_case(&a.name);
+            let from_b = fk.from_schema.eq_ignore_ascii_case(&b.schema) && fk.from_table.eq_ignore_ascii_case(&b.name);
+            let to_b = fk.to_schema.eq_ignore_ascii_case(&b.schema) && fk.to_table.eq_ignore_ascii_case(&b.name);
             (from_a && to_b) || (from_b && to_a)
         })
     }

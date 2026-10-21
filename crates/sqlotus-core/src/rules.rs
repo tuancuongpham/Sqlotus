@@ -30,8 +30,17 @@ fn base_type(data_type: &str) -> String {
 fn is_text_type(t: &str) -> bool {
     matches!(
         t,
-        "char" | "varchar" | "nchar" | "nvarchar" | "text" | "ntext" | "character varying" | "character" | "tinytext"
-            | "mediumtext" | "longtext"
+        "char"
+            | "varchar"
+            | "nchar"
+            | "nvarchar"
+            | "text"
+            | "ntext"
+            | "character varying"
+            | "character"
+            | "tinytext"
+            | "mediumtext"
+            | "longtext"
     )
 }
 
@@ -91,7 +100,9 @@ fn column_ref<'c>(t: &[Token<'_>], i: usize, scope: &Scope, cat: &'c Catalog) ->
     }
     let qualified = t.get(i + 1).is_some_and(|d| d.kind == TokenKind::Dot) && t.get(i + 2).is_some_and(|n| n.is_name());
     let name_idx = if qualified { i + 2 } else { i };
-    if t.get(name_idx + 1).is_some_and(|n| matches!(n.kind, TokenKind::Dot | TokenKind::LParen)) {
+    if t.get(name_idx + 1)
+        .is_some_and(|n| matches!(n.kind, TokenKind::Dot | TokenKind::LParen))
+    {
         return None;
     }
     let name = t[name_idx].ident_value();
@@ -116,15 +127,24 @@ fn qualified_ref(t: &[Token<'_>], i: usize, scope: &Scope) -> bool {
         && (i == 0 || t[i - 1].kind != TokenKind::Dot)
         && t.get(i + 1).is_some_and(|d| d.kind == TokenKind::Dot)
         && t.get(i + 2).is_some_and(|c| c.is_name())
-        && !t.get(i + 3).is_some_and(|n| matches!(n.kind, TokenKind::Dot | TokenKind::LParen))
-        && scope.tables.iter().any(|r| r.alias.is_some() && r.matches_qualifier(&t[i].ident_value()))
+        && !t
+            .get(i + 3)
+            .is_some_and(|n| matches!(n.kind, TokenKind::Dot | TokenKind::LParen))
+        && scope
+            .tables
+            .iter()
+            .any(|r| r.alias.is_some() && r.matches_qualifier(&t[i].ident_value()))
 }
 
 /// SQ009: `x NOT IN (SELECT col …)` returns no rows at all as soon as the
 /// subquery yields a NULL.
 pub(crate) fn not_in_subquery(t: &[Token<'_>], scope: &Scope, cat: Option<&Catalog>, out: &mut Vec<Diagnostic>) {
     for i in 0..t.len().saturating_sub(3) {
-        if word(t.get(i)) != "NOT" || word(t.get(i + 1)) != "IN" || t[i + 2].kind != TokenKind::LParen || word(t.get(i + 3)) != "SELECT" {
+        if word(t.get(i)) != "NOT"
+            || word(t.get(i + 1)) != "IN"
+            || t[i + 2].kind != TokenKind::LParen
+            || word(t.get(i + 3)) != "SELECT"
+        {
             continue;
         }
         let mut k = i + 4;
@@ -132,24 +152,69 @@ pub(crate) fn not_in_subquery(t: &[Token<'_>], scope: &Scope, cat: Option<&Catal
             k += 1;
         }
         if word(t.get(k)) == "TOP" {
-            k += if t.get(k + 1).is_some_and(|x| x.kind == TokenKind::LParen) { 4 } else { 2 };
+            k += if t.get(k + 1).is_some_and(|x| x.kind == TokenKind::LParen) {
+                4
+            } else {
+                2
+            };
         }
-        let nullable = cat.and_then(|c| column_ref(t, k, scope, c)).map(|(col, _)| col.nullable);
+        let nullable = cat
+            .and_then(|c| column_ref(t, k, scope, c))
+            .map(|(col, _)| col.nullable);
         if nullable == Some(false) {
             continue;
         }
         let (severity, why) = match nullable {
-            Some(_) => (Severity::Warning, "the subquery column allows NULL, and one NULL makes NOT IN return no rows"),
+            Some(_) => (
+                Severity::Warning,
+                "the subquery column allows NULL, and one NULL makes NOT IN return no rows",
+            ),
             None => (Severity::Info, "if the subquery returns a NULL, NOT IN returns no rows"),
         };
-        out.push(diag(&t[i], severity, "SQ009", format!("NOT IN (SELECT …): {why}; NOT EXISTS is safer")));
+        out.push(diag(
+            &t[i],
+            severity,
+            "SQ009",
+            format!("NOT IN (SELECT …): {why}; NOT EXISTS is safer"),
+        ));
     }
 }
 
 const WRAPPING_FUNCTIONS: &[&str] = &[
-    "YEAR", "MONTH", "DAY", "DATEPART", "DATENAME", "DATEDIFF", "EOMONTH", "CONVERT", "CAST", "UPPER", "LOWER", "LTRIM",
-    "RTRIM", "TRIM", "LEFT", "RIGHT", "SUBSTRING", "SUBSTR", "ISNULL", "COALESCE", "IFNULL", "NVL", "ABS", "LEN", "LENGTH",
-    "DATE", "DATE_FORMAT", "TO_CHAR", "FORMAT", "REPLACE", "CONCAT", "FLOOR", "CEILING", "ROUND",
+    "YEAR",
+    "MONTH",
+    "DAY",
+    "DATEPART",
+    "DATENAME",
+    "DATEDIFF",
+    "EOMONTH",
+    "CONVERT",
+    "CAST",
+    "UPPER",
+    "LOWER",
+    "LTRIM",
+    "RTRIM",
+    "TRIM",
+    "LEFT",
+    "RIGHT",
+    "SUBSTRING",
+    "SUBSTR",
+    "ISNULL",
+    "COALESCE",
+    "IFNULL",
+    "NVL",
+    "ABS",
+    "LEN",
+    "LENGTH",
+    "DATE",
+    "DATE_FORMAT",
+    "TO_CHAR",
+    "FORMAT",
+    "REPLACE",
+    "CONCAT",
+    "FLOOR",
+    "CEILING",
+    "ROUND",
 ];
 
 /// SQ010: `WHERE YEAR(OrderDate) = 2024` — the function hides the column
@@ -157,10 +222,15 @@ const WRAPPING_FUNCTIONS: &[&str] = &[
 pub(crate) fn non_sargable(t: &[Token<'_>], scope: &Scope, cat: Option<&Catalog>, out: &mut Vec<Diagnostic>) {
     for i in 0..t.len().saturating_sub(1) {
         let f = word(t.get(i));
-        if !WRAPPING_FUNCTIONS.contains(&f.as_str()) || t[i + 1].kind != TokenKind::LParen || (i > 0 && t[i - 1].kind == TokenKind::Dot) {
+        if !WRAPPING_FUNCTIONS.contains(&f.as_str())
+            || t[i + 1].kind != TokenKind::LParen
+            || (i > 0 && t[i - 1].kind == TokenKind::Dot)
+        {
             continue;
         }
-        let Some(close) = matching_paren(t, i + 1) else { continue };
+        let Some(close) = matching_paren(t, i + 1) else {
+            continue;
+        };
         if !(is_comparison(t.get(close + 1)) || (i > 0 && is_comparison(t.get(i - 1)))) || !in_filter(t, i) {
             continue;
         }
@@ -172,7 +242,9 @@ pub(crate) fn non_sargable(t: &[Token<'_>], scope: &Scope, cat: Option<&Catalog>
         let Some(column) = column else { continue };
         let hint = match f.as_str() {
             "YEAR" | "MONTH" | "DAY" | "DATEPART" | "DATENAME" | "EOMONTH" | "DATE" | "DATE_FORMAT" | "TO_CHAR" => {
-                format!("compare {column} with a range instead, e.g. {column} >= '2024-01-01' AND {column} < '2025-01-01'")
+                format!(
+                    "compare {column} with a range instead, e.g. {column} >= '2024-01-01' AND {column} < '2025-01-01'"
+                )
             }
             "ISNULL" | "COALESCE" | "IFNULL" | "NVL" => format!("write ({column} = … OR {column} IS NULL) instead"),
             "UPPER" | "LOWER" => "case-insensitive collations already ignore case".to_string(),
@@ -208,13 +280,22 @@ pub(crate) fn implicit_conversions(
             continue;
         }
         // column on the left (`col` or `q.col`), value on the right — or the reverse
-        let left_start = if k >= 3 && t[k - 2].kind == TokenKind::Dot { k - 3 } else { k - 1 };
+        let left_start = if k >= 3 && t[k - 2].kind == TokenKind::Dot {
+            k - 3
+        } else {
+            k - 1
+        };
         let pairs = [
-            (column_ref(t, left_start, scope, cat).filter(|(_, end)| *end == k - 1), k + 1),
+            (
+                column_ref(t, left_start, scope, cat).filter(|(_, end)| *end == k - 1),
+                k + 1,
+            ),
             (column_ref(t, k + 1, scope, cat), k - 1),
         ];
         for (col, value_idx) in pairs {
-            let (Some((col, _)), Some(value)) = (col, t.get(value_idx)) else { continue };
+            let (Some((col, _)), Some(value)) = (col, t.get(value_idx)) else {
+                continue;
+            };
             let ty = base_type(&col.data_type);
             let message = match value.kind {
                 TokenKind::String
@@ -229,7 +310,9 @@ pub(crate) fn implicit_conversions(
                     )
                 }
                 TokenKind::Variable if dialect == Dialect::MsSql && is_non_unicode_text(&ty) => {
-                    let Some(vt) = variable_types.get(&value.text.to_lowercase()) else { continue };
+                    let Some(vt) = variable_types.get(&value.text.to_lowercase()) else {
+                        continue;
+                    };
                     if !matches!(base_type(vt).as_str(), "nvarchar" | "nchar") {
                         continue;
                     }
@@ -244,7 +327,11 @@ pub(crate) fn implicit_conversions(
                 TokenKind::Number if is_text_type(&ty) => format!(
                     "Comparing {ty} column {} with a number converts every value of it (no index seek{}); quote the value: '{}'",
                     col.name,
-                    if dialect == Dialect::MsSql { ", and an error for non-numeric text" } else { "" },
+                    if dialect == Dialect::MsSql {
+                        ", and an error for non-numeric text"
+                    } else {
+                        ""
+                    },
                     value.text
                 ),
                 _ => continue,
@@ -313,8 +400,20 @@ mod tests {
     #[test]
     fn not_in_with_nullable_subquery_column() {
         let ms = Dialect::MsSql;
-        assert_eq!(codes("SELECT Id FROM dbo.Customers WHERE Id NOT IN (SELECT ReferrerId FROM dbo.Customers)", ms), vec!["SQ009"]);
-        assert!(codes("SELECT Id FROM dbo.Customers WHERE Id NOT IN (SELECT CustomerId FROM dbo.Orders)", ms).is_empty());
+        assert_eq!(
+            codes(
+                "SELECT Id FROM dbo.Customers WHERE Id NOT IN (SELECT ReferrerId FROM dbo.Customers)",
+                ms
+            ),
+            vec!["SQ009"]
+        );
+        assert!(
+            codes(
+                "SELECT Id FROM dbo.Customers WHERE Id NOT IN (SELECT CustomerId FROM dbo.Orders)",
+                ms
+            )
+            .is_empty()
+        );
         assert!(codes("SELECT Id FROM dbo.Customers WHERE Id NOT IN (1, 2)", ms).is_empty());
         // unknown column without a catalog: still a hint
         let d = diagnostics("SELECT a FROM t WHERE a NOT IN (SELECT b FROM u)", ms, None);
@@ -324,30 +423,79 @@ mod tests {
     #[test]
     fn functions_around_columns_in_filters() {
         let ms = Dialect::MsSql;
-        assert_eq!(codes("SELECT Id FROM dbo.Customers WHERE YEAR(CreatedAt) = 2024", ms), vec!["SQ010"]);
-        assert_eq!(codes("SELECT c.Id FROM dbo.Customers c JOIN dbo.Orders o ON UPPER(c.Code) = 'A'", ms), vec!["SQ010"]);
-        assert!(codes("SELECT YEAR(CreatedAt) FROM dbo.Customers WHERE CreatedAt >= '2024-01-01'", ms).is_empty());
-        assert!(codes("SELECT Id FROM dbo.Customers WHERE CreatedAt >= DATEADD(day, -1, GETDATE())", ms).is_empty());
+        assert_eq!(
+            codes("SELECT Id FROM dbo.Customers WHERE YEAR(CreatedAt) = 2024", ms),
+            vec!["SQ010"]
+        );
+        assert_eq!(
+            codes(
+                "SELECT c.Id FROM dbo.Customers c JOIN dbo.Orders o ON UPPER(c.Code) = 'A'",
+                ms
+            ),
+            vec!["SQ010"]
+        );
+        assert!(
+            codes(
+                "SELECT YEAR(CreatedAt) FROM dbo.Customers WHERE CreatedAt >= '2024-01-01'",
+                ms
+            )
+            .is_empty()
+        );
+        assert!(
+            codes(
+                "SELECT Id FROM dbo.Customers WHERE CreatedAt >= DATEADD(day, -1, GETDATE())",
+                ms
+            )
+            .is_empty()
+        );
         assert!(codes("UPDATE dbo.Customers SET Code = UPPER(Code) WHERE Id = 1", ms).is_empty());
-        let msg = diagnostics("SELECT Id FROM dbo.Customers WHERE YEAR(CreatedAt) = 2024", ms, Some(&cat()))
-            .into_iter()
-            .find(|d| d.code == "SQ010")
-            .unwrap()
-            .message;
+        let msg = diagnostics(
+            "SELECT Id FROM dbo.Customers WHERE YEAR(CreatedAt) = 2024",
+            ms,
+            Some(&cat()),
+        )
+        .into_iter()
+        .find(|d| d.code == "SQ010")
+        .unwrap()
+        .message;
         assert!(msg.contains("CreatedAt >= '2024-01-01'"), "{msg}");
     }
 
     #[test]
     fn implicit_conversions_on_columns() {
         let ms = Dialect::MsSql;
-        assert_eq!(codes("SELECT Id FROM dbo.Customers WHERE Code = N'A1'", ms), vec!["SQ011"]);
+        assert_eq!(
+            codes("SELECT Id FROM dbo.Customers WHERE Code = N'A1'", ms),
+            vec!["SQ011"]
+        );
         assert!(codes("SELECT Id FROM dbo.Customers WHERE Code = 'A1'", ms).is_empty());
         assert!(codes("SELECT Id FROM dbo.Customers WHERE Name = N'A1'", ms).is_empty());
-        assert_eq!(codes("SELECT Id FROM dbo.Customers WHERE Code = 123", ms), vec!["SQ011"]);
-        assert_eq!(codes("SELECT Id FROM dbo.Customers c WHERE 123 = c.Code", ms), vec!["SQ011"]);
-        assert_eq!(codes("DECLARE @c nvarchar(10) = N'x'; SELECT Id FROM dbo.Customers WHERE Code = @c", ms), vec!["SQ011"]);
-        assert!(codes("DECLARE @c varchar(10) = 'x'; SELECT Id FROM dbo.Customers WHERE Code = @c", ms).is_empty());
+        assert_eq!(
+            codes("SELECT Id FROM dbo.Customers WHERE Code = 123", ms),
+            vec!["SQ011"]
+        );
+        assert_eq!(
+            codes("SELECT Id FROM dbo.Customers c WHERE 123 = c.Code", ms),
+            vec!["SQ011"]
+        );
+        assert_eq!(
+            codes(
+                "DECLARE @c nvarchar(10) = N'x'; SELECT Id FROM dbo.Customers WHERE Code = @c",
+                ms
+            ),
+            vec!["SQ011"]
+        );
+        assert!(
+            codes(
+                "DECLARE @c varchar(10) = 'x'; SELECT Id FROM dbo.Customers WHERE Code = @c",
+                ms
+            )
+            .is_empty()
+        );
         assert!(codes("SELECT Id FROM dbo.Customers WHERE Id = 123", ms).is_empty());
-        assert_eq!(codes("SELECT Id FROM dbo.Customers WHERE Code = 123", Dialect::MySql), vec!["SQ011"]);
+        assert_eq!(
+            codes("SELECT Id FROM dbo.Customers WHERE Code = 123", Dialect::MySql),
+            vec!["SQ011"]
+        );
     }
 }

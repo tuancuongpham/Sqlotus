@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use sqlotus_core::catalog::ObjectKind;
 use sqlotus_core::search::{SearchHit, SearchOptions};
 use sqlotus_core::snippet::Snippet;
-use sqlotus_core::{CompletionResult, Dialect, byte_to_utf16, utf16_to_byte};
 use sqlotus_core::variables::VariableValue;
+use sqlotus_core::{CompletionResult, Dialect, byte_to_utf16, utf16_to_byte};
 use sqlotus_db::{BatchOutput, Connection, ConnectionConfig, ExplainOutput, Limits, ScriptOptions, load_catalog};
 use sqlotus_store::{HistoryEntry, NewHistory};
 use tauri::State;
@@ -84,16 +84,8 @@ pub fn list_connections(state: State<'_, AppState>) -> CmdResult<Vec<SavedConnec
     Ok(list
         .into_iter()
         .map(|config| {
-            let has_password = state
-                .store
-                .get_password(&config.id)
-                .ok()
-                .flatten()
-                .is_some();
-            SavedConnection {
-                config,
-                has_password,
-            }
+            let has_password = state.store.get_password(&config.id).ok().flatten().is_some();
+            SavedConnection { config, has_password }
         })
         .collect())
 }
@@ -111,10 +103,7 @@ pub fn save_connection(
     if forget_password {
         state.store.set_password(&config.id, None).map_err(err)?;
     } else if let Some(p) = password.filter(|p| !p.is_empty()) {
-        state
-            .store
-            .set_password(&config.id, Some(&p))
-            .map_err(err)?;
+        state.store.set_password(&config.id, Some(&p)).map_err(err)?;
     }
     Ok(())
 }
@@ -124,11 +113,7 @@ pub fn delete_connection(state: State<'_, AppState>, id: String) -> CmdResult<()
     state.store.delete_connection(&id).map_err(err)
 }
 
-fn resolve_password(
-    state: &AppState,
-    config: &ConnectionConfig,
-    password: Option<String>,
-) -> Option<String> {
+fn resolve_password(state: &AppState, config: &ConnectionConfig, password: Option<String>) -> Option<String> {
     password
         .filter(|p| !p.is_empty())
         .or_else(|| state.store.get_password(&config.id).ok().flatten())
@@ -142,9 +127,7 @@ pub async fn test_connection(
     password: Option<String>,
 ) -> CmdResult<Vec<String>> {
     let password = resolve_password(&state, &config, password);
-    let mut conn = Connection::open(&config, password.as_deref())
-        .await
-        .map_err(err)?;
+    let mut conn = Connection::open(&config, password.as_deref()).await.map_err(err)?;
     let dbs = conn.list_databases().await.map_err(err);
     conn.close().await;
     dbs
@@ -179,9 +162,7 @@ pub async fn connect_tab(
         config.database = Some(db);
     }
     let password = resolve_password(&state, &config, password);
-    let mut conn = Connection::open(&config, password.as_deref())
-        .await
-        .map_err(err)?;
+    let mut conn = Connection::open(&config, password.as_deref()).await.map_err(err)?;
     let current = conn.current_database().await.unwrap_or_default();
     let databases = conn.list_databases().await.unwrap_or_default();
     let dialect = config.dialect;
@@ -241,11 +222,7 @@ pub(crate) async fn ensure_connected(session: &Session, guard: &mut Option<Conne
 }
 
 #[tauri::command]
-pub async fn change_database(
-    state: State<'_, AppState>,
-    tab_id: String,
-    database: String,
-) -> CmdResult<String> {
+pub async fn change_database(state: State<'_, AppState>, tab_id: String, database: String) -> CmdResult<String> {
     let session = state.session(&tab_id).ok_or("tab is not connected")?;
     let mut guard = session.conn.lock().await;
     ensure_connected(&session, &mut guard).await?;
@@ -369,9 +346,18 @@ pub async fn execute(
         let _ = cancel_tx.send(conn.cancel_handle());
         // Postgres answers COMMIT of a failed transaction with a silent
         // rollback: say so instead of letting it look committed
-        if dialect == Dialect::Postgres && script.trim().trim_end_matches(';').trim().eq_ignore_ascii_case("commit") {
+        if dialect == Dialect::Postgres
+            && script
+                .trim()
+                .trim_end_matches(';')
+                .trim()
+                .eq_ignore_ascii_case("commit")
+        {
             let probe = conn.execute("SELECT 1", &limits).await;
-            let aborted = probe.messages.iter().any(|m| m.text.contains("current transaction is aborted"));
+            let aborted = probe
+                .messages
+                .iter()
+                .any(|m| m.text.contains("current transaction is aborted"));
             if aborted {
                 let _ = conn.execute("ROLLBACK", &limits).await;
                 return Err("The transaction had failed, so PostgreSQL could not commit it: all of its changes were rolled back.".to_string());
@@ -401,11 +387,23 @@ pub async fn execute(
             }
             Wrapped::Guard if open > 0 => {
                 if !count_reliable || rows > row_limit || failed {
-                    pending = Some(PendingCommit { rows: count_reliable.then_some(rows), limit: row_limit, failed });
+                    pending = Some(PendingCommit {
+                        rows: count_reliable.then_some(rows),
+                        limit: row_limit,
+                        failed,
+                    });
                 } else {
                     let commit = conn.execute("COMMIT", &limits).await;
                     notice = Some(if commit.failed {
-                        format!("COMMIT failed: {}", commit.messages.iter().map(|m| m.text.as_str()).collect::<Vec<_>>().join(" "))
+                        format!(
+                            "COMMIT failed: {}",
+                            commit
+                                .messages
+                                .iter()
+                                .map(|m| m.text.as_str())
+                                .collect::<Vec<_>>()
+                                .join(" ")
+                        )
                     } else {
                         format!("{rows} row(s) changed and committed.")
                     });
@@ -434,7 +432,14 @@ pub async fn execute(
         }
         // a USE statement may have switched database
         let db = conn.current_database().await.unwrap_or_default();
-        Ok::<_, String>((batches, db, open, (count_reliable && rows_only).then_some(rows), pending, notice))
+        Ok::<_, String>((
+            batches,
+            db,
+            open,
+            (count_reliable && rows_only).then_some(rows),
+            pending,
+            notice,
+        ))
     });
     if let Ok(cancel) = cancel_rx.await {
         *session.running.lock().map_err(err)? = Some(Running {
@@ -493,7 +498,9 @@ pub async fn explain(state: State<'_, AppState>, tab_id: String, sql: String) ->
 /// Variables `sql` uses without declaring them (to ask for their values).
 #[tauri::command]
 pub fn undeclared_variables(text: String, dialect: Dialect) -> CmdResult<Vec<String>> {
-    no_panic("variables", || sqlotus_core::variables::undeclared_variables(&text, dialect))
+    no_panic("variables", || {
+        sqlotus_core::variables::undeclared_variables(&text, dialect)
+    })
 }
 
 #[tauri::command]
@@ -619,12 +626,7 @@ pub struct CompleteArgs {
 }
 
 /// Other databases named as `Db.` qualifiers in the text.
-fn referenced_databases(
-    text: &str,
-    dialect: Dialect,
-    databases: &[String],
-    current: &str,
-) -> Vec<String> {
+fn referenced_databases(text: &str, dialect: Dialect, databases: &[String], current: &str) -> Vec<String> {
     let tokens: Vec<_> = sqlotus_core::tokenize(text, dialect)
         .into_iter()
         .filter(|t| !t.is_trivia())
@@ -646,10 +648,7 @@ fn referenced_databases(
 }
 
 #[tauri::command]
-pub async fn complete(
-    state: State<'_, AppState>,
-    args: CompleteArgs,
-) -> CmdResult<CompletionResult> {
+pub async fn complete(state: State<'_, AppState>, args: CompleteArgs) -> CmdResult<CompletionResult> {
     let catalog = match (&args.connection_id, &args.database) {
         (Some(c), Some(d)) => state.cached_catalog(c, d),
         _ => None,
@@ -661,14 +660,8 @@ pub async fn complete(
     opts.snippet_vars = HashMap::from([
         ("USER".to_string(), user),
         ("MACHINE".to_string(), machine),
-        (
-            "DBNAME".to_string(),
-            args.database.clone().unwrap_or_default(),
-        ),
-        (
-            "SERVER".to_string(),
-            args.server.clone().unwrap_or_default(),
-        ),
+        ("DBNAME".to_string(), args.database.clone().unwrap_or_default()),
+        ("SERVER".to_string(), args.server.clone().unwrap_or_default()),
     ]);
     // three-part names: load the catalogs of other databases the text mentions
     let mut others = Vec::new();
@@ -715,9 +708,7 @@ pub async fn complete(
 #[tauri::command]
 pub fn format_sql(state: State<'_, AppState>, text: String, dialect: Dialect) -> CmdResult<String> {
     let opts = state.settings().format;
-    no_panic("formatter", || {
-        sqlotus_core::format_sql(&text, dialect, &opts)
-    })
+    no_panic("formatter", || sqlotus_core::format_sql(&text, dialect, &opts))
 }
 
 #[derive(Serialize)]
@@ -790,10 +781,7 @@ pub fn object_script(
     {
         return Ok(d.definition.trim().to_string());
     }
-    let obj = snap
-        .catalog
-        .find(Some(&schema), &name)
-        .ok_or("object not found")?;
+    let obj = snap.catalog.find(Some(&schema), &name).ok_or("object not found")?;
     Ok(sqlotus_core::script::create_table_script(obj, dialect))
 }
 
@@ -835,10 +823,7 @@ pub fn redgate_snippets_dir() -> Option<PathBuf> {
 }
 
 #[tauri::command]
-pub fn import_redgate_snippets(
-    state: State<'_, AppState>,
-    dir: Option<String>,
-) -> CmdResult<usize> {
+pub fn import_redgate_snippets(state: State<'_, AppState>, dir: Option<String>) -> CmdResult<usize> {
     let dir = dir
         .map(PathBuf::from)
         .or_else(redgate_snippets_dir)
@@ -856,15 +841,8 @@ pub fn history_record(state: State<'_, AppState>, entry: NewHistory) -> CmdResul
 }
 
 #[tauri::command]
-pub fn history_search(
-    state: State<'_, AppState>,
-    query: String,
-    limit: Option<usize>,
-) -> CmdResult<Vec<HistoryEntry>> {
-    state
-        .store
-        .search_history(&query, limit.unwrap_or(200))
-        .map_err(err)
+pub fn history_search(state: State<'_, AppState>, query: String, limit: Option<usize>) -> CmdResult<Vec<HistoryEntry>> {
+    state.store.search_history(&query, limit.unwrap_or(200)).map_err(err)
 }
 
 #[tauri::command]
@@ -878,14 +856,8 @@ pub fn history_mark_closed(state: State<'_, AppState>, tab_id: String) -> CmdRes
 }
 
 #[tauri::command]
-pub fn history_recently_closed(
-    state: State<'_, AppState>,
-    limit: Option<usize>,
-) -> CmdResult<Vec<HistoryEntry>> {
-    state
-        .store
-        .recently_closed(limit.unwrap_or(20))
-        .map_err(err)
+pub fn history_recently_closed(state: State<'_, AppState>, limit: Option<usize>) -> CmdResult<Vec<HistoryEntry>> {
+    state.store.recently_closed(limit.unwrap_or(20)).map_err(err)
 }
 
 #[tauri::command]

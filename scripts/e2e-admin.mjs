@@ -1,9 +1,9 @@
-// End-to-end checks for the 0.2.1 tools: "used by", index health, the
+// End-to-end checks for the database tools: "used by", index health, the
 // activity monitor with a real blocking chain, editing result rows, copy
 // as Markdown/JSON, and production connections. Uses the Docker "Shop" and
 // "Big" databases (connection "E2E SQL Server").
 //
-//   SQLOTUS_E2E_PASSWORD=... node scripts/e2e-v021.mjs [screenshot-dir]
+//   SQLOTUS_E2E_PASSWORD=... node scripts/e2e-admin.mjs [screenshot-dir]
 import { mkdirSync } from "node:fs";
 import { attach, checker } from "./cdp.mjs";
 

@@ -6,6 +6,9 @@ members = ["src-tauri", "crates/*"]
 version = "0.2.1"
 edition = "2024"
 license = "MIT"
+authors = ["Tuan Cuong Pham"]
+repository = "https://github.com/tuancuongpham/Sqlotus"
+homepage = "https://github.com/tuancuongpham/Sqlotus"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }

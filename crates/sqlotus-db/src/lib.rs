@@ -193,9 +193,7 @@ impl Connection {
     pub async fn open(cfg: &ConnectionConfig, password: Option<&str>) -> Result<Self> {
         let fut = async {
             Ok(match cfg.dialect {
-                Dialect::MsSql => {
-                    Connection::MsSql(Box::new(mssql::MssqlConn::open(cfg, password).await?))
-                }
+                Dialect::MsSql => Connection::MsSql(Box::new(mssql::MssqlConn::open(cfg, password).await?)),
                 Dialect::Postgres => Connection::Postgres(pg::PgConn::open(cfg, password).await?),
                 Dialect::MySql => Connection::MySql(mysql::MySqlConn::open(cfg, password).await?),
             })
@@ -272,12 +270,7 @@ impl Connection {
                 .collect::<Vec<_>>();
             return Err(DbError::Query(msg.join("\n")));
         }
-        Ok(out
-            .result_sets
-            .into_iter()
-            .next()
-            .map(|r| r.rows)
-            .unwrap_or_default())
+        Ok(out.result_sets.into_iter().next().map(|r| r.rows).unwrap_or_default())
     }
 
     /// Number of transactions left open on this connection (0 when none).
@@ -296,24 +289,40 @@ impl Connection {
         let rows = match self.query_strings(sql).await {
             Ok(rows) => rows,
             // Postgres refuses every query in a failed transaction until it ends
-            Err(e) if self.dialect() == Dialect::Postgres && e.to_string().contains("current transaction is aborted") => {
+            Err(e)
+                if self.dialect() == Dialect::Postgres && e.to_string().contains("current transaction is aborted") =>
+            {
                 return Ok(1);
             }
             Err(e) => return Err(e),
         };
-        Ok(rows.first().and_then(|r| r.first().cloned().flatten()).and_then(|v| v.parse().ok()).unwrap_or(0))
+        Ok(rows
+            .first()
+            .and_then(|r| r.first().cloned().flatten())
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0))
     }
 
     /// Estimated execution plans of the statements in `script` (nothing is
     /// executed).
     pub async fn explain(&mut self, script: &str) -> ExplainOutput {
-        let limits = Limits { max_rows: 10_000, max_cell_chars: usize::MAX };
+        let limits = Limits {
+            max_rows: 10_000,
+            max_cell_chars: usize::MAX,
+        };
         let mut out = ExplainOutput::default();
         let first_text = |o: &BatchOutput| -> Vec<String> {
-            o.result_sets.iter().filter_map(|rs| rs.rows.first().and_then(|r| r.first().cloned().flatten())).collect()
+            o.result_sets
+                .iter()
+                .filter_map(|rs| rs.rows.first().and_then(|r| r.first().cloned().flatten()))
+                .collect()
         };
         let errors = |o: &BatchOutput| -> Vec<String> {
-            o.messages.iter().filter(|m| m.kind == MessageKind::Error).map(|m| m.text.clone()).collect()
+            o.messages
+                .iter()
+                .filter(|m| m.kind == MessageKind::Error)
+                .map(|m| m.text.clone())
+                .collect()
         };
         let dialect = self.dialect();
         if dialect == Dialect::MsSql {
@@ -338,7 +347,10 @@ impl Connection {
         for span in sqlotus_core::statements::split_statements(script, dialect) {
             let stmt = span.text(script).trim().trim_end_matches(';').trim();
             let first = stmt.split_whitespace().next().unwrap_or("").to_ascii_uppercase();
-            if !matches!(first.as_str(), "SELECT" | "INSERT" | "UPDATE" | "DELETE" | "WITH" | "VALUES" | "MERGE" | "TABLE" | "REPLACE") {
+            if !matches!(
+                first.as_str(),
+                "SELECT" | "INSERT" | "UPDATE" | "DELETE" | "WITH" | "VALUES" | "MERGE" | "TABLE" | "REPLACE"
+            ) {
                 continue;
             }
             if dialect == Dialect::Postgres {
@@ -361,7 +373,8 @@ impl Connection {
                 match o.result_sets.first() {
                     Some(rs) if !o.failed => {
                         let cols: Vec<String> = rs.columns.iter().map(|c| c.name.clone()).collect();
-                        out.plans.push(sqlotus_core::plan::parse_mysql_table(stmt, &cols, &rs.rows));
+                        out.plans
+                            .push(sqlotus_core::plan::parse_mysql_table(stmt, &cols, &rs.rows));
                     }
                     _ => out.errors.extend(errors(&o)),
                 }
@@ -386,12 +399,8 @@ impl Connection {
 
     pub async fn list_databases(&mut self) -> Result<Vec<String>> {
         let sql = match self.dialect() {
-            Dialect::MsSql => {
-                "SELECT name FROM sys.databases WHERE state = 0 AND HAS_DBACCESS(name) = 1 ORDER BY name"
-            }
-            Dialect::Postgres => {
-                "SELECT datname FROM pg_database WHERE NOT datistemplate AND datallowconn ORDER BY 1"
-            }
+            Dialect::MsSql => "SELECT name FROM sys.databases WHERE state = 0 AND HAS_DBACCESS(name) = 1 ORDER BY name",
+            Dialect::Postgres => "SELECT datname FROM pg_database WHERE NOT datistemplate AND datallowconn ORDER BY 1",
             Dialect::MySql => "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA ORDER BY 1",
         };
         let rows = self.query_strings(sql).await?;
@@ -452,11 +461,7 @@ pub struct ScriptBatch {
 /// Run a whole script: T-SQL is split on `GO` (honouring `GO n`); other
 /// dialects run as a single multi-statement batch. Like SSMS, later batches
 /// still run after a failed one.
-pub async fn execute_script(
-    conn: &mut Connection,
-    script: &str,
-    limits: &Limits,
-) -> Vec<ScriptBatch> {
+pub async fn execute_script(conn: &mut Connection, script: &str, limits: &Limits) -> Vec<ScriptBatch> {
     execute_script_with(conn, script, limits, &ScriptOptions::default()).await
 }
 

@@ -127,47 +127,184 @@ impl Rng {
 // word lists
 // ---------------------------------------------------------------------------
 
-const VI_LAST: &[&str] = &["Nguyễn", "Trần", "Lê", "Phạm", "Hoàng", "Huỳnh", "Phan", "Vũ", "Võ", "Đặng", "Bùi", "Đỗ", "Hồ", "Ngô", "Dương", "Lý"];
-const VI_MIDDLE: &[&str] = &["Văn", "Thị", "Hữu", "Đức", "Minh", "Ngọc", "Thanh", "Quang", "Thu", "Gia", "Hoài", "Bảo"];
+const VI_LAST: &[&str] = &[
+    "Nguyễn", "Trần", "Lê", "Phạm", "Hoàng", "Huỳnh", "Phan", "Vũ", "Võ", "Đặng", "Bùi", "Đỗ", "Hồ", "Ngô", "Dương",
+    "Lý",
+];
+const VI_MIDDLE: &[&str] = &[
+    "Văn", "Thị", "Hữu", "Đức", "Minh", "Ngọc", "Thanh", "Quang", "Thu", "Gia", "Hoài", "Bảo",
+];
 const VI_FIRST: &[&str] = &[
     "An", "Bình", "Châu", "Dũng", "Giang", "Hà", "Hải", "Hạnh", "Hiếu", "Hoa", "Hùng", "Hương", "Khánh", "Lan", "Linh",
-    "Long", "Mai", "Nam", "Nga", "Ngân", "Phong", "Phúc", "Quân", "Quỳnh", "Sơn", "Tâm", "Thảo", "Trang", "Trung", "Tuấn",
-    "Vy", "Yến",
+    "Long", "Mai", "Nam", "Nga", "Ngân", "Phong", "Phúc", "Quân", "Quỳnh", "Sơn", "Tâm", "Thảo", "Trang", "Trung",
+    "Tuấn", "Vy", "Yến",
 ];
 const EN_FIRST: &[&str] = &[
-    "James", "Mary", "John", "Patricia", "Robert", "Jennifer", "Michael", "Linda", "William", "Elizabeth", "David", "Susan",
-    "Richard", "Jessica", "Joseph", "Sarah", "Thomas", "Karen", "Daniel", "Emma", "Olivia", "Noah", "Liam", "Ava",
+    "James",
+    "Mary",
+    "John",
+    "Patricia",
+    "Robert",
+    "Jennifer",
+    "Michael",
+    "Linda",
+    "William",
+    "Elizabeth",
+    "David",
+    "Susan",
+    "Richard",
+    "Jessica",
+    "Joseph",
+    "Sarah",
+    "Thomas",
+    "Karen",
+    "Daniel",
+    "Emma",
+    "Olivia",
+    "Noah",
+    "Liam",
+    "Ava",
 ];
 const EN_LAST: &[&str] = &[
-    "Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia", "Miller", "Davis", "Wilson", "Anderson", "Taylor", "Thomas",
-    "Moore", "Martin", "Jackson", "Thompson", "White", "Harris", "Clark", "Lewis",
+    "Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia", "Miller", "Davis", "Wilson", "Anderson", "Taylor",
+    "Thomas", "Moore", "Martin", "Jackson", "Thompson", "White", "Harris", "Clark", "Lewis",
 ];
-const VI_CITIES: &[&str] = &["Hà Nội", "TP. Hồ Chí Minh", "Đà Nẵng", "Hải Phòng", "Cần Thơ", "Huế", "Nha Trang", "Đà Lạt", "Vũng Tàu", "Quy Nhơn", "Biên Hòa", "Vinh"];
-const EN_CITIES: &[&str] = &["New York", "London", "Seattle", "Austin", "Boston", "Chicago", "Denver", "Toronto", "Sydney", "Dublin", "Portland", "Atlanta"];
-const VI_STREETS: &[&str] = &["Lê Lợi", "Trần Hưng Đạo", "Nguyễn Huệ", "Hai Bà Trưng", "Lý Thường Kiệt", "Phan Chu Trinh", "Điện Biên Phủ", "Lê Duẩn", "Nguyễn Trãi", "Cách Mạng Tháng Tám"];
-const EN_STREETS: &[&str] = &["Main St", "Oak Ave", "Maple Dr", "Cedar Ln", "Park Rd", "Pine St", "Elm St", "Lake View Dr", "Hill Rd", "River Rd"];
+const VI_CITIES: &[&str] = &[
+    "Hà Nội",
+    "TP. Hồ Chí Minh",
+    "Đà Nẵng",
+    "Hải Phòng",
+    "Cần Thơ",
+    "Huế",
+    "Nha Trang",
+    "Đà Lạt",
+    "Vũng Tàu",
+    "Quy Nhơn",
+    "Biên Hòa",
+    "Vinh",
+];
+const EN_CITIES: &[&str] = &[
+    "New York", "London", "Seattle", "Austin", "Boston", "Chicago", "Denver", "Toronto", "Sydney", "Dublin",
+    "Portland", "Atlanta",
+];
+const VI_STREETS: &[&str] = &[
+    "Lê Lợi",
+    "Trần Hưng Đạo",
+    "Nguyễn Huệ",
+    "Hai Bà Trưng",
+    "Lý Thường Kiệt",
+    "Phan Chu Trinh",
+    "Điện Biên Phủ",
+    "Lê Duẩn",
+    "Nguyễn Trãi",
+    "Cách Mạng Tháng Tám",
+];
+const EN_STREETS: &[&str] = &[
+    "Main St",
+    "Oak Ave",
+    "Maple Dr",
+    "Cedar Ln",
+    "Park Rd",
+    "Pine St",
+    "Elm St",
+    "Lake View Dr",
+    "Hill Rd",
+    "River Rd",
+];
 const COUNTRY_CODES: &[&str] = &["VN", "US", "JP", "KR", "SG", "TH", "DE", "FR", "GB", "AU"];
-const VI_COUNTRIES: &[&str] = &["Việt Nam", "Hoa Kỳ", "Nhật Bản", "Hàn Quốc", "Singapore", "Thái Lan", "Đức", "Pháp", "Anh", "Úc"];
-const EN_COUNTRIES: &[&str] = &["Vietnam", "United States", "Japan", "South Korea", "Singapore", "Thailand", "Germany", "France", "United Kingdom", "Australia"];
+const VI_COUNTRIES: &[&str] = &[
+    "Việt Nam",
+    "Hoa Kỳ",
+    "Nhật Bản",
+    "Hàn Quốc",
+    "Singapore",
+    "Thái Lan",
+    "Đức",
+    "Pháp",
+    "Anh",
+    "Úc",
+];
+const EN_COUNTRIES: &[&str] = &[
+    "Vietnam",
+    "United States",
+    "Japan",
+    "South Korea",
+    "Singapore",
+    "Thailand",
+    "Germany",
+    "France",
+    "United Kingdom",
+    "Australia",
+];
 const VI_COMPANY: &[&str] = &["Công ty TNHH", "Công ty Cổ phần", "Doanh nghiệp tư nhân"];
-const VI_COMPANY_NAMES: &[&str] = &["Sao Mai", "Hoà Phát", "Ánh Dương", "Thành Công", "Phương Nam", "Đại Việt", "Hưng Thịnh", "An Khang", "Bình Minh", "Tân Tiến"];
-const EN_COMPANY: &[&str] = &["Acme", "Globex", "Initech", "Umbrella", "Stark", "Wayne", "Hooli", "Vandelay", "Wonka", "Cyberdyne"];
+const VI_COMPANY_NAMES: &[&str] = &[
+    "Sao Mai",
+    "Hoà Phát",
+    "Ánh Dương",
+    "Thành Công",
+    "Phương Nam",
+    "Đại Việt",
+    "Hưng Thịnh",
+    "An Khang",
+    "Bình Minh",
+    "Tân Tiến",
+];
+const EN_COMPANY: &[&str] = &[
+    "Acme",
+    "Globex",
+    "Initech",
+    "Umbrella",
+    "Stark",
+    "Wayne",
+    "Hooli",
+    "Vandelay",
+    "Wonka",
+    "Cyberdyne",
+];
 const EN_COMPANY_SUFFIX: &[&str] = &["Inc.", "LLC", "Ltd.", "Group", "Corp."];
-const VI_PRODUCTS: &[&str] = &["Áo thun", "Quần jean", "Giày thể thao", "Bình nước", "Tai nghe", "Bàn phím", "Chuột không dây", "Sổ tay", "Ba lô", "Đèn bàn", "Cà phê rang xay", "Trà xanh"];
-const EN_PRODUCTS: &[&str] = &["T-shirt", "Jeans", "Sneakers", "Water bottle", "Headphones", "Keyboard", "Wireless mouse", "Notebook", "Backpack", "Desk lamp", "Coffee beans", "Green tea"];
+const VI_PRODUCTS: &[&str] = &[
+    "Áo thun",
+    "Quần jean",
+    "Giày thể thao",
+    "Bình nước",
+    "Tai nghe",
+    "Bàn phím",
+    "Chuột không dây",
+    "Sổ tay",
+    "Ba lô",
+    "Đèn bàn",
+    "Cà phê rang xay",
+    "Trà xanh",
+];
+const EN_PRODUCTS: &[&str] = &[
+    "T-shirt",
+    "Jeans",
+    "Sneakers",
+    "Water bottle",
+    "Headphones",
+    "Keyboard",
+    "Wireless mouse",
+    "Notebook",
+    "Backpack",
+    "Desk lamp",
+    "Coffee beans",
+    "Green tea",
+];
 const PRODUCT_ADJ_VI: &[&str] = &["cao cấp", "cơ bản", "mini", "Pro", "2026", "phiên bản giới hạn"];
 const PRODUCT_ADJ_EN: &[&str] = &["Classic", "Pro", "Mini", "Deluxe", "2026", "Limited"];
 const VI_STATUS: &[&str] = &["Mới", "Đang xử lý", "Hoàn thành", "Đã huỷ"];
 const EN_STATUS: &[&str] = &["New", "Processing", "Completed", "Cancelled"];
 const VI_WORDS: &[&str] = &[
-    "khách", "hàng", "đơn", "giao", "nhanh", "chất", "lượng", "tốt", "hỗ", "trợ", "liên", "hệ", "ghi", "chú", "kiểm", "tra",
-    "cập", "nhật", "thông", "tin", "dịch", "vụ", "sản", "phẩm", "mới",
+    "khách", "hàng", "đơn", "giao", "nhanh", "chất", "lượng", "tốt", "hỗ", "trợ", "liên", "hệ", "ghi", "chú", "kiểm",
+    "tra", "cập", "nhật", "thông", "tin", "dịch", "vụ", "sản", "phẩm", "mới",
 ];
 const EN_WORDS: &[&str] = &[
     "customer", "order", "fast", "delivery", "quality", "support", "contact", "note", "check", "update", "service",
     "product", "new", "review", "request", "follow", "up", "please", "confirm", "details",
 ];
-const VI_PHONE_PREFIX: &[&str] = &["090", "091", "093", "094", "096", "097", "098", "032", "035", "038", "070", "077", "081", "085"];
+const VI_PHONE_PREFIX: &[&str] = &[
+    "090", "091", "093", "094", "096", "097", "098", "032", "035", "038", "070", "077", "081", "085",
+];
 
 /// Vietnamese letters without diacritics (for e-mails and URLs).
 fn fold(s: &str) -> String {
@@ -175,7 +312,12 @@ fn fold(s: &str) -> String {
     const TO: &str = "aaaaaaaaaaaaaaaaaeeeeeeeeeeeiiiiiooooooooooooooooouuuuuuuuuuuyyyyyd";
     s.chars()
         .flat_map(|c| c.to_lowercase())
-        .map(|c| FROM.chars().position(|f| f == c).and_then(|i| TO.chars().nth(i)).unwrap_or(c))
+        .map(|c| {
+            FROM.chars()
+                .position(|f| f == c)
+                .and_then(|i| TO.chars().nth(i))
+                .unwrap_or(c)
+        })
         .filter(|c| c.is_ascii_alphanumeric() || *c == ' ')
         .collect()
 }
@@ -200,20 +342,61 @@ fn scale(t: &str) -> u32 {
         .and_then(|(_, r)| r.split(')').next())
         .and_then(|r| r.split(',').nth(1))
         .and_then(|s| s.trim().parse().ok())
-        .unwrap_or(if matches!(base_type(t).as_str(), "money" | "smallmoney") { 2 } else { 0 })
+        .unwrap_or(if matches!(base_type(t).as_str(), "money" | "smallmoney") {
+            2
+        } else {
+            0
+        })
 }
 
 fn is_int(t: &str) -> bool {
-    matches!(t, "int" | "integer" | "bigint" | "smallint" | "tinyint" | "mediumint" | "int2" | "int4" | "int8" | "serial" | "bigserial" | "smallserial")
+    matches!(
+        t,
+        "int"
+            | "integer"
+            | "bigint"
+            | "smallint"
+            | "tinyint"
+            | "mediumint"
+            | "int2"
+            | "int4"
+            | "int8"
+            | "serial"
+            | "bigserial"
+            | "smallserial"
+    )
 }
 fn is_decimal(t: &str) -> bool {
-    matches!(t, "decimal" | "numeric" | "money" | "smallmoney" | "float" | "real" | "double" | "double precision" | "float4" | "float8")
+    matches!(
+        t,
+        "decimal"
+            | "numeric"
+            | "money"
+            | "smallmoney"
+            | "float"
+            | "real"
+            | "double"
+            | "double precision"
+            | "float4"
+            | "float8"
+    )
 }
 fn is_text(t: &str) -> bool {
     matches!(
         t,
-        "char" | "varchar" | "nchar" | "nvarchar" | "text" | "ntext" | "character varying" | "character" | "tinytext"
-            | "mediumtext" | "longtext" | "citext" | "bpchar"
+        "char"
+            | "varchar"
+            | "nchar"
+            | "nvarchar"
+            | "text"
+            | "ntext"
+            | "character varying"
+            | "character"
+            | "tinytext"
+            | "mediumtext"
+            | "longtext"
+            | "citext"
+            | "bpchar"
     )
 }
 
@@ -222,7 +405,15 @@ fn table_kind(table: &str) -> &'static str {
     let has = |words: &[&str]| words.iter().any(|w| t.contains(w));
     if has(&["product", "item", "sanpham", "mathang", "hanghoa", "goods", "article"]) {
         "product"
-    } else if has(&["compan", "supplier", "vendor", "congty", "nhacungcap", "partner", "doitac"]) {
+    } else if has(&[
+        "compan",
+        "supplier",
+        "vendor",
+        "congty",
+        "nhacungcap",
+        "partner",
+        "doitac",
+    ]) {
         "company"
     } else {
         "person"
@@ -307,8 +498,16 @@ fn choose(table: &str, c: &Column, fk: bool, dialect: Dialect) -> (Generator, &'
         (Generator::Company, "company name")
     } else if has(&["product", "sanpham", "item", "mathang"]) && has(&["name", "ten"]) {
         (Generator::Product, "product name")
-    } else if has(&["fullname", "hoten", "hovaten", "customername", "tenkhachhang", "tenkh", "tensinhvien", "tennhanvien"])
-        || ends(&["name", "ten"])
+    } else if has(&[
+        "fullname",
+        "hoten",
+        "hovaten",
+        "customername",
+        "tenkhachhang",
+        "tenkh",
+        "tensinhvien",
+        "tennhanvien",
+    ]) || ends(&["name", "ten"])
     {
         match table_kind(table) {
             "product" => (Generator::Product, "product name"),
@@ -334,7 +533,13 @@ pub fn plan_columns(table: &DbObject, foreign_keys: &[ForeignKey], dialect: Dial
                     && f.from_columns.iter().any(|x| x.eq_ignore_ascii_case(&c.name))
             });
             let (generator, note) = choose(&table.name, c, fk, dialect);
-            ColumnPlan { column: c.name.clone(), data_type: c.data_type.clone(), nullable: c.nullable, generator, note: note.into() }
+            ColumnPlan {
+                column: c.name.clone(),
+                data_type: c.data_type.clone(),
+                nullable: c.nullable,
+                generator,
+                note: note.into(),
+            }
         })
         .collect()
 }
@@ -383,7 +588,11 @@ fn fit(s: String, len: Option<usize>) -> String {
 
 fn person(rng: &mut Rng, locale: Locale) -> (String, String, String) {
     match locale {
-        Locale::Vi => (rng.pick(VI_LAST).into(), format!("{} {}", rng.pick(VI_MIDDLE), rng.pick(VI_FIRST)), String::new()),
+        Locale::Vi => (
+            rng.pick(VI_LAST).into(),
+            format!("{} {}", rng.pick(VI_MIDDLE), rng.pick(VI_FIRST)),
+            String::new(),
+        ),
         Locale::En => (rng.pick(EN_LAST).into(), rng.pick(EN_FIRST).into(), String::new()),
     }
 }
@@ -443,8 +652,18 @@ fn value(
             Locale::En => format!("+1-555-{:03}-{:04}", rng.range(100, 999), rng.range(0, 9999)),
         }),
         Generator::Address => text(match loc {
-            Locale::Vi => format!("{} {}, {}", rng.range(1, 400), rng.pick(VI_STREETS), rng.pick(VI_CITIES)),
-            Locale::En => format!("{} {}, {}", rng.range(1, 9999), rng.pick(EN_STREETS), rng.pick(EN_CITIES)),
+            Locale::Vi => format!(
+                "{} {}, {}",
+                rng.range(1, 400),
+                rng.pick(VI_STREETS),
+                rng.pick(VI_CITIES)
+            ),
+            Locale::En => format!(
+                "{} {}, {}",
+                rng.range(1, 9999),
+                rng.pick(EN_STREETS),
+                rng.pick(EN_CITIES)
+            ),
         }),
         Generator::City => text(rng.pick(if loc == Locale::Vi { VI_CITIES } else { EN_CITIES }).into()),
         Generator::Country => {
@@ -471,7 +690,14 @@ fn value(
             if len == Some(1) {
                 text(rng.pick(&["M", "F"]).into())
             } else {
-                text(rng.pick(if loc == Locale::Vi { &["Nam", "Nữ"] } else { &["Male", "Female"] }).into())
+                text(
+                    rng.pick(if loc == Locale::Vi {
+                        &["Nam", "Nữ"]
+                    } else {
+                        &["Male", "Female"]
+                    })
+                    .into(),
+                )
             }
         }
         Generator::Url => {
@@ -483,7 +709,12 @@ fn value(
             let n = rng.range(2, 8) as usize;
             let sentence = (0..n).map(|_| rng.pick(words)).collect::<Vec<_>>().join(" ");
             let mut chars = sentence.chars();
-            let capitalized: String = chars.next().into_iter().flat_map(char::to_uppercase).chain(chars).collect();
+            let capitalized: String = chars
+                .next()
+                .into_iter()
+                .flat_map(char::to_uppercase)
+                .chain(chars)
+                .collect();
             text(capitalized)
         }
         Generator::Integer => {
@@ -516,7 +747,12 @@ fn value(
             };
             let (y, m, d) = civil(days);
             let date = format!("{y:04}-{m:02}-{d:02}");
-            let time = format!("{:02}:{:02}:{:02}", rng.range(7, 21), rng.range(0, 59), rng.range(0, 59));
+            let time = format!(
+                "{:02}:{:02}:{:02}",
+                rng.range(7, 21),
+                rng.range(0, 59),
+                rng.range(0, 59)
+            );
             if g == Generator::DateTime && ty.starts_with("time") && !ty.starts_with("timestamp") {
                 Value::Text(time)
             } else if g == Generator::DateTime {
@@ -555,7 +791,12 @@ fn value(
 /// A code unique per row: `PREFIX0001` when it fits the column, otherwise
 /// the row number in base 36 over the whole width (`char(2)` holds 1,296).
 fn code(column: &str, row: usize, rows: usize, len: Option<usize>) -> String {
-    let prefix: String = fold(column).chars().filter(char::is_ascii_alphabetic).take(2).collect::<String>().to_uppercase();
+    let prefix: String = fold(column)
+        .chars()
+        .filter(char::is_ascii_alphabetic)
+        .take(2)
+        .collect::<String>()
+        .to_uppercase();
     let prefix = if prefix.is_empty() { "C".to_string() } else { prefix };
     let digits = rows.max(1).to_string().len().max(4);
     let width = len.unwrap_or(10);
@@ -615,11 +856,19 @@ pub fn insert_script(
     // a parent row per foreign key per row, so composite keys stay consistent
     let fks: Vec<&ForeignKey> = foreign_keys_of(table, foreign_keys)
         .into_iter()
-        .filter(|f| f.from_columns.iter().any(|fc| cols.iter().any(|p| p.column.eq_ignore_ascii_case(fc) && gen_of(p) == Generator::ForeignKey)))
+        .filter(|f| {
+            f.from_columns.iter().any(|fc| {
+                cols.iter()
+                    .any(|p| p.column.eq_ignore_ascii_case(fc) && gen_of(p) == Generator::ForeignKey)
+            })
+        })
         .collect();
     for f in &fks {
         let empty = ctx.parent_rows.get(&f.name).is_none_or(|r| r.is_empty());
-        let required = f.from_columns.iter().any(|fc| plans.iter().any(|p| p.column.eq_ignore_ascii_case(fc) && !p.nullable));
+        let required = f
+            .from_columns
+            .iter()
+            .any(|fc| plans.iter().any(|p| p.column.eq_ignore_ascii_case(fc) && !p.nullable));
         if empty && required {
             return Err(format!(
                 "{}.{} has no rows, so {} cannot reference it. Generate data for {} first, or set the column to a fixed value.",
@@ -646,9 +895,16 @@ pub fn insert_script(
     let rows = opts.rows.max(1);
     let mut out = format!(
         "-- Test data for {target}: {rows} row(s), generated by Sqlotus\n-- Columns: {}\n",
-        cols.iter().map(|p| format!("{} = {}", p.column, format!("{:?}", gen_of(p)).to_lowercase())).collect::<Vec<_>>().join(", ")
+        cols.iter()
+            .map(|p| format!("{} = {}", p.column, format!("{:?}", gen_of(p)).to_lowercase()))
+            .collect::<Vec<_>>()
+            .join(", ")
     );
-    let skipped: Vec<&str> = plans.iter().filter(|p| gen_of(p) == Generator::Skip).map(|p| p.column.as_str()).collect();
+    let skipped: Vec<&str> = plans
+        .iter()
+        .filter(|p| gen_of(p) == Generator::Skip)
+        .map(|p| p.column.as_str())
+        .collect();
     if !skipped.is_empty() {
         out.push_str(&format!("-- Not inserted: {}\n", skipped.join(", ")));
     }
@@ -670,14 +926,21 @@ pub fn insert_script(
                 let null = p.nullable
                     && !matches!(g, Generator::Fixed | Generator::Sequence | Generator::Null)
                     && rng.percent(opts.null_percent.min(100));
-                let v = if null { Value::Null } else { value(g, p, row, &mut rng, opts, ctx, Some(&fk_row)) };
+                let v = if null {
+                    Value::Null
+                } else {
+                    value(g, p, row, &mut rng, opts, ctx, Some(&fk_row))
+                };
                 literal(v, p, dialect)
             })
             .collect();
         lines.push(format!("({})", values.join(", ")));
     }
     for chunk in lines.chunks(1000) {
-        out.push_str(&format!("INSERT INTO {target} ({header})\nVALUES {};\n", chunk.join(",\n       ")));
+        out.push_str(&format!(
+            "INSERT INTO {target} ({header})\nVALUES {};\n",
+            chunk.join(",\n       ")
+        ));
     }
     Ok(out)
 }
@@ -688,7 +951,14 @@ mod tests {
     use crate::catalog::ObjectKind;
 
     fn col(name: &str, ty: &str, nullable: bool, pk: bool, identity: bool) -> Column {
-        Column { name: name.into(), data_type: ty.into(), nullable, is_primary_key: pk, is_identity: identity, is_computed: false }
+        Column {
+            name: name.into(),
+            data_type: ty.into(),
+            nullable,
+            is_primary_key: pk,
+            is_identity: identity,
+            is_computed: false,
+        }
     }
 
     fn customers() -> DbObject {
@@ -742,9 +1012,17 @@ mod tests {
         let plans = plan_columns(&customers(), &[], Dialect::MsSql);
         let g: Vec<Generator> = plans.iter().map(|p| p.generator).collect();
         use Generator::*;
-        assert_eq!(g, vec![Skip, FullName, Email, Phone, BirthDate, Country, Address, DateTime, Boolean]);
+        assert_eq!(
+            g,
+            vec![
+                Skip, FullName, Email, Phone, BirthDate, Country, Address, DateTime, Boolean
+            ]
+        );
         let (o, fk) = orders();
-        let g: Vec<Generator> = plan_columns(&o, &[fk], Dialect::MsSql).iter().map(|p| p.generator).collect();
+        let g: Vec<Generator> = plan_columns(&o, &[fk], Dialect::MsSql)
+            .iter()
+            .map(|p| p.generator)
+            .collect();
         assert_eq!(g, vec![Sequence, ForeignKey, Decimal, Status, Skip]);
         let pg = DbObject {
             columns: vec![
@@ -754,9 +1032,15 @@ mod tests {
             ],
             ..customers()
         };
-        let g: Vec<Generator> = plan_columns(&pg, &[], Dialect::Postgres).iter().map(|p| p.generator).collect();
+        let g: Vec<Generator> = plan_columns(&pg, &[], Dialect::Postgres)
+            .iter()
+            .map(|p| p.generator)
+            .collect();
         assert_eq!(g, vec![DateTime, DateTime, Skip]);
-        let ts = DbObject { columns: vec![col("CreatedAt", "timestamp", false, false, false)], ..customers() };
+        let ts = DbObject {
+            columns: vec![col("CreatedAt", "timestamp", false, false, false)],
+            ..customers()
+        };
         assert_eq!(plan_columns(&ts, &[], Dialect::MsSql)[0].generator, Skip);
         assert_eq!(plan_columns(&ts, &[], Dialect::Postgres)[0].generator, DateTime);
     }
@@ -765,17 +1049,36 @@ mod tests {
     fn generates_valid_rows() {
         let t = customers();
         let plans = plan_columns(&t, &[], Dialect::MsSql);
-        let opts = TestDataOptions { rows: 1500, locale: Locale::Vi, null_percent: 0, seed: 7, ..Default::default() };
+        let opts = TestDataOptions {
+            rows: 1500,
+            locale: Locale::Vi,
+            null_percent: 0,
+            seed: 7,
+            ..Default::default()
+        };
         let s = insert_script(&t, &plans, &[], &DataContext::default(), &opts, Dialect::MsSql).unwrap();
         assert_eq!(s.matches("INSERT INTO dbo.KhachHang").count(), 2, "split at 1000 rows");
         assert!(s.contains("(HoTen, Email, SoDienThoai, NgaySinh, QuocGia, DiaChi, NgayTao, ConHoatDong)"));
-        assert!(s.contains("N'Nguy") || s.contains("N'Tr") || s.contains("N'L"), "Vietnamese names as nvarchar");
+        assert!(
+            s.contains("N'Nguy") || s.contains("N'Tr") || s.contains("N'L"),
+            "Vietnamese names as nvarchar"
+        );
         // deterministic
-        assert_eq!(s, insert_script(&t, &plans, &[], &DataContext::default(), &opts, Dialect::MsSql).unwrap());
+        assert_eq!(
+            s,
+            insert_script(&t, &plans, &[], &DataContext::default(), &opts, Dialect::MsSql).unwrap()
+        );
         let first = s.lines().find(|l| l.starts_with("VALUES")).unwrap();
-        assert!(first.contains("@example") || first.contains("@mail") || first.contains("@demo"), "{first}");
+        assert!(
+            first.contains("@example") || first.contains("@mail") || first.contains("@demo"),
+            "{first}"
+        );
         // lengths are respected: char(2) country codes
-        assert!(s.lines().filter(|l| l.contains("VALUES") || l.trim_start().starts_with('(')).all(|l| !l.contains("'Việt Nam'")));
+        assert!(
+            s.lines()
+                .filter(|l| l.contains("VALUES") || l.trim_start().starts_with('('))
+                .all(|l| !l.contains("'Việt Nam'"))
+        );
     }
 
     #[test]
@@ -783,16 +1086,35 @@ mod tests {
         let (o, fk) = orders();
         let plans = plan_columns(&o, std::slice::from_ref(&fk), Dialect::MsSql);
         let mut ctx = DataContext::default();
-        ctx.parent_rows.insert(fk.name.clone(), vec![vec![Some("7".into())], vec![Some("9".into())]]);
+        ctx.parent_rows
+            .insert(fk.name.clone(), vec![vec![Some("7".into())], vec![Some("9".into())]]);
         ctx.max_values.insert("orderno".into(), 41);
-        let opts = TestDataOptions { rows: 3, seed: 1, ..Default::default() };
+        let opts = TestDataOptions {
+            rows: 3,
+            seed: 1,
+            ..Default::default()
+        };
         let s = insert_script(&o, &plans, std::slice::from_ref(&fk), &ctx, &opts, Dialect::MsSql).unwrap();
-        let rows: Vec<&str> = s.lines().filter(|l| l.contains('(') && !l.starts_with("--") && !l.starts_with("INSERT")).collect();
+        let rows: Vec<&str> = s
+            .lines()
+            .filter(|l| l.contains('(') && !l.starts_with("--") && !l.starts_with("INSERT"))
+            .collect();
         assert!(rows[0].contains("(42, ") && rows[2].contains("(44, "), "{rows:?}");
-        assert!(rows.iter().all(|r| r.contains(", 7, ") || r.contains(", 9, ")), "{rows:?}");
+        assert!(
+            rows.iter().all(|r| r.contains(", 7, ") || r.contains(", 9, ")),
+            "{rows:?}"
+        );
         assert!(s.contains("(OrderNo, CustomerId, Total, Status)") && s.contains("-- Not inserted: RowVer"));
         // no parent rows: explain instead of producing invalid data
-        let err = insert_script(&o, &plans, std::slice::from_ref(&fk), &DataContext::default(), &opts, Dialect::MsSql).unwrap_err();
+        let err = insert_script(
+            &o,
+            &plans,
+            std::slice::from_ref(&fk),
+            &DataContext::default(),
+            &opts,
+            Dialect::MsSql,
+        )
+        .unwrap_err();
         assert!(err.contains("has no rows"), "{err}");
     }
 
@@ -800,7 +1122,11 @@ mod tests {
     fn overrides_fixed_values_and_dialects() {
         let t = customers();
         let plans = plan_columns(&t, &[], Dialect::Postgres);
-        let mut opts = TestDataOptions { rows: 2, locale: Locale::En, ..Default::default() };
+        let mut opts = TestDataOptions {
+            rows: 2,
+            locale: Locale::En,
+            ..Default::default()
+        };
         opts.overrides.insert("HoTen".into(), Generator::Fixed);
         opts.fixed.insert("HoTen".into(), "O'Neil".into());
         opts.overrides.insert("Email".into(), Generator::Skip);
@@ -819,8 +1145,15 @@ mod tests {
             ..customers()
         };
         let plans = plan_columns(&short, &[], Dialect::MsSql);
-        let too_many = TestDataOptions { rows: 2000, ..Default::default() };
-        assert!(insert_script(&short, &plans, &[], &DataContext::default(), &too_many, Dialect::MsSql).unwrap_err().contains("1296"));
+        let too_many = TestDataOptions {
+            rows: 2000,
+            ..Default::default()
+        };
+        assert!(
+            insert_script(&short, &plans, &[], &DataContext::default(), &too_many, Dialect::MsSql)
+                .unwrap_err()
+                .contains("1296")
+        );
         assert_eq!(civil(TODAY), (2026, 10, 20));
     }
 }

@@ -8,9 +8,7 @@ use postgres_native_tls::MakeTlsConnector;
 use tokio_postgres::config::SslMode;
 use tokio_postgres::{AsyncMessage, CancelToken, Client, SimpleQueryMessage};
 
-use crate::{
-    BatchOutput, ConnectionConfig, DbError, Limits, Result, ResultColumn, ResultSet, clip,
-};
+use crate::{BatchOutput, ConnectionConfig, DbError, Limits, Result, ResultColumn, ResultSet, clip};
 
 pub struct PgConn {
     client: Client,
@@ -49,18 +47,9 @@ impl PgConn {
             .host(cfg.host.trim())
             .port(cfg.port.unwrap_or(5432))
             .user(cfg.user.as_deref().unwrap_or("postgres"))
-            .dbname(
-                cfg.database
-                    .as_deref()
-                    .filter(|d| !d.is_empty())
-                    .unwrap_or("postgres"),
-            )
+            .dbname(cfg.database.as_deref().filter(|d| !d.is_empty()).unwrap_or("postgres"))
             .application_name("Sqlotus")
-            .ssl_mode(if cfg.encrypt {
-                SslMode::Require
-            } else {
-                SslMode::Prefer
-            });
+            .ssl_mode(if cfg.encrypt { SslMode::Require } else { SslMode::Prefer });
         if let Some(p) = password {
             config.password(p);
         }
@@ -87,11 +76,7 @@ impl PgConn {
                 }
             }
         });
-        Ok(Self {
-            client,
-            notices,
-            tls,
-        })
+        Ok(Self { client, notices, tls })
     }
 
     pub fn cancel_handle(&self) -> PgCancel {
@@ -155,10 +140,7 @@ impl PgConn {
                     }
                     rs.rows.push(
                         (0..row.len())
-                            .map(|i| {
-                                row.get(i)
-                                    .map(|s| clip(s.to_string(), limits.max_cell_chars))
-                            })
+                            .map(|i| row.get(i).map(|s| clip(s.to_string(), limits.max_cell_chars)))
                             .collect(),
                     );
                 }
@@ -173,10 +155,7 @@ impl PgConn {
                     }
                     None => {
                         out.rows_affected += n;
-                        out.info(format!(
-                            "({n} row{} affected)",
-                            if n == 1 { "" } else { "s" }
-                        ))
+                        out.info(format!("({n} row{} affected)", if n == 1 { "" } else { "s" }))
                     }
                 },
                 _ => {}

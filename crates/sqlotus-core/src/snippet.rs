@@ -51,11 +51,10 @@ pub fn to_monaco(snippet: &Snippet, vars: &HashMap<String, String>) -> String {
     let mut selection: Option<(usize, String)> = None; // (index, collected literal)
     let mut rest = body.as_str();
 
-    let push_lit =
-        |out: &mut String, selection: &mut Option<(usize, String)>, text: &str| match selection {
-            Some((_, buf)) => buf.push_str(text),
-            None => out.push_str(&escape_snippet(text)),
-        };
+    let push_lit = |out: &mut String, selection: &mut Option<(usize, String)>, text: &str| match selection {
+        Some((_, buf)) => buf.push_str(text),
+        None => out.push_str(&escape_snippet(text)),
+    };
 
     while let Some(open) = rest.find('$') {
         let after = &rest[open + 1..];
@@ -79,14 +78,12 @@ pub fn to_monaco(snippet: &Snippet, vars: &HashMap<String, String>) -> String {
             "DATE" => Some("${CURRENT_YEAR}-${CURRENT_MONTH}-${CURRENT_DATE}".to_string()),
             "TIME" => Some("${CURRENT_HOUR}:${CURRENT_MINUTE}:${CURRENT_SECOND}".to_string()),
             "GUID" => Some("${UUID}".to_string()),
-            "USER" | "MACHINE" | "DBNAME" | "SERVER" => Some(escape_snippet(
-                vars.get(&upper).map_or(name, |v| v.as_str()),
-            )),
+            "USER" | "MACHINE" | "DBNAME" | "SERVER" => {
+                Some(escape_snippet(vars.get(&upper).map_or(name, |v| v.as_str())))
+            }
             "SELECTIONSTART" | "SELECTIONEND" => {
                 match selection.take() {
-                    Some((idx, text)) => {
-                        out.push_str(&format!("${{{idx}:{}}}", escape_snippet(&text)))
-                    }
+                    Some((idx, text)) => out.push_str(&format!("${{{idx}:{}}}", escape_snippet(&text))),
                     None => {
                         selection = Some((next_index, String::new()));
                         next_index += 1;
@@ -135,16 +132,8 @@ pub fn builtin_snippets() -> Vec<Snippet> {
     };
     vec![
         s("ssf", "SELECT * FROM", "SELECT * FROM $CURSOR$"),
-        s(
-            "st100",
-            "SELECT TOP 100 * FROM",
-            "SELECT TOP 100 * FROM $CURSOR$",
-        ),
-        s(
-            "scf",
-            "SELECT COUNT(*) FROM",
-            "SELECT COUNT(*) FROM $CURSOR$",
-        ),
+        s("st100", "SELECT TOP 100 * FROM", "SELECT TOP 100 * FROM $CURSOR$"),
+        s("scf", "SELECT COUNT(*) FROM", "SELECT COUNT(*) FROM $CURSOR$"),
         s(
             "ii",
             "INSERT INTO",
@@ -216,9 +205,6 @@ mod tests {
     fn variables_from_context() {
         let s = snip("-- by $USER$ on $DBNAME$\n$SELECTEDTEXT$", &[]);
         let vars = HashMap::from([("USER".to_string(), "me".to_string())]);
-        assert_eq!(
-            to_monaco(&s, &vars),
-            "-- by me on DBNAME\n${TM_SELECTED_TEXT}"
-        );
+        assert_eq!(to_monaco(&s, &vars), "-- by me on DBNAME\n${TM_SELECTED_TEXT}");
     }
 }

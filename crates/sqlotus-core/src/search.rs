@@ -92,10 +92,7 @@ impl Matcher {
             let at = from + pos;
             let end = at + self.needle.len();
             let ok = !self.whole_word
-                || (hay[..at]
-                    .chars()
-                    .next_back()
-                    .is_none_or(|c| !is_word_char(c))
+                || (hay[..at].chars().next_back().is_none_or(|c| !is_word_char(c))
                     && hay[end..].chars().next().is_none_or(|c| !is_word_char(c)));
             if ok {
                 hits.push(at);
@@ -129,9 +126,7 @@ pub fn search(
     let mut hits = Vec::new();
 
     for o in catalog.objects.iter().filter(|o| kind_ok(o.kind)) {
-        if opts.search_names
-            && (m.matches(&o.name) || m.matches(&format!("{}.{}", o.schema, o.name)))
-        {
+        if opts.search_names && (m.matches(&o.name) || m.matches(&format!("{}.{}", o.schema, o.name))) {
             hits.push(SearchHit {
                 database: database.to_string(),
                 schema: o.schema.clone(),

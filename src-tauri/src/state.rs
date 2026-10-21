@@ -42,7 +42,10 @@ pub struct SafetySettings {
 
 impl Default for SafetySettings {
     fn default() -> Self {
-        Self { confirm_rows_over: 1000, prompt_variables: true }
+        Self {
+            confirm_rows_over: 1000,
+            prompt_variables: true,
+        }
     }
 }
 
@@ -104,19 +107,11 @@ impl AppState {
     }
 
     pub fn settings(&self) -> Settings {
-        self.store
-            .get_setting("settings")
-            .ok()
-            .flatten()
-            .unwrap_or_default()
+        self.store.get_setting("settings").ok().flatten().unwrap_or_default()
     }
 
     /// Catalog from memory, falling back to the on-disk cache.
-    pub fn cached_catalog(
-        &self,
-        connection_id: &str,
-        database: &str,
-    ) -> Option<Arc<CatalogSnapshot>> {
+    pub fn cached_catalog(&self, connection_id: &str, database: &str) -> Option<Arc<CatalogSnapshot>> {
         let key = catalog_key(connection_id, database);
         if let Some(c) = self.catalogs.read().ok()?.get(&key) {
             return Some(c.clone());
@@ -127,12 +122,7 @@ impl AppState {
         Some(snap)
     }
 
-    pub fn put_catalog(
-        &self,
-        connection_id: &str,
-        database: &str,
-        snap: CatalogSnapshot,
-    ) -> Arc<CatalogSnapshot> {
+    pub fn put_catalog(&self, connection_id: &str, database: &str, snap: CatalogSnapshot) -> Arc<CatalogSnapshot> {
         let _ = self.store.save_catalog(connection_id, database, &snap);
         let snap = Arc::new(snap);
         if let Ok(mut map) = self.catalogs.write() {

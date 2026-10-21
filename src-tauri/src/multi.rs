@@ -2,9 +2,7 @@
 //! (multi-tenant setups), tagging every row with its database.
 
 use sqlotus_core::byte_to_utf16;
-use sqlotus_db::{
-    BatchOutput, Connection, Limits, Message, MessageKind, ResultColumn, ResultSet, execute_script,
-};
+use sqlotus_db::{BatchOutput, Connection, Limits, Message, MessageKind, ResultColumn, ResultSet, execute_script};
 use tauri::State;
 
 use crate::commands::{BatchDto, CmdResult, ExecuteResult};
@@ -38,9 +36,7 @@ fn merge(per_db: Vec<(String, Vec<BatchOutput>)>) -> Vec<BatchOutput> {
         })
         .collect();
     let mergeable = !per_db.is_empty()
-        && per_db
-            .iter()
-            .all(|(_, outs)| outs.iter().all(|o| !o.failed))
+        && per_db.iter().all(|(_, outs)| outs.iter().all(|o| !o.failed))
         && shapes.windows(2).all(|w| w[0] == w[1])
         && !shapes[0].is_empty();
     if !mergeable {
@@ -72,12 +68,10 @@ fn merge(per_db: Vec<(String, Vec<BatchOutput>)>) -> Vec<BatchOutput> {
         }
         for o in outs {
             merged.elapsed_ms += o.elapsed_ms;
-            merged
-                .messages
-                .extend(o.messages.into_iter().map(|m| Message {
-                    kind: m.kind,
-                    text: format!("[{db}] {}", m.text),
-                }));
+            merged.messages.extend(o.messages.into_iter().map(|m| Message {
+                kind: m.kind,
+                text: format!("[{db}] {}", m.text),
+            }));
         }
     }
     vec![merged]
@@ -91,10 +85,14 @@ pub async fn execute_multi(
     databases: Vec<String>,
 ) -> CmdResult<ExecuteResult> {
     let session = state.session(&tab_id).ok_or("tab is not connected")?;
-    if session.config.read_only && !sqlotus_core::analysis::modifying_statements(&sql, session.config.dialect).is_empty() {
+    if session.config.read_only
+        && !sqlotus_core::analysis::modifying_statements(&sql, session.config.dialect).is_empty()
+    {
         return Err("This connection is read-only, so the script was not run on any database.".into());
     }
-    if session.config.manual_commit && !sqlotus_core::analysis::modifying_statements(&sql, session.config.dialect).is_empty() {
+    if session.config.manual_commit
+        && !sqlotus_core::analysis::modifying_statements(&sql, session.config.dialect).is_empty()
+    {
         return Err("Manual commit is on for this connection, but a multi-database run commits each database on its own connection. Run the changes database by database instead.".into());
     }
     let limits = Limits {
@@ -127,19 +125,11 @@ pub async fn execute_multi(
         per_db.push((db, outs));
     }
     let end = byte_to_utf16(&sql, sql.len());
-    let database = session
-        .database
-        .lock()
-        .map(|d| d.clone())
-        .unwrap_or_default();
+    let database = session.database.lock().map(|d| d.clone()).unwrap_or_default();
     Ok(ExecuteResult {
         batches: merge(per_db)
             .into_iter()
-            .map(|output| BatchDto {
-                start: 0,
-                end,
-                output,
-            })
+            .map(|output| BatchDto { start: 0, end, output })
             .collect(),
         database,
         cancelled: false,
@@ -162,9 +152,7 @@ mod tests {
                         type_name: String::new(),
                     })
                     .collect(),
-                rows: (0..rows)
-                    .map(|i| vec![Some(i.to_string()); cols.len()])
-                    .collect(),
+                rows: (0..rows).map(|i| vec![Some(i.to_string()); cols.len()]).collect(),
                 truncated: false,
             }],
             ..BatchOutput::default()

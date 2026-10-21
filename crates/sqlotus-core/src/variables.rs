@@ -49,7 +49,10 @@ fn statement_keyword(t: &[Token<'_>], i: usize) -> String {
 /// a variable of the script.
 fn is_named_argument(t: &[Token<'_>], i: usize) -> bool {
     t.get(i + 1).is_some_and(|n| n.text == "=")
-        && !matches!(word(i.checked_sub(1).and_then(|p| t.get(p))).as_str(), "EXEC" | "EXECUTE")
+        && !matches!(
+            word(i.checked_sub(1).and_then(|p| t.get(p))).as_str(),
+            "EXEC" | "EXECUTE"
+        )
         && matches!(statement_keyword(t, i).as_str(), "EXEC" | "EXECUTE")
 }
 
@@ -57,9 +60,12 @@ fn is_named_argument(t: &[Token<'_>], i: usize) -> bool {
 /// statement of its batch, so nothing may be put in front of it.
 fn is_module_batch(t: &[Token<'_>]) -> bool {
     matches!(word(t.first()).as_str(), "CREATE" | "ALTER")
-        && t.iter()
-            .take(6)
-            .any(|x| matches!(x.upper().as_str(), "PROCEDURE" | "PROC" | "FUNCTION" | "TRIGGER" | "VIEW"))
+        && t.iter().take(6).any(|x| {
+            matches!(
+                x.upper().as_str(),
+                "PROCEDURE" | "PROC" | "FUNCTION" | "TRIGGER" | "VIEW"
+            )
+        })
 }
 
 fn mssql_undeclared(t: &[Token<'_>], out: &mut Vec<String>, seen: &mut HashSet<String>) {
@@ -84,7 +90,9 @@ fn mssql_undeclared(t: &[Token<'_>], out: &mut Vec<String>, seen: &mut HashSet<S
 }
 
 fn mysql_undeclared(t: &[Token<'_>]) -> Vec<String> {
-    if t.iter().any(|x| matches!(x.upper().as_str(), "PROCEDURE" | "FUNCTION" | "TRIGGER")) {
+    if t.iter()
+        .any(|x| matches!(x.upper().as_str(), "PROCEDURE" | "FUNCTION" | "TRIGGER"))
+    {
         return Vec::new(); // routine bodies declare their own variables
     }
     let assigned: HashSet<String> = t
@@ -96,7 +104,9 @@ fn mysql_undeclared(t: &[Token<'_>]) -> Vec<String> {
                     || matches!(word(i.checked_sub(1).and_then(|p| t.get(p))).as_str(), "SET" | "INTO")
                     || (*i > 0 && t[i - 1].kind == TokenKind::Comma && {
                         // SET @a = 1, @b = 2  /  INTO @a, @b
-                        let start = t[..*i].iter().rposition(|y| matches!(y.upper().as_str(), "SET" | "INTO" | "SELECT"));
+                        let start = t[..*i]
+                            .iter()
+                            .rposition(|y| matches!(y.upper().as_str(), "SET" | "INTO" | "SELECT"));
                         start.is_some_and(|s| t[s].upper() != "SELECT")
                     }))
         })
@@ -122,8 +132,11 @@ pub fn undeclared_variables(sql: &str, dialect: Dialect) -> Vec<String> {
             let mut out = Vec::new();
             let mut seen = HashSet::new();
             for batch in split_batches(sql, dialect) {
-                let t: Vec<Token<'_>> =
-                    all.iter().filter(|x| x.start >= batch.span.start && x.end() <= batch.span.end).copied().collect();
+                let t: Vec<Token<'_>> = all
+                    .iter()
+                    .filter(|x| x.start >= batch.span.start && x.end() <= batch.span.end)
+                    .copied()
+                    .collect();
                 // a variable missing in two batches is asked for once
                 let mut batch_seen = HashSet::new();
                 let before = out.len();
@@ -138,7 +151,17 @@ pub fn undeclared_variables(sql: &str, dialect: Dialect) -> Vec<String> {
 }
 
 const NUMERIC_TYPES: &[&str] = &[
-    "int", "bigint", "smallint", "tinyint", "bit", "decimal", "numeric", "money", "smallmoney", "float", "real",
+    "int",
+    "bigint",
+    "smallint",
+    "tinyint",
+    "bit",
+    "decimal",
+    "numeric",
+    "money",
+    "smallmoney",
+    "float",
+    "real",
 ];
 
 /// The value as a SQL literal for a variable of `data_type`.
@@ -147,13 +170,29 @@ pub fn literal(value: Option<&str>, data_type: &str, dialect: Dialect) -> String
     let base = data_type.split('(').next().unwrap_or("").trim().to_ascii_lowercase();
     let numeric_value = {
         let s = v.trim();
-        !s.is_empty() && s.parse::<f64>().is_ok() && !s.contains(['e', 'E', 'x', 'X']) && s.chars().all(|c| c.is_ascii_digit() || matches!(c, '-' | '+' | '.'))
+        !s.is_empty()
+            && s.parse::<f64>().is_ok()
+            && !s.contains(['e', 'E', 'x', 'X'])
+            && s.chars().all(|c| c.is_ascii_digit() || matches!(c, '-' | '+' | '.'))
     };
-    if (NUMERIC_TYPES.contains(&base.as_str()) || (dialect == Dialect::MySql && data_type.is_empty())) && numeric_value {
+    if (NUMERIC_TYPES.contains(&base.as_str()) || (dialect == Dialect::MySql && data_type.is_empty())) && numeric_value
+    {
         return v.trim().to_string();
     }
     let quoted = format!("'{}'", v.replace('\'', "''"));
-    let unicode = dialect == Dialect::MsSql && !matches!(base.as_str(), "varchar" | "char" | "date" | "datetime" | "datetime2" | "smalldatetime" | "time" | "datetimeoffset" | "uniqueidentifier");
+    let unicode = dialect == Dialect::MsSql
+        && !matches!(
+            base.as_str(),
+            "varchar"
+                | "char"
+                | "date"
+                | "datetime"
+                | "datetime2"
+                | "smalldatetime"
+                | "time"
+                | "datetimeoffset"
+                | "uniqueidentifier"
+        );
     if unicode { format!("N{quoted}") } else { quoted }
 }
 
@@ -167,7 +206,13 @@ pub fn prelude(batch: &str, dialect: Dialect, vars: &[VariableValue]) -> String 
         Dialect::Postgres => String::new(),
         Dialect::MySql => vars
             .iter()
-            .map(|v| format!("SET {} = {}; ", v.name, literal(v.value.as_deref(), &v.data_type, dialect)))
+            .map(|v| {
+                format!(
+                    "SET {} = {}; ",
+                    v.name,
+                    literal(v.value.as_deref(), &v.data_type, dialect)
+                )
+            })
             .collect(),
         Dialect::MsSql => {
             let used: HashSet<String> = tokenize(batch, dialect)
@@ -175,12 +220,23 @@ pub fn prelude(batch: &str, dialect: Dialect, vars: &[VariableValue]) -> String 
                 .filter(|t| t.kind == TokenKind::Variable)
                 .map(|t| t.text.to_lowercase())
                 .collect();
-            let missing: HashSet<String> = undeclared_variables(batch, dialect).iter().map(|v| v.to_lowercase()).collect();
+            let missing: HashSet<String> = undeclared_variables(batch, dialect)
+                .iter()
+                .map(|v| v.to_lowercase())
+                .collect();
             vars.iter()
                 .filter(|v| used.contains(&v.name.to_lowercase()) && missing.contains(&v.name.to_lowercase()))
                 .map(|v| {
-                    let ty = if v.data_type.trim().is_empty() { "nvarchar(4000)" } else { v.data_type.trim() };
-                    format!("DECLARE {} {ty} = {}; ", v.name, literal(v.value.as_deref(), ty, dialect))
+                    let ty = if v.data_type.trim().is_empty() {
+                        "nvarchar(4000)"
+                    } else {
+                        v.data_type.trim()
+                    };
+                    format!(
+                        "DECLARE {} {ty} = {}; ",
+                        v.name,
+                        literal(v.value.as_deref(), ty, dialect)
+                    )
                 })
                 .collect()
         }
@@ -194,7 +250,10 @@ mod tests {
     #[test]
     fn finds_undeclared_tsql_variables() {
         let ms = Dialect::MsSql;
-        assert_eq!(undeclared_variables("SELECT * FROM t WHERE a = @Id AND b = @Name", ms), vec!["@Id", "@Name"]);
+        assert_eq!(
+            undeclared_variables("SELECT * FROM t WHERE a = @Id AND b = @Name", ms),
+            vec!["@Id", "@Name"]
+        );
         assert!(undeclared_variables("DECLARE @Id int = 1; SELECT @Id, @@ROWCOUNT", ms).is_empty());
         assert!(undeclared_variables("DECLARE @a int, @b int; SELECT @a + @b", ms).is_empty());
         // named procedure arguments are not variables; the return code variable is
@@ -202,10 +261,17 @@ mod tests {
         assert_eq!(undeclared_variables("EXEC @rc = dbo.p @x = 1", ms), vec!["@rc"]);
         // a module body is checked by the server when it is created; nothing goes in front of CREATE
         assert!(undeclared_variables("CREATE PROCEDURE dbo.p @Id int AS SELECT @Id, @Other", ms).is_empty());
-        let v = [VariableValue { name: "@Other".into(), data_type: "int".into(), value: Some("1".into()) }];
+        let v = [VariableValue {
+            name: "@Other".into(),
+            data_type: "int".into(),
+            value: Some("1".into()),
+        }];
         assert_eq!(prelude("CREATE PROCEDURE dbo.p AS SELECT @Other", ms, &v), "");
         // declared in another batch does not count, and each name is asked once
-        assert_eq!(undeclared_variables("DECLARE @x int = 1\nGO\nSELECT @x\nGO\nSELECT @x", ms), vec!["@x"]);
+        assert_eq!(
+            undeclared_variables("DECLARE @x int = 1\nGO\nSELECT @x\nGO\nSELECT @x", ms),
+            vec!["@x"]
+        );
     }
 
     #[test]
@@ -221,9 +287,21 @@ mod tests {
     #[test]
     fn builds_declarations() {
         let vars = vec![
-            VariableValue { name: "@Id".into(), data_type: "int".into(), value: Some("5".into()) },
-            VariableValue { name: "@Name".into(), data_type: "nvarchar(50)".into(), value: Some("O'Brien".into()) },
-            VariableValue { name: "@From".into(), data_type: "date".into(), value: None },
+            VariableValue {
+                name: "@Id".into(),
+                data_type: "int".into(),
+                value: Some("5".into()),
+            },
+            VariableValue {
+                name: "@Name".into(),
+                data_type: "nvarchar(50)".into(),
+                value: Some("O'Brien".into()),
+            },
+            VariableValue {
+                name: "@From".into(),
+                data_type: "date".into(),
+                value: None,
+            },
         ];
         assert_eq!(
             prelude("SELECT @Id, @Name", Dialect::MsSql, &vars),

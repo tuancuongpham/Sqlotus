@@ -53,8 +53,8 @@ pub(crate) fn word(t: Option<&Token<'_>>) -> String {
 
 /// Statement keywords that end the reach of a preceding UPDATE/DELETE.
 pub(crate) const STATEMENT_KEYWORDS: &[&str] = &[
-    "SELECT", "INSERT", "UPDATE", "DELETE", "MERGE", "IF", "WHILE", "DECLARE", "SET", "EXEC",
-    "EXECUTE", "BEGIN", "END", "RETURN", "PRINT", "CREATE", "ALTER", "DROP", "TRUNCATE", "GO",
+    "SELECT", "INSERT", "UPDATE", "DELETE", "MERGE", "IF", "WHILE", "DECLARE", "SET", "EXEC", "EXECUTE", "BEGIN",
+    "END", "RETURN", "PRINT", "CREATE", "ALTER", "DROP", "TRUNCATE", "GO",
 ];
 
 /// UPDATE / DELETE statements (index of the keyword) with no WHERE clause.
@@ -65,24 +65,12 @@ fn unfiltered_modifications(t: &[Token<'_>]) -> Vec<usize> {
         if u != "UPDATE" && u != "DELETE" {
             continue;
         }
-        let prev = if i > 0 {
-            word(t.get(i - 1))
-        } else {
-            String::new()
-        };
+        let prev = if i > 0 { word(t.get(i - 1)) } else { String::new() };
         let prev_kind = i.checked_sub(1).map(|p| t[p].kind);
         // ON DELETE CASCADE, AFTER UPDATE, GRANT DELETE, UPDATE(col), MERGE ... THEN DELETE
         if matches!(
             prev.as_str(),
-            "ON" | "OF"
-                | "AFTER"
-                | "FOR"
-                | "INSTEAD"
-                | "GRANT"
-                | "DENY"
-                | "REVOKE"
-                | "THEN"
-                | "KEY"
+            "ON" | "OF" | "AFTER" | "FOR" | "INSTEAD" | "GRANT" | "DENY" | "REVOKE" | "THEN" | "KEY"
         ) || prev_kind == Some(TokenKind::Comma)
             || prev_kind == Some(TokenKind::LParen)
             || t.get(i + 1).is_some_and(|n| n.kind == TokenKind::LParen)
@@ -139,9 +127,12 @@ pub fn modifying_statements(sql: &str, dialect: Dialect) -> Vec<String> {
         let prev = if i > 0 { word(t.get(i - 1)) } else { String::new() };
         let prev_kind = i.checked_sub(1).map(|p| t[p].kind);
         // keywords used as parts of other statements, not statements themselves
-        let part_of_other = matches!(prev.as_str(), "ON" | "OF" | "AFTER" | "FOR" | "INSTEAD" | "GRANT" | "DENY" | "REVOKE" | "KEY")
-            || matches!(prev_kind, Some(TokenKind::Dot | TokenKind::Comma | TokenKind::LParen))
-            || t.get(i + 1).is_some_and(|n| n.kind == TokenKind::LParen && u != "INSERT");
+        let part_of_other = matches!(
+            prev.as_str(),
+            "ON" | "OF" | "AFTER" | "FOR" | "INSTEAD" | "GRANT" | "DENY" | "REVOKE" | "KEY"
+        ) || matches!(prev_kind, Some(TokenKind::Dot | TokenKind::Comma | TokenKind::LParen))
+            || t.get(i + 1)
+                .is_some_and(|n| n.kind == TokenKind::LParen && u != "INSERT");
         if MODIFYING.contains(&u.as_str()) && !part_of_other && !(u == "REPLACE" && dialect != Dialect::MySql) {
             out.push(format!("{u} {}", statement_target(&t[i + 1..])).trim().to_string());
         }
@@ -182,7 +173,10 @@ pub fn row_changes_only(sql: &str, dialect: Dialect) -> bool {
     let changes = modifying_statements(sql, dialect);
     !changes.is_empty()
         && changes.iter().all(|c| {
-            matches!(c.split(' ').next().unwrap_or(""), "INSERT" | "UPDATE" | "DELETE" | "MERGE" | "REPLACE" | "UPSERT")
+            matches!(
+                c.split(' ').next().unwrap_or(""),
+                "INSERT" | "UPDATE" | "DELETE" | "MERGE" | "REPLACE" | "UPSERT"
+            )
         })
         && !has_transaction_control(sql, dialect)
 }
@@ -191,9 +185,33 @@ pub fn row_changes_only(sql: &str, dialect: Dialect) -> bool {
 /// `TABLE [Sales].[Archive]`: leading keywords plus one qualified name.
 fn statement_target(rest: &[Token<'_>]) -> String {
     const LEAD: &[&str] = &[
-        "FROM", "INTO", "TOP", "TABLE", "VIEW", "PROCEDURE", "PROC", "FUNCTION", "TRIGGER", "INDEX", "DATABASE",
-        "SCHEMA", "LOGIN", "USER", "ROLE", "SEQUENCE", "TYPE", "SYNONYM", "OR", "UNIQUE", "CLUSTERED", "NONCLUSTERED",
-        "IF", "EXISTS", "NOT", "TEMPORARY", "TEMP",
+        "FROM",
+        "INTO",
+        "TOP",
+        "TABLE",
+        "VIEW",
+        "PROCEDURE",
+        "PROC",
+        "FUNCTION",
+        "TRIGGER",
+        "INDEX",
+        "DATABASE",
+        "SCHEMA",
+        "LOGIN",
+        "USER",
+        "ROLE",
+        "SEQUENCE",
+        "TYPE",
+        "SYNONYM",
+        "OR",
+        "UNIQUE",
+        "CLUSTERED",
+        "NONCLUSTERED",
+        "IF",
+        "EXISTS",
+        "NOT",
+        "TEMPORARY",
+        "TEMP",
     ];
     let mut words: Vec<String> = Vec::new();
     let mut name = String::new();
@@ -223,9 +241,7 @@ pub fn execution_warnings(sql: &str, dialect: Dialect) -> Vec<String> {
     for i in unfiltered_modifications(&t) {
         let target = t[i + 1..]
             .iter()
-            .take_while(|x| {
-                x.is_name() || x.kind == TokenKind::Dot || x.upper() == "FROM" || x.upper() == "TOP"
-            })
+            .take_while(|x| x.is_name() || x.kind == TokenKind::Dot || x.upper() == "FROM" || x.upper() == "TOP")
             .filter(|x| x.is_name() && x.upper() != "FROM")
             .map(|x| x.text)
             .collect::<Vec<_>>()
@@ -239,18 +255,12 @@ pub fn execution_warnings(sql: &str, dialect: Dialect) -> Vec<String> {
     for (i, tok) in t.iter().enumerate() {
         let u = word(Some(tok));
         let next = word(t.get(i + 1));
-        let prev = if i > 0 {
-            word(t.get(i - 1))
-        } else {
-            String::new()
-        };
+        let prev = if i > 0 { word(t.get(i - 1)) } else { String::new() };
         if u == "TRUNCATE" && next == "TABLE" {
             out.push("TRUNCATE TABLE removes every row.".into());
         }
         if u == "DROP" && matches!(next.as_str(), "TABLE" | "DATABASE" | "SCHEMA") && prev != "IF" {
-            out.push(format!(
-                "DROP {next} permanently removes the object and its data."
-            ));
+            out.push(format!("DROP {next} permanently removes the object and its data."));
         }
     }
     out
@@ -398,8 +408,7 @@ fn select_star(t: &[Token<'_>], out: &mut Vec<Diagnostic>) {
             }
         }
         let Some(sel) = sel else { continue };
-        let in_exists =
-            sel >= 2 && t[sel - 1].kind == TokenKind::LParen && word(t.get(sel - 2)) == "EXISTS";
+        let in_exists = sel >= 2 && t[sel - 1].kind == TokenKind::LParen && word(t.get(sel - 2)) == "EXISTS";
         if !in_exists {
             out.push(diag(
                 tok,
@@ -449,11 +458,7 @@ fn null_comparison(t: &[Token<'_>], out: &mut Vec<Diagnostic>) {
             context.as_str(),
             "WHERE" | "ON" | "HAVING" | "WHEN" | "AND" | "OR" | "IF" | "WHILE"
         ) {
-            let fix = if tok.text == "=" {
-                "IS NULL"
-            } else {
-                "IS NOT NULL"
-            };
+            let fix = if tok.text == "=" { "IS NULL" } else { "IS NOT NULL" };
             out.push(diag(
                 tok,
                 Severity::Warning,
@@ -524,11 +529,7 @@ fn unused_variables(src: &str, dialect: Dialect, tokens: &[Token<'_>], out: &mut
                 continue;
             }
             let i = idx[0];
-            let prev = if i > 0 {
-                word(t.get(i - 1))
-            } else {
-                String::new()
-            };
+            let prev = if i > 0 { word(t.get(i - 1)) } else { String::new() };
             let declared = prev == "DECLARE"
                 || (i > 0 && t[i - 1].kind == TokenKind::Comma && in_declare(&t, i))
                 || (routine && is_parameter(&t, i));
@@ -569,9 +570,7 @@ pub(crate) fn in_declare(t: &[Token<'_>], i: usize) -> bool {
 
 /// A parameter in a CREATE PROCEDURE/FUNCTION header (before the body's AS).
 pub(crate) fn is_parameter(t: &[Token<'_>], i: usize) -> bool {
-    !t[..i]
-        .iter()
-        .any(|x| matches!(x.upper().as_str(), "AS" | "BEGIN"))
+    !t[..i].iter().any(|x| matches!(x.upper().as_str(), "AS" | "BEGIN"))
 }
 
 fn invalid_objects(
@@ -620,9 +619,7 @@ fn invalid_objects(
             end: r.name_end,
             severity: Severity::Warning,
             code: "SQ006".into(),
-            message: format!(
-                "Invalid object name '{shown}' (reload objects if it was just created)"
-            ),
+            message: format!("Invalid object name '{shown}' (reload objects if it was just created)"),
         });
     }
 }
@@ -657,19 +654,12 @@ fn invalid_columns(t: &[Token<'_>], scope: &Scope, cat: &Catalog, out: &mut Vec<
         if c.start == r.name_start {
             continue;
         }
-        if !obj
-            .columns
-            .iter()
-            .any(|x| x.name.eq_ignore_ascii_case(&col))
-        {
+        if !obj.columns.iter().any(|x| x.name.eq_ignore_ascii_case(&col)) {
             out.push(diag(
                 c,
                 Severity::Warning,
                 "SQ007",
-                format!(
-                    "Invalid column name '{col}' for {}.{}",
-                    obj.schema, obj.name
-                ),
+                format!("Invalid column name '{col}' for {}.{}", obj.schema, obj.name),
             ));
         }
     }
@@ -753,9 +743,9 @@ fn locate<'a>(src: &'a str, offset: usize, dialect: Dialect) -> Option<Located<'
         .collect();
     let scope = analyze_statement(&stmt, dialect);
     let tokens = sig(&stmt);
-    let idx = tokens.iter().position(|t| {
-        t.start <= offset && offset <= t.end() && (t.is_name() || t.kind == TokenKind::Variable)
-    })?;
+    let idx = tokens
+        .iter()
+        .position(|t| t.start <= offset && offset <= t.end() && (t.is_name() || t.kind == TokenKind::Variable))?;
     Some(Located { tokens, idx, scope })
 }
 
@@ -802,12 +792,7 @@ fn describe(o: &DbObject) -> String {
             if !c.nullable {
                 flags.push("not null");
             }
-            s.push_str(&format!(
-                "| {} | {} | {} |\n",
-                c.name,
-                c.data_type,
-                flags.join(", ")
-            ));
+            s.push_str(&format!("| {} | {} | {} |\n", c.name, c.data_type, flags.join(", ")));
         }
         if o.columns.len() > 40 {
             s.push_str(&format!("\n…and {} more columns\n", o.columns.len() - 40));
@@ -829,12 +814,7 @@ fn describe(o: &DbObject) -> String {
 }
 
 /// Resolve the name under the cursor to a catalog object (through aliases).
-pub fn object_at(
-    src: &str,
-    offset: usize,
-    dialect: Dialect,
-    catalog: &Catalog,
-) -> Option<ObjectAt> {
+pub fn object_at(src: &str, offset: usize, dialect: Dialect, catalog: &Catalog) -> Option<ObjectAt> {
     let loc = locate(src, offset, dialect)?;
     let tok = loc.tokens[loc.idx];
     let quals = qualifiers(&loc.tokens, loc.idx);
@@ -845,11 +825,7 @@ pub fn object_at(
                 .scope
                 .tables
                 .iter()
-                .find(|r| {
-                    r.alias
-                        .as_ref()
-                        .is_some_and(|a| a.eq_ignore_ascii_case(&name))
-                })
+                .find(|r| r.alias.as_ref().is_some_and(|a| a.eq_ignore_ascii_case(&name)))
                 .and_then(|r| resolve(catalog, r));
             via_alias.or_else(|| catalog.find(None, &name))
         }
@@ -862,12 +838,7 @@ pub fn object_at(
     })
 }
 
-pub fn hover(
-    src: &str,
-    offset: usize,
-    dialect: Dialect,
-    catalog: Option<&Catalog>,
-) -> Option<HoverInfo> {
+pub fn hover(src: &str, offset: usize, dialect: Dialect, catalog: Option<&Catalog>) -> Option<HoverInfo> {
     let loc = locate(src, offset, dialect)?;
     let tok = loc.tokens[loc.idx];
     let range = |contents: String| {
@@ -880,10 +851,7 @@ pub fn hover(
 
     if tok.kind == TokenKind::Variable {
         let syms = document_symbols(src, dialect);
-        let v = syms
-            .variables
-            .iter()
-            .find(|v| v.name.eq_ignore_ascii_case(tok.text))?;
+        let v = syms.variables.iter().find(|v| v.name.eq_ignore_ascii_case(tok.text))?;
         return range(format!(
             "`{} {}`",
             v.name,
@@ -893,19 +861,16 @@ pub fn hover(
     let cat = catalog?;
     let name = tok.ident_value();
     let quals = qualifiers(&loc.tokens, loc.idx);
-    let next_is_dot = loc
-        .tokens
-        .get(loc.idx + 1)
-        .is_some_and(|n| n.kind == TokenKind::Dot);
+    let next_is_dot = loc.tokens.get(loc.idx + 1).is_some_and(|n| n.kind == TokenKind::Dot);
 
     // alias / table used as a qualifier, or an alias on its own
     if quals.is_empty() {
-        if let Some(r) = loc.scope.tables.iter().find(|r| {
-            r.matches_qualifier(&name)
-                || r.alias
-                    .as_ref()
-                    .is_some_and(|a| a.eq_ignore_ascii_case(&name))
-        }) {
+        if let Some(r) = loc
+            .scope
+            .tables
+            .iter()
+            .find(|r| r.matches_qualifier(&name) || r.alias.as_ref().is_some_and(|a| a.eq_ignore_ascii_case(&name)))
+        {
             if let Some(o) = resolve(cat, r) {
                 return range(describe(o));
             }
@@ -925,10 +890,7 @@ pub fn hover(
     if let Some(q) = quals.last()
         && let Some(r) = loc.scope.tables.iter().find(|r| r.matches_qualifier(q))
         && let Some(o) = resolve(cat, r)
-        && let Some(c) = o
-            .columns
-            .iter()
-            .find(|c| c.name.eq_ignore_ascii_case(&name))
+        && let Some(c) = o.columns.iter().find(|c| c.name.eq_ignore_ascii_case(&name))
     {
         return range(format!(
             "column **{}.{}.{}**\n\n`{}`{}{}",
@@ -937,11 +899,7 @@ pub fn hover(
             c.name,
             c.data_type,
             if c.nullable { " null" } else { " not null" },
-            if c.is_primary_key {
-                " · primary key"
-            } else {
-                ""
-            }
+            if c.is_primary_key { " · primary key" } else { "" }
         ));
     }
     // object by (schema.)name
@@ -953,10 +911,7 @@ pub fn hover(
     if quals.is_empty() {
         for r in &loc.scope.tables {
             if let Some(o) = resolve(cat, r)
-                && let Some(c) = o
-                    .columns
-                    .iter()
-                    .find(|c| c.name.eq_ignore_ascii_case(&name))
+                && let Some(c) = o.columns.iter().find(|c| c.name.eq_ignore_ascii_case(&name))
             {
                 return range(format!(
                     "column **{}.{}.{}**\n\n`{}`",
@@ -994,11 +949,7 @@ const BUILTIN_SIGNATURES: &[(&str, &[&str])] = &[
     ("SUBSTRING", &["expression", "start", "length"]),
     (
         "CHARINDEX",
-        &[
-            "expression_to_find",
-            "expression_to_search",
-            "[start_location]",
-        ],
+        &["expression_to_find", "expression_to_search", "[start_location]"],
     ),
     ("REPLACE", &["string", "pattern", "replacement"]),
     ("STUFF", &["string", "start", "length", "replace_with"]),
@@ -1021,17 +972,9 @@ const BUILTIN_SIGNATURES: &[(&str, &[&str])] = &[
 ];
 
 /// Parameter hints inside `fn(...|` or after `EXEC proc ...|`.
-pub fn signature_help(
-    src: &str,
-    offset: usize,
-    dialect: Dialect,
-    catalog: Option<&Catalog>,
-) -> Option<SignatureInfo> {
+pub fn signature_help(src: &str, offset: usize, dialect: Dialect, catalog: Option<&Catalog>) -> Option<SignatureInfo> {
     let all = tokenize(src, dialect);
-    let t: Vec<Token<'_>> = sig(&all)
-        .into_iter()
-        .filter(|x| x.end() <= offset)
-        .collect();
+    let t: Vec<Token<'_>> = sig(&all).into_iter().filter(|x| x.end() <= offset).collect();
     // innermost unclosed '('
     let mut depth = 0i32;
     let mut commas = 0usize;
@@ -1064,9 +1007,7 @@ pub fn signature_help(
                     active_parameter: active,
                 });
             }
-            TokenKind::Word
-                if depth == 0 && matches!(t[k].upper().as_str(), "EXEC" | "EXECUTE") =>
-            {
+            TokenKind::Word if depth == 0 && matches!(t[k].upper().as_str(), "EXEC" | "EXECUTE") => {
                 let name_tok = t.get(k + 1).filter(|n| n.is_name())?;
                 let mut j = k + 1;
                 let mut schema = None;
@@ -1084,9 +1025,7 @@ pub fn signature_help(
                     .filter(|o| o.kind == ObjectKind::Procedure)?;
                 return Some(routine_signature(o, commas));
             }
-            TokenKind::Word
-                if depth == 0 && STATEMENT_KEYWORDS.contains(&t[k].upper().as_str()) =>
-            {
+            TokenKind::Word if depth == 0 && STATEMENT_KEYWORDS.contains(&t[k].upper().as_str()) => {
                 return None;
             }
             _ => {}
@@ -1099,14 +1038,7 @@ fn routine_signature(o: &DbObject, commas: usize) -> SignatureInfo {
     let params: Vec<String> = o
         .params
         .iter()
-        .map(|p| {
-            format!(
-                "{} {}{}",
-                p.name,
-                p.data_type,
-                if p.is_output { " OUTPUT" } else { "" }
-            )
-        })
+        .map(|p| format!("{} {}{}", p.name, p.data_type, if p.is_output { " OUTPUT" } else { "" }))
         .collect();
     SignatureInfo {
         label: format!("{}.{}({})", o.schema, o.name, params.join(", ")),
@@ -1141,11 +1073,7 @@ mod tests {
                     schema: "dbo".into(),
                     name: "Orders".into(),
                     kind: ObjectKind::Table,
-                    columns: vec![
-                        col("Id", "int"),
-                        col("CustomerId", "int"),
-                        col("Total", "money"),
-                    ],
+                    columns: vec![col("Id", "int"), col("CustomerId", "int"), col("Total", "money")],
                     params: vec![],
                 },
                 DbObject {
@@ -1186,16 +1114,9 @@ mod tests {
         assert_eq!(codes("DELETE FROM dbo.Orders"), vec!["SQ001"]);
         assert!(codes("UPDATE dbo.Orders SET Total = 0 WHERE Id = 1").is_empty());
         assert!(codes("DELETE o FROM dbo.Orders o WHERE o.Id = 1").is_empty());
-        assert!(
-            codes("CREATE TABLE x (a int REFERENCES dbo.Orders(Id) ON DELETE CASCADE)").is_empty()
-        );
-        assert_eq!(
-            execution_warnings("delete from dbo.Orders", Dialect::MsSql).len(),
-            1
-        );
-        assert!(
-            execution_warnings("delete from dbo.Orders where Id = 1", Dialect::MsSql).is_empty()
-        );
+        assert!(codes("CREATE TABLE x (a int REFERENCES dbo.Orders(Id) ON DELETE CASCADE)").is_empty());
+        assert_eq!(execution_warnings("delete from dbo.Orders", Dialect::MsSql).len(), 1);
+        assert!(execution_warnings("delete from dbo.Orders where Id = 1", Dialect::MsSql).is_empty());
         assert_eq!(
             execution_warnings("TRUNCATE TABLE t; DROP TABLE t", Dialect::MsSql).len(),
             2
@@ -1208,32 +1129,35 @@ mod tests {
         assert!(m("SELECT * FROM t WHERE x IN (SELECT y FROM u)").is_empty());
         assert!(m("SELECT REPLACE(a, 'x', 'y'), LEFT(b, 1) FROM t").is_empty());
         assert_eq!(m("UPDATE dbo.t SET a = 1"), vec!["UPDATE dbo.t"]);
-        assert_eq!(m("DELETE FROM [Sales].Orders WHERE 1 = 0"), vec!["DELETE FROM [Sales].Orders"]);
+        assert_eq!(
+            m("DELETE FROM [Sales].Orders WHERE 1 = 0"),
+            vec!["DELETE FROM [Sales].Orders"]
+        );
         assert_eq!(m("DROP TABLE IF EXISTS dbo.Old"), vec!["DROP TABLE IF EXISTS dbo.Old"]);
         assert_eq!(m("DELETE FROM t; INSERT INTO t VALUES (1)").len(), 2);
         assert_eq!(m("SELECT a INTO #x FROM t"), vec!["SELECT INTO"]);
         assert_eq!(m("CREATE TABLE t (a int REFERENCES u(a) ON DELETE CASCADE)").len(), 1);
         assert!(modifying_statements("SELECT 1; -- delete from t", Dialect::MsSql).is_empty());
         let ms = Dialect::MsSql;
-        assert!(row_changes_only("UPDATE t SET a = 1 WHERE b = 2; DELETE FROM u WHERE 1 = 0", ms));
+        assert!(row_changes_only(
+            "UPDATE t SET a = 1 WHERE b = 2; DELETE FROM u WHERE 1 = 0",
+            ms
+        ));
         assert!(!row_changes_only("BEGIN TRAN; UPDATE t SET a = 1", ms));
         assert!(!row_changes_only("UPDATE t SET a = 1; DROP TABLE u", ms));
         assert!(!row_changes_only("SELECT 1", ms));
         assert!(row_changes_only("IF 1 = 1 BEGIN UPDATE t SET a = 1 END", ms));
-        assert!(!row_changes_only("BEGIN; UPDATE t SET a = 1; COMMIT;", Dialect::Postgres));
+        assert!(!row_changes_only(
+            "BEGIN; UPDATE t SET a = 1; COMMIT;",
+            Dialect::Postgres
+        ));
     }
 
     #[test]
     fn select_star_and_null_comparison() {
         assert_eq!(codes("SELECT * FROM dbo.Orders"), vec!["SQ002"]);
-        assert!(
-            codes("SELECT COUNT(*) FROM dbo.Orders WHERE EXISTS (SELECT * FROM dbo.Orders)")
-                .is_empty()
-        );
-        assert_eq!(
-            codes("SELECT Id FROM dbo.Orders WHERE Total = NULL"),
-            vec!["SQ003"]
-        );
+        assert!(codes("SELECT COUNT(*) FROM dbo.Orders WHERE EXISTS (SELECT * FROM dbo.Orders)").is_empty());
+        assert_eq!(codes("SELECT Id FROM dbo.Orders WHERE Total = NULL"), vec!["SQ003"]);
         assert!(codes("UPDATE dbo.Orders SET Total = NULL WHERE Id = 1").is_empty());
     }
 
@@ -1243,10 +1167,7 @@ mod tests {
         assert_eq!(codes("SELECT o.Totl FROM dbo.Orders o"), vec!["SQ007"]);
         assert!(codes("SELECT o.Total FROM dbo.Orders o JOIN #t t ON t.x = o.Id").is_empty());
         assert!(codes("WITH c AS (SELECT Id FROM dbo.Orders) SELECT c.Id FROM c").is_empty());
-        assert!(
-            codes("CREATE TABLE dbo.NewOne (a int); INSERT INTO dbo.NewOne (a) VALUES (1)")
-                .is_empty()
-        );
+        assert!(codes("CREATE TABLE dbo.NewOne (a int); INSERT INTO dbo.NewOne (a) VALUES (1)").is_empty());
         assert!(
             codes("SELECT name FROM sys.objects; SELECT * INTO dbo.Copy FROM dbo.Orders")
                 .iter()
@@ -1254,22 +1175,13 @@ mod tests {
         );
         assert!(codes("UPDATE o SET Total = 1 FROM dbo.Orders o WHERE o.Id = 1").is_empty());
         assert!(codes("SELECT value FROM STRING_SPLIT('a,b', ',')").is_empty());
-        assert!(
-            codes("SELECT * FROM OtherDb.dbo.Unknown")
-                .iter()
-                .all(|c| c == "SQ002")
-        );
+        assert!(codes("SELECT * FROM OtherDb.dbo.Unknown").iter().all(|c| c == "SQ002"));
     }
 
     #[test]
     fn unicode_literals_need_n_prefix() {
-        assert_eq!(
-            codes("SELECT Id FROM dbo.Orders WHERE Total = 'Nguyễn'"),
-            vec!["SQ008"]
-        );
-        assert!(
-            codes("SELECT Id FROM dbo.Orders WHERE Total = N'Nguyễn' OR Total = 'abc'").is_empty()
-        );
+        assert_eq!(codes("SELECT Id FROM dbo.Orders WHERE Total = 'Nguyễn'"), vec!["SQ008"]);
+        assert!(codes("SELECT Id FROM dbo.Orders WHERE Total = N'Nguyễn' OR Total = 'abc'").is_empty());
         let pg = diagnostics("SELECT 'Nguyễn'", Dialect::Postgres, None);
         assert!(pg.is_empty());
     }
@@ -1279,10 +1191,7 @@ mod tests {
         assert_eq!(codes("DECLARE @t TABLE (a text)"), vec!["SQ005", "SQ004"]);
         assert_eq!(codes("DECLARE @a int, @b int; SELECT @a"), vec!["SQ005"]);
         assert!(codes("CREATE PROCEDURE p @x int AS SELECT @x").is_empty());
-        assert_eq!(
-            codes("CREATE PROCEDURE p @x int, @y int AS SELECT @x"),
-            vec!["SQ005"]
-        );
+        assert_eq!(codes("CREATE PROCEDURE p @x int, @y int AS SELECT @x"), vec!["SQ005"]);
     }
 
     #[test]
@@ -1300,7 +1209,8 @@ mod tests {
                 kind: ObjectKind::Procedure,
                 definition: "CREATE PROCEDURE dbo.pBroken AS
 SELECT o.Amount FROM dbo.Orders o
-SELECT 1 FROM dbo.Gone".into(),
+SELECT 1 FROM dbo.Gone"
+                    .into(),
             },
             ObjectDefinition {
                 schema: "dbo".into(),
@@ -1328,22 +1238,9 @@ SELECT 1 FROM dbo.Gone".into(),
             h.contents
         );
         let h = hover(src, 26, Dialect::MsSql, Some(&c)).unwrap();
-        assert!(
-            h.contents.contains("| CustomerId | int |"),
-            "{}",
-            h.contents
-        );
-        assert_eq!(
-            object_at(src, 7, Dialect::MsSql, &c).unwrap().name,
-            "Orders"
-        );
-        let h = hover(
-            "DECLARE @n nvarchar(10); SELECT @n",
-            33,
-            Dialect::MsSql,
-            None,
-        )
-        .unwrap();
+        assert!(h.contents.contains("| CustomerId | int |"), "{}", h.contents);
+        assert_eq!(object_at(src, 7, Dialect::MsSql, &c).unwrap().name, "Orders");
+        let h = hover("DECLARE @n nvarchar(10); SELECT @n", 33, Dialect::MsSql, None).unwrap();
         assert!(h.contents.contains("nvarchar"));
     }
 

@@ -2,8 +2,11 @@
 name = "sqlotus"
 version = "0.2.1"
 description = "SQL editor with completion, formatting, object search and query history"
-authors = ["Sqlotus"]
-edition = "2024"
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

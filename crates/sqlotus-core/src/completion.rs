@@ -149,9 +149,7 @@ pub fn complete_with_others(
 ) -> CompletionResult {
     let offset = floor_char_boundary(src, offset.min(src.len()));
     let tokens = tokenize(src, dialect);
-    let current = tokens
-        .iter()
-        .find(|t| t.start < offset && offset <= t.end());
+    let current = tokens.iter().find(|t| t.start < offset && offset <= t.end());
 
     let empty = CompletionResult {
         replace_start: offset,
@@ -172,12 +170,7 @@ pub fn complete_with_others(
 
     // the word being typed
     let (replace_start, replace_end, prefix) = match current {
-        Some(t)
-            if matches!(
-                t.kind,
-                TokenKind::Word | TokenKind::QuotedIdent | TokenKind::Variable
-            ) =>
-        {
+        Some(t) if matches!(t.kind, TokenKind::Word | TokenKind::QuotedIdent | TokenKind::Variable) => {
             (t.start, t.end(), &src[t.start..offset])
         }
         Some(t) if t.kind == TokenKind::Operator && t.text == "@" => (t.start, t.end(), "@"),
@@ -199,10 +192,7 @@ pub fn complete_with_others(
         .copied()
         .collect();
     // a statement that already ended (`;`) before the cursor does not apply
-    let before = if before
-        .last()
-        .is_some_and(|t| t.kind == TokenKind::Semicolon)
-    {
+    let before = if before.last().is_some_and(|t| t.kind == TokenKind::Semicolon) {
         Vec::new()
     } else {
         before
@@ -238,11 +228,7 @@ pub fn complete_with_others(
                 cx.general(snippets);
             }
             _ => match cx.context() {
-                Context::Relation {
-                    alias,
-                    join,
-                    insert,
-                } => cx.relations(alias, join, insert),
+                Context::Relation { alias, join, insert } => cx.relations(alias, join, insert),
                 Context::GroupBy => {
                     cx.group_by();
                     cx.general(snippets);
@@ -364,8 +350,7 @@ impl<'a> Ctx<'a> {
                 _ => {}
             }
         }
-        if matches!(last.kind, TokenKind::LParen | TokenKind::Comma) && self.in_insert_column_list()
-        {
+        if matches!(last.kind, TokenKind::LParen | TokenKind::Comma) && self.in_insert_column_list() {
             return Context::InsertColumns;
         }
         if last.kind == TokenKind::Comma && self.clause_keyword() == "FROM" {
@@ -487,16 +472,12 @@ impl<'a> Ctx<'a> {
 
     fn keywords(&mut self, statement_start: bool) {
         const STARTS: &[&str] = &[
-            "SELECT", "INSERT", "UPDATE", "DELETE", "WITH", "CREATE", "ALTER", "DROP", "DECLARE",
-            "SET", "EXEC", "BEGIN", "IF", "MERGE", "TRUNCATE",
+            "SELECT", "INSERT", "UPDATE", "DELETE", "WITH", "CREATE", "ALTER", "DROP", "DECLARE", "SET", "EXEC",
+            "BEGIN", "IF", "MERGE", "TRUNCATE",
         ];
         let words = keywords::completion_keywords(self.dialect);
         for w in words {
-            let rank = if statement_start && STARTS.contains(&w) {
-                2
-            } else {
-                7
-            };
+            let rank = if statement_start && STARTS.contains(&w) { 2 } else { 7 };
             let k = self.kw(w);
             self.push(k.clone(), CompletionKind::Keyword, "keyword", k, rank);
         }
@@ -603,13 +584,7 @@ impl<'a> Ctx<'a> {
     fn catalog_for(&self, database: Option<&str>) -> Option<&'a Catalog> {
         match database {
             None => self.catalog,
-            Some(db)
-                if self
-                    .catalog
-                    .is_some_and(|c| c.database.eq_ignore_ascii_case(db)) =>
-            {
-                self.catalog
-            }
+            Some(db) if self.catalog.is_some_and(|c| c.database.eq_ignore_ascii_case(db)) => self.catalog,
             Some(db) => self
                 .others
                 .iter()
@@ -619,26 +594,14 @@ impl<'a> Ctx<'a> {
     }
 
     fn is_other_database(&self, name: &str) -> bool {
-        self.catalog
-            .is_none_or(|c| !c.database.eq_ignore_ascii_case(name))
-            && (self
-                .opts
-                .databases
-                .iter()
-                .any(|d| d.eq_ignore_ascii_case(name))
-                || self
-                    .others
-                    .iter()
-                    .any(|c| c.database.eq_ignore_ascii_case(name)))
+        self.catalog.is_none_or(|c| !c.database.eq_ignore_ascii_case(name))
+            && (self.opts.databases.iter().any(|d| d.eq_ignore_ascii_case(name))
+                || self.others.iter().any(|c| c.database.eq_ignore_ascii_case(name)))
     }
 
     fn table_columns(&self, t: &TableRef) -> Vec<(String, String)> {
         if !t.columns.is_empty() {
-            return t
-                .columns
-                .iter()
-                .map(|c| (c.clone(), String::new()))
-                .collect();
+            return t.columns.iter().map(|c| (c.clone(), String::new())).collect();
         }
         if let Some(local) = self
             .doc
@@ -646,23 +609,10 @@ impl<'a> Ctx<'a> {
             .iter()
             .find(|l| l.name.eq_ignore_ascii_case(&t.name))
         {
-            return local
-                .columns
-                .iter()
-                .map(|c| (c.clone(), String::new()))
-                .collect();
+            return local.columns.iter().map(|c| (c.clone(), String::new())).collect();
         }
-        if let Some(c) = self
-            .scope
-            .ctes
-            .iter()
-            .find(|c| c.name.eq_ignore_ascii_case(&t.name))
-        {
-            return c
-                .columns
-                .iter()
-                .map(|c| (c.clone(), String::new()))
-                .collect();
+        if let Some(c) = self.scope.ctes.iter().find(|c| c.name.eq_ignore_ascii_case(&t.name)) {
+            return c.columns.iter().map(|c| (c.clone(), String::new())).collect();
         }
         self.catalog_for(t.database.as_deref())
             .and_then(|cat| cat.find(t.schema.as_deref(), &t.name))
@@ -776,9 +726,7 @@ impl<'a> Ctx<'a> {
 
     /// Column of the replaced text relative to its line's indentation.
     fn insert_column(&self) -> usize {
-        let line_start = self.src[..self.replace_start]
-            .rfind('\n')
-            .map_or(0, |i| i + 1);
+        let line_start = self.src[..self.replace_start].rfind('\n').map_or(0, |i| i + 1);
         let prefix = &self.src[line_start..self.replace_start];
         let indent = prefix.chars().take_while(|c| c.is_whitespace()).count();
         prefix.chars().count() - indent
@@ -861,23 +809,11 @@ impl<'a> Ctx<'a> {
             }
             for db in &self.opts.databases {
                 if !db.eq_ignore_ascii_case(&cat.database) {
-                    self.push(
-                        db.clone(),
-                        CompletionKind::Schema,
-                        "database",
-                        self.quote(db),
-                        5,
-                    );
+                    self.push(db.clone(), CompletionKind::Schema, "database", self.quote(db), 5);
                 }
             }
             for s in &cat.schemas {
-                self.push(
-                    s.clone(),
-                    CompletionKind::Schema,
-                    "schema",
-                    self.quote(s),
-                    4,
-                );
+                self.push(s.clone(), CompletionKind::Schema, "schema", self.quote(s), 4);
             }
         }
         self.keywords(false);
@@ -891,10 +827,7 @@ impl<'a> Ctx<'a> {
             .scope
             .tables
             .iter()
-            .filter_map(|t| {
-                cat.find(t.schema.as_deref(), &t.name)
-                    .map(|o| (t.clone(), o))
-            })
+            .filter_map(|t| cat.find(t.schema.as_deref(), &t.name).map(|o| (t.clone(), o)))
             .collect();
         for target in cat.objects.iter().filter(|o| o.kind == ObjectKind::Table) {
             for (r, ro) in &in_scope {
@@ -908,8 +841,7 @@ impl<'a> Ctx<'a> {
                         (&fk.to_columns, &fk.from_columns)
                     };
                     let cond = join_condition(&alias, tcols, r.visible_name(), rcols, self.dialect);
-                    let insert =
-                        format!("{} {alias} ON {cond}", self.qualified_name(target, false));
+                    let insert = format!("{} {alias} ON {cond}", self.qualified_name(target, false));
                     let label = format!("{} ON {cond}", target.name);
                     self.items.push(CompletionItem {
                         sort_text: format!("0{}", label.to_lowercase()),
@@ -948,31 +880,15 @@ impl<'a> Ctx<'a> {
                 } else {
                     (&fk.to_columns, &fk.from_columns)
                 };
-                let cond = join_condition(
-                    newest.visible_name(),
-                    ncols,
-                    r.visible_name(),
-                    rcols,
-                    self.dialect,
-                );
-                self.push(
-                    cond.clone(),
-                    CompletionKind::Join,
-                    format!("FK {}", fk.name),
-                    cond,
-                    0,
-                );
+                let cond = join_condition(newest.visible_name(), ncols, r.visible_name(), rcols, self.dialect);
+                self.push(cond.clone(), CompletionKind::Join, format!("FK {}", fk.name), cond, 0);
             }
         }
     }
 
     fn procedures(&mut self) {
         let Some(cat) = self.catalog else { return };
-        for o in cat
-            .objects
-            .iter()
-            .filter(|o| o.kind == ObjectKind::Procedure)
-        {
+        for o in cat.objects.iter().filter(|o| o.kind == ObjectKind::Procedure) {
             let name = self.qualified_name(o, false);
             self.exec_item(o, name);
         }
@@ -1007,19 +923,14 @@ impl<'a> Ctx<'a> {
             .is_some_and(|t| t.kind == TokenKind::Comma)
             && self.clause_keyword() == "FROM");
         let proc_ctx = matches!(kw_before.as_str(), "EXEC" | "EXECUTE" | "CALL");
-        let insert_ctx = kw_before == "INSERT"
-            || (kw_before == "INTO" && j >= 2 && self.before[j - 2].upper() == "INSERT");
+        let insert_ctx =
+            kw_before == "INSERT" || (kw_before == "INTO" && j >= 2 && self.before[j - 2].upper() == "INSERT");
 
         match parts.as_slice() {
             [q] => {
                 if !relation_ctx
                     && !proc_ctx
-                    && let Some(t) = self
-                        .scope
-                        .tables
-                        .iter()
-                        .find(|t| t.matches_qualifier(q))
-                        .cloned()
+                    && let Some(t) = self.scope.tables.iter().find(|t| t.matches_qualifier(q)).cloned()
                 {
                     self.columns(Some(&t));
                     return;
@@ -1094,24 +1005,11 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    fn schema_objects(
-        &mut self,
-        cat: &'a Catalog,
-        schema: &str,
-        relation_ctx: bool,
-        proc_ctx: bool,
-        insert_ctx: bool,
-    ) {
+    fn schema_objects(&mut self, cat: &'a Catalog, schema: &str, relation_ctx: bool, proc_ctx: bool, insert_ctx: bool) {
         let taken = self.existing_aliases();
-        let alias = relation_ctx
-            && self.opts.assign_aliases
-            && self.last_upper(2) != "UPDATE"
-            && self.last_upper(2) != "INTO";
-        for o in cat
-            .objects
-            .iter()
-            .filter(|o| o.schema.eq_ignore_ascii_case(schema))
-        {
+        let alias =
+            relation_ctx && self.opts.assign_aliases && self.last_upper(2) != "UPDATE" && self.last_upper(2) != "INTO";
+        for o in cat.objects.iter().filter(|o| o.schema.eq_ignore_ascii_case(schema)) {
             let wanted = if proc_ctx {
                 o.kind == ObjectKind::Procedure
             } else if relation_ctx {
@@ -1147,8 +1045,7 @@ impl<'a> Ctx<'a> {
     /// `SELECT *|` or `SELECT t.*|`: offer the explicit column list.
     fn expansion(&mut self, star: Token<'a>) {
         let n = self.before.len();
-        let qualified =
-            n >= 3 && self.before[n - 2].kind == TokenKind::Dot && self.before[n - 3].is_name();
+        let qualified = n >= 3 && self.before[n - 2].kind == TokenKind::Dot && self.before[n - 3].is_name();
         let (tables, start): (Vec<TableRef>, usize) = if qualified {
             let q = self.before[n - 3].ident_value();
             match self.scope.tables.iter().find(|t| t.matches_qualifier(&q)) {
@@ -1316,9 +1213,9 @@ fn group_by_items(before: &[Token<'_>], src: &str) -> Vec<String> {
     items
         .into_iter()
         .filter_map(|item| {
-            let is_aggregate = item.windows(2).any(|w| {
-                w[1].kind == TokenKind::LParen && AGGREGATES.contains(&w[0].upper().as_str())
-            });
+            let is_aggregate = item
+                .windows(2)
+                .any(|w| w[1].kind == TokenKind::LParen && AGGREGATES.contains(&w[0].upper().as_str()));
             if item.is_empty() || is_aggregate {
                 return None;
             }
@@ -1332,8 +1229,7 @@ fn group_by_items(before: &[Token<'_>], src: &str) -> Vec<String> {
                 toks = &toks[..p];
             } else if toks.len() >= 2
                 && toks[toks.len() - 1].is_name()
-                && (toks[toks.len() - 2].is_name()
-                    || toks[toks.len() - 2].kind == TokenKind::RParen)
+                && (toks[toks.len() - 2].is_name() || toks[toks.len() - 2].kind == TokenKind::RParen)
             {
                 // `expr alias`
                 toks = &toks[..toks.len() - 1];
@@ -1359,10 +1255,7 @@ pub fn make_alias(name: &str, taken: &HashSet<String>) -> String {
     for c in name.chars() {
         let boundary = match prev {
             None => true,
-            Some(p) => {
-                (c.is_uppercase() && p.is_lowercase())
-                    || (p == '_' || p == ' ') && c.is_alphanumeric()
-            }
+            Some(p) => (c.is_uppercase() && p.is_lowercase()) || (p == '_' || p == ' ') && c.is_alphanumeric(),
         };
         if boundary && c.is_alphanumeric() {
             alias.extend(c.to_lowercase());
@@ -1393,11 +1286,7 @@ fn filter_and_rank(items: Vec<CompletionItem>, prefix: &str, max: usize) -> Vec<
             if p.is_empty() {
                 return Some((0, it));
             }
-            let target = it
-                .filter_text
-                .as_deref()
-                .unwrap_or(&it.label)
-                .to_lowercase();
+            let target = it.filter_text.as_deref().unwrap_or(&it.label).to_lowercase();
             let score = if target.starts_with(&p) {
                 0
             } else if target.contains(&p) {
@@ -1410,10 +1299,7 @@ fn filter_and_rank(items: Vec<CompletionItem>, prefix: &str, max: usize) -> Vec<
             Some((score, it))
         })
         .collect();
-    scored.sort_by(|a, b| {
-        a.0.cmp(&b.0)
-            .then_with(|| a.1.sort_text.cmp(&b.1.sort_text))
-    });
+    scored.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.sort_text.cmp(&b.1.sort_text)));
     scored.truncate(max);
     scored
         .into_iter()
@@ -1562,10 +1448,7 @@ mod tests {
     fn join_suggests_fk_join() {
         let r = run("SELECT * FROM dbo.Orders o JOIN |");
         assert_eq!(r.items[0].kind, CompletionKind::Join);
-        assert_eq!(
-            r.items[0].insert_text,
-            "dbo.Customers c ON c.Id = o.CustomerId"
-        );
+        assert_eq!(r.items[0].insert_text, "dbo.Customers c ON c.Id = o.CustomerId");
     }
 
     #[test]
@@ -1585,11 +1468,7 @@ mod tests {
             .collect();
         id.sort();
         assert_eq!(id, vec!["c.Id", "o.Id"]);
-        assert!(
-            r.items
-                .iter()
-                .any(|i| i.label == "Total" && i.insert_text == "Total")
-        );
+        assert!(r.items.iter().any(|i| i.label == "Total" && i.insert_text == "Total"));
     }
 
     #[test]
@@ -1734,15 +1613,7 @@ VALUES
         let run = |src: &str| {
             let offset = src.find('|').unwrap();
             let src = src.replacen('|', "", 1);
-            complete_with_others(
-                &src,
-                offset,
-                Dialect::MsSql,
-                Some(&main),
-                &[&other],
-                &[],
-                &opts,
-            )
+            complete_with_others(&src, offset, Dialect::MsSql, Some(&main), &[&other], &[], &opts)
         };
         let r = run("SELECT * FROM Archive.|");
         let labels: Vec<_> = r.items.iter().map(|i| i.label.as_str()).collect();
@@ -1752,11 +1623,7 @@ VALUES
         let r = run("SELECT a.| FROM Archive.dbo.Orders a");
         assert!(r.items.iter().any(|i| i.label == "CustomerId"));
         let r = run("SELECT * FROM Arch|");
-        assert!(
-            r.items
-                .iter()
-                .any(|i| i.label == "Archive" && i.detail == "database")
-        );
+        assert!(r.items.iter().any(|i| i.label == "Archive" && i.detail == "database"));
     }
 
     #[test]

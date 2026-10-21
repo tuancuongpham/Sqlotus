@@ -127,15 +127,18 @@ Cấu trúc:
 - `crates/sqlotus-store` — SQLite: kết nối, cài đặt, snippet, history (FTS5 trigram), cache catalog.
 - `src-tauri` — Tauri commands, phiên kết nối theo tab.
 - `src` — giao diện React + Monaco.
-- `scripts/ui-smoke.mjs`, `scripts/e2e-db.mjs`, `scripts/e2e-features.mjs` — test UI qua DevTools Protocol của WebView2.
-- `docs/redgate-comparison.md` — so sánh với Redgate và các ý tưởng tiếp theo.
+- `scripts/` — test end-to-end điều khiển app qua DevTools Protocol của WebView2 (`ui-smoke.mjs`, `e2e-*.mjs`) và
+  database test chạy bằng Docker (`test-db/`).
 
 Test với database thật: đặt biến môi trường `SQLOTUS_TEST_MSSQL` / `SQLOTUS_TEST_PG` / `SQLOTUS_TEST_MYSQL`
 (xem `crates/sqlotus-db/tests/live.rs`).
 
 ## Giới hạn hiện tại
 
-- SQL Server: chưa hiển thị thông báo `PRINT` và số dòng bị ảnh hưởng của lệnh DML (thư viện tiberius chưa cung cấp).
+- SQL Server: chưa hiển thị thông báo `PRINT`; số dòng thay đổi chỉ có với script chỉ thay đổi dữ liệu (driver tiberius
+  chưa cung cấp cho batch khác).
+- So sánh schema coi đổi tên cột/bảng là xoá + thêm; identity / cột computed khác nhau phải sửa tay.
+- Hiện chỉ chạy trên Windows.
 - Chưa hỗ trợ kết nối named pipe (LocalDB); dùng TCP.
 - Tính năng AI Assistant chưa làm.
 

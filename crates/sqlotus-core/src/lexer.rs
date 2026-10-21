@@ -90,17 +90,12 @@ pub fn unquote(text: &str) -> String {
 }
 
 const MULTI_OPS: &[&str] = &[
-    "->>", "#>>", "<=>", "<>", "!=", "<=", ">=", "!<", "!>", "||", "::", "->", "#>", "@>", "<@",
-    "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", ":=", "=>", "<<", ">>", "&&", "!~", "~*", "?|",
-    "?&",
+    "->>", "#>>", "<=>", "<>", "!=", "<=", ">=", "!<", "!>", "||", "::", "->", "#>", "@>", "<@", "+=", "-=", "*=",
+    "/=", "%=", "&=", "|=", "^=", ":=", "=>", "<<", ">>", "&&", "!~", "~*", "?|", "?&",
 ];
 
 pub fn tokenize(src: &str, dialect: Dialect) -> Vec<Token<'_>> {
-    let mut lx = Lexer {
-        src,
-        pos: 0,
-        dialect,
-    };
+    let mut lx = Lexer { src, pos: 0, dialect };
     let mut out = Vec::new();
     while lx.pos < src.len() {
         let start = lx.pos;
@@ -165,12 +160,8 @@ impl Lexer<'_> {
                 self.quoted_body('\'', self.dialect == Dialect::MySql);
                 TokenKind::String
             }
-            'N' | 'n' if next == Some('\'') && self.dialect != Dialect::Postgres => {
-                self.prefixed_string(false)
-            }
-            'E' | 'e' if next == Some('\'') && self.dialect == Dialect::Postgres => {
-                self.prefixed_string(true)
-            }
+            'N' | 'n' if next == Some('\'') && self.dialect != Dialect::Postgres => self.prefixed_string(false),
+            'E' | 'e' if next == Some('\'') && self.dialect == Dialect::Postgres => self.prefixed_string(true),
             'B' | 'b' | 'X' | 'x' if next == Some('\'') => self.prefixed_string(false),
             '"' if self.dialect == Dialect::MySql => {
                 self.bump();
@@ -198,9 +189,7 @@ impl Lexer<'_> {
                 self.eat_while(is_ident_char_or_at);
                 TokenKind::Variable
             }
-            '#' if self.dialect == Dialect::MsSql
-                && next.is_some_and(|n| is_ident_start(n) || n == '#') =>
-            {
+            '#' if self.dialect == Dialect::MsSql && next.is_some_and(|n| is_ident_start(n) || n == '#') => {
                 self.bump();
                 self.eat_while(|c| is_ident_char(c) || c == '#');
                 TokenKind::Word
@@ -359,10 +348,7 @@ mod tests {
     #[test]
     fn roundtrips_source() {
         let src = "SELECT [a]]b], N'x''y', @v, #t, 1.5e3 FROM dbo.T -- c\n/* x /* y */ z */;";
-        let joined: String = tokenize(src, Dialect::MsSql)
-            .iter()
-            .map(|t| t.text)
-            .collect();
+        let joined: String = tokenize(src, Dialect::MsSql).iter().map(|t| t.text).collect();
         assert_eq!(joined, src);
     }
 
@@ -435,10 +421,7 @@ mod tests {
     #[test]
     fn unterminated_input_is_tolerated() {
         for src in ["SELECT 'abc", "SELECT [abc", "/* open", "SELECT \"x"] {
-            let joined: String = tokenize(src, Dialect::MsSql)
-                .iter()
-                .map(|t| t.text)
-                .collect();
+            let joined: String = tokenize(src, Dialect::MsSql).iter().map(|t| t.text).collect();
             assert_eq!(joined, src);
         }
     }

@@ -18,9 +18,33 @@ pub struct SheetColumn {
 }
 
 const NUMERIC: &[&str] = &[
-    "tinyint", "smallint", "int", "bigint", "decimal", "numeric", "money", "smallmoney", "float", "real", "integer",
-    "double", "int2", "int4", "int8", "float4", "float8", "serial", "bigserial", "LONGLONG", "LONG", "SHORT", "TINY",
-    "NEWDECIMAL", "DOUBLE", "FLOAT", "INT24",
+    "tinyint",
+    "smallint",
+    "int",
+    "bigint",
+    "decimal",
+    "numeric",
+    "money",
+    "smallmoney",
+    "float",
+    "real",
+    "integer",
+    "double",
+    "int2",
+    "int4",
+    "int8",
+    "float4",
+    "float8",
+    "serial",
+    "bigserial",
+    "LONGLONG",
+    "LONG",
+    "SHORT",
+    "TINY",
+    "NEWDECIMAL",
+    "DOUBLE",
+    "FLOAT",
+    "INT24",
 ];
 
 fn is_numeric(type_name: &str) -> bool {
@@ -33,19 +57,33 @@ fn is_numeric(type_name: &str) -> bool {
 /// keys and decimal(38, x) amounts are not silently rounded.
 fn exact_number(v: &str) -> Option<f64> {
     let n: f64 = v.trim().parse().ok()?;
-    let digits = v.trim().trim_start_matches(['-', '+']).chars().filter(char::is_ascii_digit).collect::<String>();
+    let digits = v
+        .trim()
+        .trim_start_matches(['-', '+'])
+        .chars()
+        .filter(char::is_ascii_digit)
+        .collect::<String>();
     let significant = digits.trim_start_matches('0').trim_end_matches('0').len();
     (n.is_finite() && significant <= 15 && !v.contains(['e', 'E'])).then_some(n)
 }
 
-fn write_workbook(path: &PathBuf, columns: &[SheetColumn], rows: &[Vec<Option<String>>]) -> Result<(), rust_xlsxwriter::XlsxError> {
+fn write_workbook(
+    path: &PathBuf,
+    columns: &[SheetColumn],
+    rows: &[Vec<Option<String>>],
+) -> Result<(), rust_xlsxwriter::XlsxError> {
     let mut wb = Workbook::new();
     let ws = wb.add_worksheet();
     ws.set_name("Results")?;
     let header = Format::new().set_bold().set_background_color("#DDE6F0");
     let numeric: Vec<bool> = columns.iter().map(|c| is_numeric(&c.type_name)).collect();
     for (j, c) in columns.iter().enumerate() {
-        ws.write_string_with_format(0, j as u16, if c.name.is_empty() { "(No column name)" } else { &c.name }, &header)?;
+        ws.write_string_with_format(
+            0,
+            j as u16,
+            if c.name.is_empty() { "(No column name)" } else { &c.name },
+            &header,
+        )?;
     }
     for (i, row) in rows.iter().enumerate() {
         let r = (i + 1) as u32;
@@ -113,10 +151,19 @@ mod tests {
     fn writes_a_workbook() {
         let path = std::env::temp_dir().join(format!("sqlotus-test-{}.xlsx", std::process::id()));
         let columns = vec![
-            SheetColumn { name: "Id".into(), type_name: "int".into() },
-            SheetColumn { name: "Name".into(), type_name: "nvarchar".into() },
+            SheetColumn {
+                name: "Id".into(),
+                type_name: "int".into(),
+            },
+            SheetColumn {
+                name: "Name".into(),
+                type_name: "nvarchar".into(),
+            },
         ];
-        let rows = vec![vec![Some("1".into()), Some("Nguyễn".into())], vec![Some("2".into()), None]];
+        let rows = vec![
+            vec![Some("1".into()), Some("Nguyễn".into())],
+            vec![Some("2".into()), None],
+        ];
         write_workbook(&path, &columns, &rows).unwrap();
         let bytes = std::fs::read(&path).unwrap();
         assert_eq!(&bytes[..2], b"PK"); // a zip container

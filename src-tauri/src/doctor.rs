@@ -30,34 +30,57 @@ pub enum Level {
 pub enum Fix {
     /// Enable the TCP/IP protocol of a SQL Server instance and restart it.
     #[serde(rename_all = "camelCase")]
-    EnableTcp { instance_id: String, service: String },
+    EnableTcp {
+        instance_id: String,
+        service: String,
+    },
     /// Start a stopped Windows service.
-    StartService { service: String },
+    StartService {
+        service: String,
+    },
     /// Enable and start the SQL Server Browser (named instances).
     EnableBrowser,
     /// Allow SQL Server logins (mixed mode) and restart the instance.
     #[serde(rename_all = "camelCase")]
-    EnableMixedAuth { instance_id: String, service: String },
+    EnableMixedAuth {
+        instance_id: String,
+        service: String,
+    },
     /// Allow inbound TCP to the port (and UDP 1434 for the Browser) in
     /// Windows Firewall, so other computers can connect.
-    OpenFirewall { port: u16, browser: bool },
+    OpenFirewall {
+        port: u16,
+        browser: bool,
+    },
     /// `ALTER LOGIN … ENABLE`, run over a Windows Authentication connection
     /// to the same server.
-    EnableLogin { login: String },
+    EnableLogin {
+        login: String,
+    },
     /// Connection setting changes, applied by the UI.
-    UsePort { port: u16 },
-    UseHost { host: String },
+    UsePort {
+        port: u16,
+    },
+    UseHost {
+        host: String,
+    },
     UseWindowsAuth,
     TrustCertificate,
     #[serde(rename_all = "camelCase")]
-    UseDatabase { database: Option<String> },
+    UseDatabase {
+        database: Option<String>,
+    },
 }
 
 impl Fix {
     pub fn needs_admin(&self) -> bool {
         matches!(
             self,
-            Fix::EnableTcp { .. } | Fix::StartService { .. } | Fix::EnableBrowser | Fix::EnableMixedAuth { .. } | Fix::OpenFirewall { .. }
+            Fix::EnableTcp { .. }
+                | Fix::StartService { .. }
+                | Fix::EnableBrowser
+                | Fix::EnableMixedAuth { .. }
+                | Fix::OpenFirewall { .. }
         )
     }
 }
@@ -76,7 +99,14 @@ pub struct Finding {
 
 impl Finding {
     fn new(level: Level, title: impl Into<String>, detail: impl Into<String>) -> Self {
-        Self { level, title: title.into(), detail: detail.into(), fix: None, fix_label: None, needs_admin: false }
+        Self {
+            level,
+            title: title.into(),
+            detail: detail.into(),
+            fix: None,
+            fix_label: None,
+            needs_admin: false,
+        }
     }
 
     fn with_fix(mut self, label: impl Into<String>, fix: Fix) -> Self {
@@ -116,15 +146,37 @@ pub fn classify(error: &str) -> Cause {
     let has = |needles: &[&str]| needles.iter().any(|n| e.contains(n));
     if has(&["certificate", "ssl", "tls", "handshake", "schannel"]) {
         Cause::Certificate
-    } else if has(&["18456", "login failed", "password authentication failed", "access denied for user", "authentication failed", "28p01", "1045"]) {
+    } else if has(&[
+        "18456",
+        "login failed",
+        "password authentication failed",
+        "access denied for user",
+        "authentication failed",
+        "28p01",
+        "1045",
+    ]) {
         Cause::LoginFailed
     } else if has(&["sspi", "kerberos", "integrated", "untrusted domain", "18452"]) {
         Cause::WindowsAuth
-    } else if has(&["4060", "cannot open database", "does not exist", "unknown database", "3d000", "1049"]) {
+    } else if has(&[
+        "4060",
+        "cannot open database",
+        "does not exist",
+        "unknown database",
+        "3d000",
+        "1049",
+    ]) {
         Cause::Database
     } else if has(&["sql browser", "named instance", "instance", "ssrp", "error locating"]) {
         Cause::InstanceNotFound
-    } else if has(&["no such host", "not known", "failed to lookup", "name resolution", "11001", "dns"]) {
+    } else if has(&[
+        "no such host",
+        "not known",
+        "failed to lookup",
+        "name resolution",
+        "11001",
+        "dns",
+    ]) {
         Cause::UnknownHost
     } else if has(&["refused", "10061", "connection reset", "10054"]) {
         Cause::Refused
@@ -151,8 +203,10 @@ fn split_host(raw: &str) -> (String, Option<String>, Option<u16>) {
 fn is_local(host: &str) -> bool {
     let h = host.to_lowercase();
     let machine = std::env::var("COMPUTERNAME").unwrap_or_default().to_lowercase();
-    matches!(h.as_str(), "" | "." | "(local)" | "localhost" | "127.0.0.1" | "::1" | "(localdb)")
-        || (!machine.is_empty() && (h == machine || h.starts_with(&format!("{machine}."))))
+    matches!(
+        h.as_str(),
+        "" | "." | "(local)" | "localhost" | "127.0.0.1" | "::1" | "(localdb)"
+    ) || (!machine.is_empty() && (h == machine || h.starts_with(&format!("{machine}."))))
 }
 
 // ---------------------------------------------------------------------------
@@ -204,7 +258,14 @@ $br = Get-Service SQLBrowser
 
 fn powershell(script: &str) -> Option<String> {
     let mut cmd = Command::new("powershell");
-    cmd.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script]);
+    cmd.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        script,
+    ]);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -226,7 +287,10 @@ fn services_like(pattern: &str) -> Vec<(String, String)> {
     powershell(&script)
         .unwrap_or_default()
         .lines()
-        .filter_map(|l| l.split_once('|').map(|(n, s)| (n.trim().to_string(), s.trim().to_string())))
+        .filter_map(|l| {
+            l.split_once('|')
+                .map(|(n, s)| (n.trim().to_string(), s.trim().to_string()))
+        })
         .collect()
 }
 
@@ -262,43 +326,91 @@ fn recent_login_failure(service: &str) -> Option<(String, String)> {
 fn parse_login_failure(message: &str) -> Option<(String, String)> {
     let user = message.split('\'').nth(1).unwrap_or("").to_string();
     let reason = message.split_once("Reason:")?.1;
-    let reason = reason.split(" [CLIENT").next().unwrap_or(reason).trim().trim_end_matches('.').to_string();
+    let reason = reason
+        .split(" [CLIENT")
+        .next()
+        .unwrap_or(reason)
+        .trim()
+        .trim_end_matches('.')
+        .to_string();
     Some((user, reason))
 }
 
 /// Findings for a login failure reason logged by SQL Server.
 fn login_failure_findings(user: &str, reason: &str, local_windows: bool) -> Vec<Finding> {
     let r = reason.to_lowercase();
-    let windows = |f: Finding| if local_windows { f.with_fix("Use Windows Authentication", Fix::UseWindowsAuth) } else { f };
-    if r.contains("password did not match") {
-        vec![windows(Finding::new(Level::Error, format!("Wrong password for login '{user}'"), format!("SQL Server says: {reason}. Passwords are case-sensitive.")))]
-    } else if r.contains("could not find a login") {
-        vec![windows(Finding::new(Level::Error, format!("Login '{user}' does not exist on this server"), format!("SQL Server says: {reason}. Check the user name, or create the login.")))]
-    } else if r.contains("disabled") {
-        let mut f = Finding::new(Level::Error, format!("Login '{user}' is disabled"), format!("SQL Server says: {reason}."));
+    let windows = |f: Finding| {
         if local_windows {
-            f = f.with_fix(format!("Enable login {user}"), Fix::EnableLogin { login: user.to_string() });
-            f.detail.push_str(" Sqlotus can enable it through your Windows login if you are a sysadmin.");
+            f.with_fix("Use Windows Authentication", Fix::UseWindowsAuth)
+        } else {
+            f
+        }
+    };
+    if r.contains("password did not match") {
+        vec![windows(Finding::new(
+            Level::Error,
+            format!("Wrong password for login '{user}'"),
+            format!("SQL Server says: {reason}. Passwords are case-sensitive."),
+        ))]
+    } else if r.contains("could not find a login") {
+        vec![windows(Finding::new(
+            Level::Error,
+            format!("Login '{user}' does not exist on this server"),
+            format!("SQL Server says: {reason}. Check the user name, or create the login."),
+        ))]
+    } else if r.contains("disabled") {
+        let mut f = Finding::new(
+            Level::Error,
+            format!("Login '{user}' is disabled"),
+            format!("SQL Server says: {reason}."),
+        );
+        if local_windows {
+            f = f.with_fix(
+                format!("Enable login {user}"),
+                Fix::EnableLogin {
+                    login: user.to_string(),
+                },
+            );
+            f.detail
+                .push_str(" Sqlotus can enable it through your Windows login if you are a sysadmin.");
         }
         vec![f]
     } else if r.contains("expired") || r.contains("must be changed") {
         vec![Finding::new(
             Level::Error,
             format!("The password of '{user}' has expired or must be changed"),
-            format!("SQL Server says: {reason}. Change it with ALTER LOGIN [{user}] WITH PASSWORD = '…' from an administrator connection."),
+            format!(
+                "SQL Server says: {reason}. Change it with ALTER LOGIN [{user}] WITH PASSWORD = '…' from an administrator connection."
+            ),
         )]
     } else if r.contains("database") {
-        vec![Finding::new(Level::Error, "The login's database could not be opened", format!("SQL Server says: {reason}."))
-            .with_fix("Connect to the default database", Fix::UseDatabase { database: None })]
+        vec![
+            Finding::new(
+                Level::Error,
+                "The login's database could not be opened",
+                format!("SQL Server says: {reason}."),
+            )
+            .with_fix("Connect to the default database", Fix::UseDatabase { database: None }),
+        ]
     } else {
-        vec![Finding::new(Level::Error, format!("SQL Server rejected login '{user}'"), format!("SQL Server says: {reason}."))]
+        vec![Finding::new(
+            Level::Error,
+            format!("SQL Server rejected login '{user}'"),
+            format!("SQL Server says: {reason}."),
+        )]
     }
 }
 
 fn port_open(host: &str, port: u16) -> bool {
-    let target = if host.is_empty() || host == "." || host == "(local)" { "127.0.0.1" } else { host };
+    let target = if host.is_empty() || host == "." || host == "(local)" {
+        "127.0.0.1"
+    } else {
+        host
+    };
     match (target, port).to_socket_addrs() {
-        Ok(addrs) => addrs.into_iter().any(|a| std::net::TcpStream::connect_timeout(&a, Duration::from_millis(1500)).is_ok()),
+        Ok(addrs) => addrs
+            .into_iter()
+            .any(|a| std::net::TcpStream::connect_timeout(&a, Duration::from_millis(1500)).is_ok()),
         Err(_) => false,
     }
 }
@@ -340,7 +452,11 @@ fn diagnose_sqlserver(cfg: &ConnectionConfig, cause: Cause, findings: &mut Vec<F
     }
 
     let Some(state) = sqlserver_state() else {
-        findings.push(Finding::new(Level::Info, "Could not inspect local SQL Server", "PowerShell did not return the SQL Server configuration."));
+        findings.push(Finding::new(
+            Level::Info,
+            "Could not inspect local SQL Server",
+            "PowerShell did not return the SQL Server configuration.",
+        ));
         return;
     };
     if state.instances.is_empty() {
@@ -360,7 +476,11 @@ fn diagnose_sqlserver(cfg: &ConnectionConfig, cause: Cause, findings: &mut Vec<F
             format!("Installed instances: {}.", names.join(", ")),
         );
         if let Some(first) = state.instances.first() {
-            let target = if first.name == "MSSQLSERVER" { "localhost".to_string() } else { format!("localhost\\{}", first.name) };
+            let target = if first.name == "MSSQLSERVER" {
+                "localhost".to_string()
+            } else {
+                format!("localhost\\{}", first.name)
+            };
             f = f.with_fix(format!("Connect to {target}"), Fix::UseHost { host: target });
         }
         findings.push(f);
@@ -369,11 +489,24 @@ fn diagnose_sqlserver(cfg: &ConnectionConfig, cause: Cause, findings: &mut Vec<F
 
     if !inst.status.eq_ignore_ascii_case("running") {
         findings.push(
-            Finding::new(Level::Error, format!("SQL Server ({}) is not running", inst.name), format!("Service {} is {}.", inst.service, inst.status.to_lowercase()))
-                .with_fix("Start the service", Fix::StartService { service: inst.service.clone() }),
+            Finding::new(
+                Level::Error,
+                format!("SQL Server ({}) is not running", inst.name),
+                format!("Service {} is {}.", inst.service, inst.status.to_lowercase()),
+            )
+            .with_fix(
+                "Start the service",
+                Fix::StartService {
+                    service: inst.service.clone(),
+                },
+            ),
         );
     } else {
-        findings.push(Finding::new(Level::Ok, format!("SQL Server ({}) is running", inst.name), ""));
+        findings.push(Finding::new(
+            Level::Ok,
+            format!("SQL Server ({}) is running", inst.name),
+            "",
+        ));
     }
 
     if inst.tcp_enabled == 0 {
@@ -383,7 +516,13 @@ fn diagnose_sqlserver(cfg: &ConnectionConfig, cause: Cause, findings: &mut Vec<F
                 "TCP/IP is disabled for this instance",
                 "Sqlotus connects over TCP/IP. Enabling it restarts SQL Server, which briefly drops open connections.",
             )
-            .with_fix("Enable TCP/IP and restart SQL Server", Fix::EnableTcp { instance_id: inst.id.clone(), service: inst.service.clone() }),
+            .with_fix(
+                "Enable TCP/IP and restart SQL Server",
+                Fix::EnableTcp {
+                    instance_id: inst.id.clone(),
+                    service: inst.service.clone(),
+                },
+            ),
         );
     } else {
         findings.push(Finding::new(Level::Ok, "TCP/IP is enabled", ""));
@@ -405,18 +544,34 @@ fn diagnose_sqlserver(cfg: &ConnectionConfig, cause: Cause, findings: &mut Vec<F
                     .with_fix(format!("Use port {p}"), Fix::UsePort { port: p }),
                 );
                 findings.push(
-                    Finding::new(Level::Info, "Or start the SQL Server Browser", format!("Browser service is {} ({}).", state.browser.to_lowercase(), state.browser_start.to_lowercase()))
-                        .with_fix("Enable and start SQL Server Browser", Fix::EnableBrowser),
+                    Finding::new(
+                        Level::Info,
+                        "Or start the SQL Server Browser",
+                        format!(
+                            "Browser service is {} ({}).",
+                            state.browser.to_lowercase(),
+                            state.browser_start.to_lowercase()
+                        ),
+                    )
+                    .with_fix("Enable and start SQL Server Browser", Fix::EnableBrowser),
                 );
             }
             (false, None, Some(p)) if p != 1433 => findings.push(
-                Finding::new(Level::Warning, format!("SQL Server listens on port {p}, not 1433"), "The default port was changed or is dynamic.")
-                    .with_fix(format!("Use port {p}"), Fix::UsePort { port: p }),
+                Finding::new(
+                    Level::Warning,
+                    format!("SQL Server listens on port {p}, not 1433"),
+                    "The default port was changed or is dynamic.",
+                )
+                .with_fix(format!("Use port {p}"), Fix::UsePort { port: p }),
             ),
             // a different port is fine when something answers there (e.g. a container)
             (_, Some(p), Some(l)) if p != l && !port_open(&host, p) => findings.push(
-                Finding::new(Level::Warning, format!("Port {p} does not match the configured port {l}"), "")
-                    .with_fix(format!("Use port {l}"), Fix::UsePort { port: l }),
+                Finding::new(
+                    Level::Warning,
+                    format!("Port {p} does not match the configured port {l}"),
+                    "",
+                )
+                .with_fix(format!("Use port {l}"), Fix::UsePort { port: l }),
             ),
             _ => {}
         }
@@ -496,11 +651,19 @@ fn diagnose_service_based(cfg: &ConnectionConfig, cause: Cause, findings: &mut V
             }
             for (svc, status) in services {
                 if status.eq_ignore_ascii_case("running") {
-                    findings.push(Finding::new(Level::Ok, format!("{svc} is running"), format!("Check that it listens on port {port}.")));
+                    findings.push(Finding::new(
+                        Level::Ok,
+                        format!("{svc} is running"),
+                        format!("Check that it listens on port {port}."),
+                    ));
                 } else {
                     findings.push(
-                        Finding::new(Level::Error, format!("{svc} is not running"), format!("Service status: {}.", status.to_lowercase()))
-                            .with_fix("Start the service", Fix::StartService { service: svc.clone() }),
+                        Finding::new(
+                            Level::Error,
+                            format!("{svc} is not running"),
+                            format!("Service status: {}.", status.to_lowercase()),
+                        )
+                        .with_fix("Start the service", Fix::StartService { service: svc.clone() }),
                     );
                 }
             }
@@ -528,7 +691,11 @@ fn diagnose_service_based(cfg: &ConnectionConfig, cause: Cause, findings: &mut V
 }
 
 pub fn diagnose(cfg: &ConnectionConfig, error: &str) -> Diagnosis {
-    let cause = if error.trim().is_empty() { Cause::Other } else { classify(error) };
+    let cause = if error.trim().is_empty() {
+        Cause::Other
+    } else {
+        classify(error)
+    };
     let mut findings = Vec::new();
 
     let host_only = split_host(&cfg.host).0;
@@ -578,9 +745,16 @@ pub fn diagnose(cfg: &ConnectionConfig, error: &str) -> Diagnosis {
         Cause::Other => "The connection failed.",
     };
     if !error.trim().is_empty() && !findings.iter().any(|f| f.level != Level::Ok) {
-        findings.push(Finding::new(Level::Info, "No obvious cause found", "Read the original error below; it often names the exact problem."));
+        findings.push(Finding::new(
+            Level::Info,
+            "No obvious cause found",
+            "Read the original error below; it often names the exact problem.",
+        ));
     }
-    Diagnosis { summary: summary.into(), findings }
+    Diagnosis {
+        summary: summary.into(),
+        findings,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -600,7 +774,9 @@ fn fix_script(fix: &Fix) -> Option<String> {
             ps_quote(service)
         ),
         Fix::StartService { service } => format!("Start-Service -Name {}", ps_quote(service)),
-        Fix::EnableBrowser => "Set-Service -Name SQLBrowser -StartupType Automatic\nStart-Service -Name SQLBrowser".into(),
+        Fix::EnableBrowser => {
+            "Set-Service -Name SQLBrowser -StartupType Automatic\nStart-Service -Name SQLBrowser".into()
+        }
         Fix::EnableMixedAuth { instance_id, service } => format!(
             "Set-ItemProperty -Path {} -Name LoginMode -Value 2\nRestart-Service -Name {} -Force",
             ps_quote(&base(instance_id)),
@@ -654,7 +830,12 @@ fn run_elevated(body: &str) -> Result<String, String> {
 
 /// Enable a SQL login through a Windows Authentication connection.
 async fn enable_login(config: &ConnectionConfig, login: &str) -> Result<String, String> {
-    let admin = ConnectionConfig { auth: AuthKind::Windows, database: None, user: None, ..config.clone() };
+    let admin = ConnectionConfig {
+        auth: AuthKind::Windows,
+        database: None,
+        user: None,
+        ..config.clone()
+    };
     let mut conn = Connection::open(&admin, None)
         .await
         .map_err(|e| format!("Could not connect with your Windows login: {e}"))?;
@@ -667,7 +848,9 @@ async fn enable_login(config: &ConnectionConfig, login: &str) -> Result<String, 
 
 #[tauri::command]
 pub async fn diagnose_connection(config: ConnectionConfig, error: String) -> CmdResult<Diagnosis> {
-    tauri::async_runtime::spawn_blocking(move || diagnose(&config, &error)).await.map_err(|e| e.to_string())
+    tauri::async_runtime::spawn_blocking(move || diagnose(&config, &error))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Apply a machine-level fix (elevated), then try the connection again.
@@ -678,14 +861,18 @@ pub async fn apply_fix(
     config: ConnectionConfig,
     password: Option<String>,
 ) -> CmdResult<String> {
-    let password = password.filter(|p| !p.is_empty()).or_else(|| state.store.get_password(&config.id).ok().flatten());
+    let password = password
+        .filter(|p| !p.is_empty())
+        .or_else(|| state.store.get_password(&config.id).ok().flatten());
     let message = if let Fix::EnableLogin { login } = &fix {
         enable_login(&config, login).await?
     } else {
         let Some(body) = fix_script(&fix) else {
             return Err("This fix changes the connection settings and is applied in the dialog.".into());
         };
-        tauri::async_runtime::spawn_blocking(move || run_elevated(&body)).await.map_err(|e| e.to_string())??
+        tauri::async_runtime::spawn_blocking(move || run_elevated(&body))
+            .await
+            .map_err(|e| e.to_string())??
     };
     // give a restarted service a moment, then verify
     for attempt in 0..6 {
@@ -697,7 +884,9 @@ pub async fn apply_fix(
             return Ok(format!("{message} The connection works now."));
         }
     }
-    Ok(format!("{message} The connection still fails — run the diagnosis again."))
+    Ok(format!(
+        "{message} The connection still fails — run the diagnosis again."
+    ))
 }
 
 #[cfg(test)]
@@ -706,30 +895,62 @@ mod tests {
 
     #[test]
     fn classifies_driver_errors() {
-        assert_eq!(classify("connection failed: An error occurred during the attempt of performing I/O: No connection could be made because the target machine actively refused it. (os error 10061)"), Cause::Refused);
-        assert_eq!(classify("Msg 18456, Level 14, State 1, Line 1\nLogin failed for user 'sa'."), Cause::LoginFailed);
-        assert_eq!(classify("Cannot open database \"Nope\" requested by the login. (4060)"), Cause::Database);
-        assert_eq!(classify("FATAL: password authentication failed for user \"postgres\""), Cause::LoginFailed);
-        assert_eq!(classify("db error: FATAL: database \"x\" does not exist"), Cause::Database);
-        assert_eq!(classify("Access denied for user 'root'@'172.17.0.1' (using password: YES)"), Cause::LoginFailed);
-        assert_eq!(classify("certificate verify failed: self-signed certificate"), Cause::Certificate);
+        assert_eq!(
+            classify(
+                "connection failed: An error occurred during the attempt of performing I/O: No connection could be made because the target machine actively refused it. (os error 10061)"
+            ),
+            Cause::Refused
+        );
+        assert_eq!(
+            classify("Msg 18456, Level 14, State 1, Line 1\nLogin failed for user 'sa'."),
+            Cause::LoginFailed
+        );
+        assert_eq!(
+            classify("Cannot open database \"Nope\" requested by the login. (4060)"),
+            Cause::Database
+        );
+        assert_eq!(
+            classify("FATAL: password authentication failed for user \"postgres\""),
+            Cause::LoginFailed
+        );
+        assert_eq!(
+            classify("db error: FATAL: database \"x\" does not exist"),
+            Cause::Database
+        );
+        assert_eq!(
+            classify("Access denied for user 'root'@'172.17.0.1' (using password: YES)"),
+            Cause::LoginFailed
+        );
+        assert_eq!(
+            classify("certificate verify failed: self-signed certificate"),
+            Cause::Certificate
+        );
         assert_eq!(classify("timed out after 20s"), Cause::Timeout);
         assert_eq!(classify("No such host is known. (os error 11001)"), Cause::UnknownHost);
     }
 
     #[test]
     fn host_parsing_and_locality() {
-        assert_eq!(split_host(r".\SQLEXPRESS,1500"), (".".into(), Some("SQLEXPRESS".into()), Some(1500)));
+        assert_eq!(
+            split_host(r".\SQLEXPRESS,1500"),
+            (".".into(), Some("SQLEXPRESS".into()), Some(1500))
+        );
         assert!(is_local("localhost") && is_local(".") && is_local("127.0.0.1"));
         assert!(!is_local("db.example.com"));
     }
 
     #[test]
     fn fixes_and_scripts() {
-        let f = Fix::EnableTcp { instance_id: "MSSQL16.MSSQLSERVER".into(), service: "MSSQLSERVER".into() };
+        let f = Fix::EnableTcp {
+            instance_id: "MSSQL16.MSSQLSERVER".into(),
+            service: "MSSQLSERVER".into(),
+        };
         assert!(f.needs_admin());
         let s = fix_script(&f).unwrap();
-        assert!(s.contains(r"MSSQL16.MSSQLSERVER\MSSQLServer\SuperSocketNetLib\Tcp") && s.contains("Restart-Service -Name 'MSSQLSERVER'"));
+        assert!(
+            s.contains(r"MSSQL16.MSSQLSERVER\MSSQLServer\SuperSocketNetLib\Tcp")
+                && s.contains("Restart-Service -Name 'MSSQLSERVER'")
+        );
         assert!(fix_script(&Fix::TrustCertificate).is_none());
         let json = serde_json::to_string(&Fix::UsePort { port: 1500 }).unwrap();
         assert_eq!(json, r#"{"kind":"usePort","port":1500}"#);
@@ -741,20 +962,36 @@ mod tests {
             "Login failed for user 'sa'. Reason: Password did not match that for the login provided. [CLIENT: <local machine>]",
         )
         .unwrap();
-        assert_eq!((user.as_str(), reason.as_str()), ("sa", "Password did not match that for the login provided"));
+        assert_eq!(
+            (user.as_str(), reason.as_str()),
+            ("sa", "Password did not match that for the login provided")
+        );
         let f = login_failure_findings("sa", "The account is disabled", true);
         assert_eq!(f[0].fix, Some(Fix::EnableLogin { login: "sa".into() }));
         assert!(!f[0].needs_admin);
         let f = login_failure_findings("x", "Could not find a login matching the name provided", false);
         assert!(f[0].title.contains("does not exist") && f[0].fix.is_none());
-        let s = fix_script(&Fix::OpenFirewall { port: 1433, browser: true }).unwrap();
+        let s = fix_script(&Fix::OpenFirewall {
+            port: 1433,
+            browser: true,
+        })
+        .unwrap();
         assert!(s.contains("-LocalPort 1433") && s.contains("UDP") && s.contains("Domain,Private"));
     }
 
     #[test]
     fn remote_refused_gives_server_side_advice() {
-        let cfg = ConnectionConfig { dialect: Dialect::MsSql, host: "10.255.255.1".into(), ..Default::default() };
+        let cfg = ConnectionConfig {
+            dialect: Dialect::MsSql,
+            host: "10.255.255.1".into(),
+            ..Default::default()
+        };
         let d = diagnose(&cfg, "actively refused (os error 10061)");
-        assert!(d.findings.iter().any(|f| f.title.starts_with("Nothing answered at 10.255.255.1:1433")), "{d:?}");
+        assert!(
+            d.findings
+                .iter()
+                .any(|f| f.title.starts_with("Nothing answered at 10.255.255.1:1433")),
+            "{d:?}"
+        );
     }
 }

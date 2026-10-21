@@ -54,10 +54,7 @@ pub struct DiagnosticDto {
 }
 
 #[tauri::command]
-pub async fn diagnostics(
-    state: State<'_, AppState>,
-    args: EditorArgs,
-) -> CmdResult<Vec<DiagnosticDto>> {
+pub async fn diagnostics(state: State<'_, AppState>, args: EditorArgs) -> CmdResult<Vec<DiagnosticDto>> {
     let snap = args.catalog(&state);
     let found = no_panic("code analysis", || {
         analysis::diagnostics(&args.text, args.dialect, snap.as_ref().map(|s| &s.catalog))
@@ -76,9 +73,7 @@ pub async fn diagnostics(
 
 #[tauri::command]
 pub async fn execution_warnings(text: String, dialect: Dialect) -> CmdResult<Vec<String>> {
-    no_panic("execution warnings", || {
-        analysis::execution_warnings(&text, dialect)
-    })
+    no_panic("execution warnings", || analysis::execution_warnings(&text, dialect))
 }
 
 #[derive(Serialize)]
@@ -108,10 +103,7 @@ pub async fn hover(state: State<'_, AppState>, args: EditorArgs) -> CmdResult<Op
 }
 
 #[tauri::command]
-pub async fn signature_help(
-    state: State<'_, AppState>,
-    args: EditorArgs,
-) -> CmdResult<Option<SignatureInfo>> {
+pub async fn signature_help(state: State<'_, AppState>, args: EditorArgs) -> CmdResult<Option<SignatureInfo>> {
     let snap = args.catalog(&state);
     no_panic("parameter hints", || {
         analysis::signature_help(
@@ -124,10 +116,7 @@ pub async fn signature_help(
 }
 
 #[tauri::command]
-pub async fn object_at(
-    state: State<'_, AppState>,
-    args: EditorArgs,
-) -> CmdResult<Option<ObjectAt>> {
+pub async fn object_at(state: State<'_, AppState>, args: EditorArgs) -> CmdResult<Option<ObjectAt>> {
     let Some(snap) = args.catalog(&state) else {
         return Ok(None);
     };
@@ -138,11 +127,7 @@ pub async fn object_at(
 
 /// Run a whole-document refactoring and return the new text.
 #[tauri::command]
-pub async fn refactor_text(
-    state: State<'_, AppState>,
-    args: EditorArgs,
-    action: String,
-) -> CmdResult<String> {
+pub async fn refactor_text(state: State<'_, AppState>, args: EditorArgs, action: String) -> CmdResult<String> {
     let snap = args.catalog(&state);
     let cat = snap.as_ref().map(|s| &s.catalog);
     let (text, d) = (&args.text, args.dialect);
@@ -187,10 +172,7 @@ pub async fn script_object(
     let snap = state
         .cached_catalog(&connection_id, &database)
         .ok_or("objects not loaded")?;
-    let obj = snap
-        .catalog
-        .find(Some(&schema), &name)
-        .ok_or("object not found")?;
+    let obj = snap.catalog.find(Some(&schema), &name).ok_or("object not found")?;
     let definition = snap
         .definitions
         .iter()
@@ -199,28 +181,18 @@ pub async fn script_object(
     let full = script::object_name(obj, dialect, true);
     Ok(match kind.as_str() {
         "select" => script::select_script(obj, dialect, 100, 4),
-        "insert" => format!(
-            "INSERT INTO {}",
-            script::insert_tail(obj, &full, dialect, 4, false)
-        ),
+        "insert" => format!("INSERT INTO {}", script::insert_tail(obj, &full, dialect, 4, false)),
         "update" => script::update_script(obj, dialect, 4),
         "delete" => script::delete_script(obj, dialect),
         "exec" => format!(
             "{} {}",
-            if dialect == Dialect::MsSql {
-                "EXEC"
-            } else {
-                "CALL"
-            },
+            if dialect == Dialect::MsSql { "EXEC" } else { "CALL" },
             script::exec_tail(obj, &full, dialect, 5, false)
         ),
         "alter" => match definition {
             Some(d) => script::script_as_alter(&d, dialect),
             None => {
-                return Err(
-                    "only views, procedures, functions and triggers can be scripted as ALTER"
-                        .into(),
-                );
+                return Err("only views, procedures, functions and triggers can be scripted as ALTER".into());
             }
         },
         _ => definition.unwrap_or_else(|| script::create_table_script(obj, dialect)),
@@ -245,11 +217,7 @@ pub async fn rename_target(args: EditorArgs) -> CmdResult<Option<RenameDto>> {
     Ok(t.map(|t| RenameDto {
         kind: t.kind,
         name: t.name,
-        ranges: t
-            .ranges
-            .into_iter()
-            .map(|(s, e)| (args.u16(s), args.u16(e)))
-            .collect(),
+        ranges: t.ranges.into_iter().map(|(s, e)| (args.u16(s), args.u16(e))).collect(),
     }))
 }
 

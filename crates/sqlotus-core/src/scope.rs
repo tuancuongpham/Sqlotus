@@ -96,9 +96,7 @@ fn matching_paren(t: &[Token<'_>], open: usize) -> usize {
 fn is_alias_candidate(t: &Token<'_>, dialect: Dialect) -> bool {
     match t.kind {
         TokenKind::QuotedIdent => true,
-        TokenKind::Word => {
-            !keywords::is_reserved(&t.upper(), dialect) && !is_clause_word(&t.upper())
-        }
+        TokenKind::Word => !keywords::is_reserved(&t.upper(), dialect) && !is_clause_word(&t.upper()),
         _ => false,
     }
 }
@@ -155,10 +153,7 @@ pub fn analyze_statement(tokens: &[Token<'_>], dialect: Dialect) -> Scope {
     for r in &mut scope.tables {
         if r.schema.is_none()
             && r.columns.is_empty()
-            && let Some(c) = scope
-                .ctes
-                .iter()
-                .find(|c| c.name.eq_ignore_ascii_case(&r.name))
+            && let Some(c) = scope.ctes.iter().find(|c| c.name.eq_ignore_ascii_case(&r.name))
         {
             r.columns = c.columns.clone();
             r.local = true;
@@ -207,11 +202,7 @@ fn analyze_sig(t: &[Token<'_>], dialect: Dialect, scope: &mut Scope) {
                 if upper == "FROM" && !from_depths.contains(&depth) {
                     from_depths.push(depth);
                 }
-                let via = if upper == "INTO"
-                    && i > 0
-                    && t[i - 1].upper() != "INSERT"
-                    && t[i - 1].upper() != "MERGE"
-                {
+                let via = if upper == "INTO" && i > 0 && t[i - 1].upper() != "INSERT" && t[i - 1].upper() != "MERGE" {
                     // SELECT ... INTO creates the table
                     "SELECT INTO".to_string()
                 } else {
@@ -219,8 +210,8 @@ fn analyze_sig(t: &[Token<'_>], dialect: Dialect, scope: &mut Scope) {
                 };
                 i = table_refs(t, i + 1, dialect, scope, &via).max(i + 1);
             }
-            "WHERE" | "GROUP" | "ORDER" | "HAVING" | "SELECT" | "UNION" | "EXCEPT"
-            | "INTERSECT" | "SET" | "LIMIT" | "WINDOW" | "OPTION" | "VALUES" => {
+            "WHERE" | "GROUP" | "ORDER" | "HAVING" | "SELECT" | "UNION" | "EXCEPT" | "INTERSECT" | "SET" | "LIMIT"
+            | "WINDOW" | "OPTION" | "VALUES" => {
                 from_depths.retain(|d| *d != depth);
                 i += 1;
             }
@@ -348,11 +339,7 @@ fn parse_table_ref(t: &[Token<'_>], mut i: usize, dialect: Dialect) -> Option<(T
         alias = Some(a.ident_value());
         i += 1;
     }
-    let name = if name.is_empty()
-        && alias.is_some()
-        && schema.is_none()
-        && first.kind == TokenKind::LParen
-    {
+    let name = if name.is_empty() && alias.is_some() && schema.is_none() && first.kind == TokenKind::LParen {
         alias.clone().unwrap_or_default()
     } else {
         name
@@ -420,14 +407,7 @@ pub fn select_list_names(t: &[Token<'_>], dialect: Dialect) -> Vec<String> {
                 let u = x.upper();
                 if matches!(
                     u.as_str(),
-                    "FROM"
-                        | "INTO"
-                        | "WHERE"
-                        | "UNION"
-                        | "GROUP"
-                        | "ORDER"
-                        | "EXCEPT"
-                        | "INTERSECT"
+                    "FROM" | "INTO" | "WHERE" | "UNION" | "GROUP" | "ORDER" | "EXCEPT" | "INTERSECT"
                 ) {
                     break;
                 }
@@ -450,9 +430,7 @@ fn item_name(item: &[Token<'_>], dialect: Dialect) -> Option<String> {
     if item.len() > 2 && item[0].is_name() && item[1].text == "=" {
         return Some(item[0].ident_value());
     }
-    if !last.is_name()
-        || (last.kind == TokenKind::Word && keywords::is_reserved(&last.upper(), dialect))
-    {
+    if !last.is_name() || (last.kind == TokenKind::Word && keywords::is_reserved(&last.upper(), dialect)) {
         return None;
     }
     Some(last.ident_value())
@@ -483,17 +461,16 @@ pub fn document_symbols(src: &str, dialect: Dialect) -> DocSymbols {
             }
         }
         // CREATE TABLE #t (...)  /  DECLARE @t TABLE (...)
-        let table_def =
-            if is_word(Some(tok), "TABLE") && i > 0 && t[i - 1].kind == TokenKind::Variable {
-                Some((t[i - 1].text.to_string(), i + 1))
-            } else if is_word(Some(tok), "TABLE")
-                && t.get(i + 1).is_some_and(|n| n.text.starts_with('#'))
-                && t.get(i + 2).is_some_and(|n| n.kind == TokenKind::LParen)
-            {
-                Some((t[i + 1].text.to_string(), i + 2))
-            } else {
-                None
-            };
+        let table_def = if is_word(Some(tok), "TABLE") && i > 0 && t[i - 1].kind == TokenKind::Variable {
+            Some((t[i - 1].text.to_string(), i + 1))
+        } else if is_word(Some(tok), "TABLE")
+            && t.get(i + 1).is_some_and(|n| n.text.starts_with('#'))
+            && t.get(i + 2).is_some_and(|n| n.kind == TokenKind::LParen)
+        {
+            Some((t[i + 1].text.to_string(), i + 2))
+        } else {
+            None
+        };
         if let Some((name, open)) = table_def
             && t.get(open).is_some_and(|n| n.kind == TokenKind::LParen)
         {
@@ -552,9 +529,7 @@ mod tests {
 
     #[test]
     fn tables_and_aliases() {
-        let s = scope(
-            "SELECT * FROM dbo.Orders o JOIN [Sales].[Customer] AS c ON c.Id = o.CustomerId, Items",
-        );
+        let s = scope("SELECT * FROM dbo.Orders o JOIN [Sales].[Customer] AS c ON c.Id = o.CustomerId, Items");
         let got: Vec<_> = s
             .tables
             .iter()
@@ -589,14 +564,7 @@ mod tests {
         assert_eq!(s.ctes[0].columns, vec!["id", "name"]);
         let c = s.tables.iter().find(|t| t.name == "c").unwrap();
         assert_eq!(c.columns, vec!["id", "name"]);
-        assert!(
-            s.tables
-                .iter()
-                .find(|t| t.name == "d")
-                .unwrap()
-                .columns
-                .is_empty()
-        );
+        assert!(s.tables.iter().find(|t| t.name == "d").unwrap().columns.is_empty());
     }
 
     #[test]

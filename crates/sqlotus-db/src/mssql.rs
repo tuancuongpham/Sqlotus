@@ -3,15 +3,13 @@
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 use futures_util::TryStreamExt;
 use tiberius::{
-    AuthMethod, Client, ColumnData, ColumnType, Command, CommandItem, Config, EncryptionLevel, FromSql,
-    QueryItem, ResultMetadata, Row, SqlBrowser,
+    AuthMethod, Client, ColumnData, ColumnType, Command, CommandItem, Config, EncryptionLevel, FromSql, QueryItem,
+    ResultMetadata, Row, SqlBrowser,
 };
 use tokio::net::TcpStream;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
-use crate::{
-    AuthKind, BatchOutput, ConnectionConfig, DbError, Limits, Result, ResultColumn, ResultSet, clip,
-};
+use crate::{AuthKind, BatchOutput, ConnectionConfig, DbError, Limits, Result, ResultColumn, ResultSet, clip};
 
 pub struct MssqlConn {
     client: Client<Compat<TcpStream>>,
@@ -345,17 +343,10 @@ fn cell(cd: ColumnData<'static>) -> Option<String> {
                 fraction(dt.and_utc().timestamp_subsec_nanos(), v.time().scale())
             )
         }
-        ColumnData::Date(_) => NaiveDate::from_sql(&cd)
-            .ok()??
-            .format("%Y-%m-%d")
-            .to_string(),
+        ColumnData::Date(_) => NaiveDate::from_sql(&cd).ok()??.format("%Y-%m-%d").to_string(),
         ColumnData::Time(Some(v)) => {
             let t = NaiveTime::from_sql(&cd).ok()??;
-            format!(
-                "{}{}",
-                t.format("%H:%M:%S"),
-                fraction(t.nanosecond(), v.scale())
-            )
+            format!("{}{}", t.format("%H:%M:%S"), fraction(t.nanosecond(), v.scale()))
         }
         ColumnData::DateTimeOffset(Some(v)) => {
             let dt = DateTime::<FixedOffset>::from_sql(&cd).ok()??;

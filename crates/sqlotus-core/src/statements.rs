@@ -36,9 +36,8 @@ fn go_lines(tokens: &[Token<'_>]) -> Vec<(usize, u32, usize)> {
         if t.kind != TokenKind::Word || !t.text.eq_ignore_ascii_case("GO") {
             continue;
         }
-        let line_start = i == 0
-            || (tokens[i - 1].kind == TokenKind::Whitespace
-                && (i == 1 || tokens[i - 1].text.contains('\n')));
+        let line_start =
+            i == 0 || (tokens[i - 1].kind == TokenKind::Whitespace && (i == 1 || tokens[i - 1].text.contains('\n')));
         if !line_start {
             continue;
         }
@@ -99,8 +98,8 @@ fn trim_span(src: &str, start: usize, end: usize) -> Option<Span> {
 }
 
 const STATEMENT_STARTS: &[&str] = &[
-    "SELECT", "INSERT", "UPDATE", "DELETE", "WITH", "MERGE", "CREATE", "ALTER", "DROP", "DECLARE",
-    "EXEC", "EXECUTE", "SET", "IF", "TRUNCATE", "USE", "PRINT", "BEGIN", "CALL", "SHOW", "EXPLAIN",
+    "SELECT", "INSERT", "UPDATE", "DELETE", "WITH", "MERGE", "CREATE", "ALTER", "DROP", "DECLARE", "EXEC", "EXECUTE",
+    "SET", "IF", "TRUNCATE", "USE", "PRINT", "BEGIN", "CALL", "SHOW", "EXPLAIN",
 ];
 
 /// Split into statements: on `;`, on `GO` lines, and where a blank line is
@@ -141,13 +140,9 @@ pub fn split_statements(src: &str, dialect: Dialect) -> Vec<Span> {
                 depth = 0;
             }
             TokenKind::Word if depth == 0 && i > 0 => {
-                let blank_before = tokens[i - 1].kind == TokenKind::Whitespace
-                    && tokens[i - 1].text.matches('\n').count() >= 2;
-                if blank_before
-                    && STATEMENT_STARTS
-                        .iter()
-                        .any(|k| t.text.eq_ignore_ascii_case(k))
-                {
+                let blank_before =
+                    tokens[i - 1].kind == TokenKind::Whitespace && tokens[i - 1].text.matches('\n').count() >= 2;
+                if blank_before && STATEMENT_STARTS.iter().any(|k| t.text.eq_ignore_ascii_case(k)) {
                     if let Some(s) = trim_span(src, start, t.start) {
                         spans.push(s);
                     }
@@ -183,10 +178,7 @@ mod tests {
         let src = "select 1\nGO\nselect 2\ngo 3\n  \nselect 3";
         let b = split_batches(src, Dialect::MsSql);
         let texts: Vec<_> = b.iter().map(|x| (x.span.text(src), x.repeat)).collect();
-        assert_eq!(
-            texts,
-            vec![("select 1", 1), ("select 2", 3), ("select 3", 1)]
-        );
+        assert_eq!(texts, vec![("select 1", 1), ("select 2", 3), ("select 3", 1)]);
     }
 
     #[test]

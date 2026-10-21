@@ -2,7 +2,7 @@
 // transaction reminders, read-only connections and grid aggregates.
 // Uses the Docker "Shop" database (connection "E2E SQL Server").
 //
-//   SQLOTUS_E2E_PASSWORD=... node scripts/e2e-sqlotus.mjs [screenshot-dir]
+//   SQLOTUS_E2E_PASSWORD=... node scripts/e2e-safety.mjs [screenshot-dir]
 import { mkdirSync } from "node:fs";
 import { attach, checker } from "./cdp.mjs";
 

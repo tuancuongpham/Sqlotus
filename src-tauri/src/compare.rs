@@ -52,7 +52,9 @@ async fn load(state: &AppState, e: &Endpoint, label: &str) -> CmdResult<SchemaMo
     let mut conn = open_database(state, &e.connection_id, &e.database)
         .await
         .map_err(|x| format!("Could not connect to the {label} ({}): {x}", e.database))?;
-    let model = sqlotus_db::load_schema(&mut conn).await.map_err(|x| format!("Could not read the {label} schema ({}): {x}", e.database));
+    let model = sqlotus_db::load_schema(&mut conn)
+        .await
+        .map_err(|x| format!("Could not read the {label} schema ({}): {x}", e.database));
     conn.close().await;
     model
 }
@@ -66,7 +68,13 @@ pub async fn compare_schemas(
     target: Endpoint,
     options: Option<CompareRequestOptions>,
 ) -> CmdResult<CompareResult> {
-    let cfg = |id: &str| state.store.get_connection(id).map_err(err)?.ok_or_else(|| "The connection no longer exists.".to_string());
+    let cfg = |id: &str| {
+        state
+            .store
+            .get_connection(id)
+            .map_err(err)?
+            .ok_or_else(|| "The connection no longer exists.".to_string())
+    };
     let (src_cfg, tgt_cfg) = (cfg(&source.connection_id)?, cfg(&target.connection_id)?);
     if src_cfg.dialect != tgt_cfg.dialect {
         return Err(format!(
@@ -85,13 +93,28 @@ pub async fn compare_schemas(
         case_insensitive_names: dialect != Dialect::Postgres,
     };
     let diff = no_panic("schema compare", || schemadiff::compare(&src, &tgt, dialect, &options))?;
-    let id = format!("cmp-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or_default());
+    let id = format!(
+        "cmp-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    );
     {
         let mut map = store.0.lock().map_err(err)?;
         if map.len() >= 4 {
             map.clear(); // only recent comparisons are needed
         }
-        map.insert(id.clone(), StoredCompare { source: src, target: tgt, diff: diff.clone(), dialect, options });
+        map.insert(
+            id.clone(),
+            StoredCompare {
+                source: src,
+                target: tgt,
+                diff: diff.clone(),
+                dialect,
+                options,
+            },
+        );
     }
     Ok(CompareResult {
         id,
@@ -106,9 +129,13 @@ pub async fn compare_schemas(
 #[tauri::command]
 pub fn schema_sync_script(store: State<'_, CompareStore>, id: String, selected: Vec<String>) -> CmdResult<SyncScript> {
     let map = store.0.lock().map_err(err)?;
-    let c = map.get(&id).ok_or("This comparison is no longer available; compare again.")?;
+    let c = map
+        .get(&id)
+        .ok_or("This comparison is no longer available; compare again.")?;
     if selected.is_empty() {
         return Err("Select at least one difference.".into());
     }
-    no_panic("schema compare", || schemadiff::sync_script(&c.source, &c.target, &c.diff, &selected, c.dialect, &c.options))
+    no_panic("schema compare", || {
+        schemadiff::sync_script(&c.source, &c.target, &c.diff, &selected, c.dialect, &c.options)
+    })
 }

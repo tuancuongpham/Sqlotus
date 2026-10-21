@@ -13,11 +13,7 @@ use crate::snippet::escape_snippet;
 /// `schema.name` quoted for the dialect.
 pub fn object_name(o: &DbObject, dialect: Dialect, with_schema: bool) -> String {
     if with_schema && !o.schema.is_empty() {
-        format!(
-            "{}.{}",
-            dialect.quote_ident(&o.schema),
-            dialect.quote_ident(&o.name)
-        )
+        format!("{}.{}", dialect.quote_ident(&o.schema), dialect.quote_ident(&o.name))
     } else {
         dialect.quote_ident(&o.name)
     }
@@ -71,13 +67,7 @@ impl Values {
 ///     NULL  -- Tinh - nvarchar(100)
 ///     )
 /// ```
-pub fn insert_tail(
-    o: &DbObject,
-    name: &str,
-    dialect: Dialect,
-    indent: usize,
-    snippet: bool,
-) -> String {
+pub fn insert_tail(o: &DbObject, name: &str, dialect: Dialect, indent: usize, snippet: bool) -> String {
     let mut v = Values::new(snippet);
     let pad = " ".repeat(indent);
     let cols: Vec<&Column> = o.columns.iter().filter(|c| c.is_insertable()).collect();
@@ -112,12 +102,11 @@ pub fn sample_value(data_type: &str, dialect: Dialect) -> &'static str {
     let t = data_type.to_ascii_lowercase();
     let base = t.split('(').next().unwrap_or("").trim();
     match base {
-        "int" | "integer" | "bigint" | "smallint" | "tinyint" | "decimal" | "numeric" | "money"
-        | "smallmoney" | "float" | "real" | "double" | "double precision" | "bit" | "serial"
-        | "bigserial" | "mediumint" => "0",
+        "int" | "integer" | "bigint" | "smallint" | "tinyint" | "decimal" | "numeric" | "money" | "smallmoney"
+        | "float" | "real" | "double" | "double precision" | "bit" | "serial" | "bigserial" | "mediumint" => "0",
         "nvarchar" | "nchar" | "ntext" | "sysname" if dialect == Dialect::MsSql => "N''",
-        "varchar" | "char" | "text" | "nvarchar" | "nchar" | "character varying" | "character"
-        | "longtext" | "mediumtext" | "tinytext" => "''",
+        "varchar" | "char" | "text" | "nvarchar" | "nchar" | "character varying" | "character" | "longtext"
+        | "mediumtext" | "tinytext" => "''",
         "boolean" | "bool" => "false",
         _ => "NULL",
     }
@@ -133,13 +122,7 @@ pub fn sample_value(data_type: &str, dialect: Dialect) -> &'static str {
 ///
 /// `start_col` is the column where the inserted text begins relative to the
 /// line's indentation (Monaco re-indents following lines itself).
-pub fn exec_tail(
-    p: &DbObject,
-    name: &str,
-    dialect: Dialect,
-    start_col: usize,
-    snippet: bool,
-) -> String {
+pub fn exec_tail(p: &DbObject, name: &str, dialect: Dialect, start_col: usize, snippet: bool) -> String {
     let mut v = Values::new(snippet);
     if p.params.is_empty() {
         return v.lit(name);
@@ -173,10 +156,7 @@ pub fn exec_tail(
         let default = if x.has_default { " (has default)" } else { "" };
         s.push_str(&v.lit(&format!("{} = ", x.name)));
         s.push_str(&v.value(&value));
-        s.push_str(&v.lit(&format!(
-            "{out}{sep}{gap}-- {}{default}",
-            type_comment(&x.data_type)
-        )));
+        s.push_str(&v.lit(&format!("{out}{sep}{gap}-- {}{default}", type_comment(&x.data_type))));
     }
     s
 }
@@ -296,11 +276,7 @@ pub fn script_as_alter(definition: &str, dialect: Dialect) -> String {
             TokenKind::Word if t.text.eq_ignore_ascii_case("CREATE") => {
                 // CREATE OR ALTER stays valid; plain CREATE becomes ALTER
                 let rest = &definition[t.end()..];
-                if rest
-                    .trim_start()
-                    .to_ascii_uppercase()
-                    .starts_with("OR ALTER")
-                {
+                if rest.trim_start().to_ascii_uppercase().starts_with("OR ALTER") {
                     return definition.to_string();
                 }
                 return format!("{}ALTER{}", &definition[..t.start], rest);
@@ -409,10 +385,7 @@ VALUES
         };
         let s = exec_tail(&p, "dbo.GetOrders", Dialect::MsSql, 5, false);
         let lines: Vec<&str> = s.lines().collect();
-        assert!(
-            lines[0].starts_with("dbo.GetOrders @CustomerId = 0,"),
-            "{s}"
-        );
+        assert!(lines[0].starts_with("dbo.GetOrders @CustomerId = 0,"), "{s}");
         assert!(lines[0].ends_with("-- int"), "{s}");
         assert!(
             lines[1].starts_with(&format!("{}@Name = N'',", " ".repeat(5 + 14))),
@@ -429,13 +402,8 @@ VALUES
     #[test]
     fn templates() {
         let o = sinh_vien();
-        assert!(
-            select_script(&o, Dialect::MsSql, 100, 4).starts_with("SELECT TOP (100)\n    MaSV,")
-        );
-        assert!(
-            select_script(&o, Dialect::Postgres, 100, 4)
-                .ends_with("FROM dbo.\"SinhVien\"\nLIMIT 100;")
-        );
+        assert!(select_script(&o, Dialect::MsSql, 100, 4).starts_with("SELECT TOP (100)\n    MaSV,"));
+        assert!(select_script(&o, Dialect::Postgres, 100, 4).ends_with("FROM dbo.\"SinhVien\"\nLIMIT 100;"));
         let u = update_script(&o, Dialect::MsSql, 4);
         assert!(
             u.starts_with("UPDATE dbo.SinhVien\nSET HoTen = NULL, -- nvarchar(255)\n    GioiTinh"),
@@ -451,10 +419,7 @@ VALUES
     #[test]
     fn alter_script() {
         assert_eq!(
-            script_as_alter(
-                "-- c\nCREATE   PROCEDURE p AS SELECT 'CREATE'",
-                Dialect::MsSql
-            ),
+            script_as_alter("-- c\nCREATE   PROCEDURE p AS SELECT 'CREATE'", Dialect::MsSql),
             "-- c\nALTER   PROCEDURE p AS SELECT 'CREATE'"
         );
         assert_eq!(

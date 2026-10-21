@@ -29,11 +29,25 @@ pub struct DiagramModel {
 
 /// Tables and foreign keys of a database, for the ER diagram.
 #[tauri::command]
-pub async fn diagram_model(state: State<'_, AppState>, connection_id: String, database: String) -> CmdResult<DiagramModel> {
+pub async fn diagram_model(
+    state: State<'_, AppState>,
+    connection_id: String,
+    database: String,
+) -> CmdResult<DiagramModel> {
     let snap = snapshot(&state, &connection_id, &database).await?;
-    let tables: Vec<DbObject> = snap.catalog.objects.iter().filter(|o| o.kind == ObjectKind::Table).cloned().collect();
+    let tables: Vec<DbObject> = snap
+        .catalog
+        .objects
+        .iter()
+        .filter(|o| o.kind == ObjectKind::Table)
+        .cloned()
+        .collect();
     // only relations between tables that are in the model
-    let known = |schema: &str, name: &str| tables.iter().any(|t| t.schema.eq_ignore_ascii_case(schema) && t.name.eq_ignore_ascii_case(name));
+    let known = |schema: &str, name: &str| {
+        tables
+            .iter()
+            .any(|t| t.schema.eq_ignore_ascii_case(schema) && t.name.eq_ignore_ascii_case(name))
+    };
     let foreign_keys = snap
         .catalog
         .foreign_keys
@@ -48,7 +62,9 @@ fn find_table<'a>(snap: &'a CatalogSnapshot, schema: &str, name: &str) -> CmdRes
     snap.catalog
         .objects
         .iter()
-        .find(|o| o.kind == ObjectKind::Table && o.schema.eq_ignore_ascii_case(schema) && o.name.eq_ignore_ascii_case(name))
+        .find(|o| {
+            o.kind == ObjectKind::Table && o.schema.eq_ignore_ascii_case(schema) && o.name.eq_ignore_ascii_case(name)
+        })
         .ok_or_else(|| format!("Table {schema}.{name} is not in the loaded objects; reload objects and try again."))
 }
 
@@ -64,7 +80,9 @@ pub async fn test_data_plan(
 ) -> CmdResult<Vec<ColumnPlan>> {
     let snap = snapshot(&state, &connection_id, &database).await?;
     let table = find_table(&snap, &schema, &name)?;
-    no_panic("test data", || testdata::plan_columns(table, &snap.catalog.foreign_keys, dialect))
+    no_panic("test data", || {
+        testdata::plan_columns(table, &snap.catalog.foreign_keys, dialect)
+    })
 }
 
 fn qualified(dialect: Dialect, schema: &str, name: &str) -> String {
@@ -107,7 +125,11 @@ pub async fn test_data_script(
     let mut ctx = DataContext::default();
     let needs_fk = testdata::foreign_keys_of(&table, &fks)
         .into_iter()
-        .filter(|f| f.from_columns.iter().any(|c| generator(c) == Some(Generator::ForeignKey)))
+        .filter(|f| {
+            f.from_columns
+                .iter()
+                .any(|c| generator(c) == Some(Generator::ForeignKey))
+        })
         .cloned()
         .collect::<Vec<_>>();
     let sequences: Vec<String> = plans
@@ -118,14 +140,27 @@ pub async fn test_data_script(
     if !needs_fk.is_empty() || !sequences.is_empty() {
         let mut conn = open_database(&state, &connection_id, &database).await?;
         for f in &needs_fk {
-            let cols = f.to_columns.iter().map(|c| dialect.quote_ident(c)).collect::<Vec<_>>().join(", ");
-            let not_null = f.to_columns.iter().map(|c| format!("{} IS NOT NULL", dialect.quote_ident(c))).collect::<Vec<_>>().join(" AND ");
+            let cols = f
+                .to_columns
+                .iter()
+                .map(|c| dialect.quote_ident(c))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let not_null = f
+                .to_columns
+                .iter()
+                .map(|c| format!("{} IS NOT NULL", dialect.quote_ident(c)))
+                .collect::<Vec<_>>()
+                .join(" AND ");
             let from = qualified(dialect, &f.to_schema, &f.to_table);
             let sql = match dialect {
                 Dialect::MsSql => format!("SELECT DISTINCT TOP (1000) {cols} FROM {from} WHERE {not_null}"),
                 _ => format!("SELECT DISTINCT {cols} FROM {from} WHERE {not_null} LIMIT 1000"),
             };
-            let rows = conn.query_strings(&sql).await.map_err(|e| format!("Could not read {from}: {e}"))?;
+            let rows = conn
+                .query_strings(&sql)
+                .await
+                .map_err(|e| format!("Could not read {from}: {e}"))?;
             ctx.parent_rows.insert(f.name.clone(), rows);
         }
         let target = qualified(dialect, &table.schema, &table.name);
@@ -143,7 +178,9 @@ pub async fn test_data_script(
         }
         conn.close().await;
     }
-    no_panic("test data", || testdata::insert_script(&table, &plans, &fks, &ctx, &options, dialect))?
+    no_panic("test data", || {
+        testdata::insert_script(&table, &plans, &fks, &ctx, &options, dialect)
+    })?
 }
 
 // ---------------------------------------------------------------------------
@@ -164,14 +201,23 @@ pub async fn object_references(
 ) -> CmdResult<Vec<sqlotus_core::deps::Reference>> {
     let snap = snapshot(&state, &connection_id, &database).await?;
     no_panic("dependencies", || {
-        sqlotus_core::deps::find_references(&snap.definitions, &snap.catalog, dialect, &schema, &name, column.as_deref())
+        sqlotus_core::deps::find_references(
+            &snap.definitions,
+            &snap.catalog,
+            dialect,
+            &schema,
+            &name,
+            column.as_deref(),
+        )
     })
 }
 
 /// Statements that change data or schema (for the production confirmation).
 #[tauri::command]
 pub fn modifying_statements(text: String, dialect: Dialect) -> CmdResult<Vec<String>> {
-    no_panic("analysis", || sqlotus_core::analysis::modifying_statements(&text, dialect))
+    no_panic("analysis", || {
+        sqlotus_core::analysis::modifying_statements(&text, dialect)
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -189,13 +235,17 @@ pub async fn editable_source(
     result_columns: Vec<String>,
 ) -> CmdResult<EditSource> {
     let snap = snapshot(&state, &connection_id, &database).await?;
-    no_panic("editing", || sqlotus_core::editing::editable_source(&sql, dialect, &snap.catalog, &result_columns))?
+    no_panic("editing", || {
+        sqlotus_core::editing::editable_source(&sql, dialect, &snap.catalog, &result_columns)
+    })?
 }
 
 /// The statements that saving the edits would run, and any invalid values.
 #[tauri::command]
 pub fn edit_preview(source: EditSource, edits: Vec<RowEdit>, dialect: Dialect) -> CmdResult<EditPlan> {
-    no_panic("editing", || sqlotus_core::editing::edit_statements(&source, &edits, dialect))
+    no_panic("editing", || {
+        sqlotus_core::editing::edit_statements(&source, &edits, dialect)
+    })
 }
 
 #[derive(Serialize)]
@@ -211,7 +261,12 @@ pub struct EditResult {
 /// Save edits on the tab's connection: all statements in one transaction,
 /// each must change exactly the row it was meant for, else nothing is kept.
 #[tauri::command]
-pub async fn apply_edits(state: State<'_, AppState>, tab_id: String, source: EditSource, edits: Vec<RowEdit>) -> CmdResult<EditResult> {
+pub async fn apply_edits(
+    state: State<'_, AppState>,
+    tab_id: String,
+    source: EditSource,
+    edits: Vec<RowEdit>,
+) -> CmdResult<EditResult> {
     let session = state.session(&tab_id).ok_or("tab is not connected")?;
     if session.config.read_only {
         return Err("This connection is read-only, so the changes were not saved.".into());
@@ -232,7 +287,14 @@ pub async fn apply_edits(state: State<'_, AppState>, tab_id: String, source: Edi
     for (i, stmt) in plan.statements.iter().enumerate() {
         let out = conn.execute_counted(stmt, &limits).await;
         let problem = if out.failed {
-            Some(out.messages.iter().filter(|m| m.kind == sqlotus_db::MessageKind::Error).map(|m| m.text.clone()).collect::<Vec<_>>().join("\n"))
+            Some(
+                out.messages
+                    .iter()
+                    .filter(|m| m.kind == sqlotus_db::MessageKind::Error)
+                    .map(|m| m.text.clone())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            )
         } else if out.rows_affected == 0 {
             Some("the row was changed or deleted by someone else since it was loaded (0 rows matched)".to_string())
         } else {
@@ -246,7 +308,11 @@ pub async fn apply_edits(state: State<'_, AppState>, tab_id: String, source: Edi
                 "Change {} of {} failed: {p}\n{stmt}\n{}",
                 i + 1,
                 plan.statements.len(),
-                if was_open { "Your open transaction is still open; roll it back to undo the earlier changes." } else { "Nothing was saved." }
+                if was_open {
+                    "Your open transaction is still open; roll it back to undo the earlier changes."
+                } else {
+                    "Nothing was saved."
+                }
             );
             return Err(msg);
         }
@@ -256,7 +322,10 @@ pub async fn apply_edits(state: State<'_, AppState>, tab_id: String, source: Edi
     if !keep_open {
         let c = conn.execute("COMMIT", &limits).await;
         if c.failed {
-            return Err(format!("COMMIT failed: {}", c.messages.iter().map(|m| m.text.as_str()).collect::<Vec<_>>().join(" ")));
+            return Err(format!(
+                "COMMIT failed: {}",
+                c.messages.iter().map(|m| m.text.as_str()).collect::<Vec<_>>().join(" ")
+            ));
         }
         committed = true;
     }

@@ -30,14 +30,22 @@ fn catalog() -> Catalog {
                 schema: "dbo".into(),
                 name: "Customers".into(),
                 kind: ObjectKind::Table,
-                columns: vec![col("Id", "int", false), col("Code", "varchar(10)", true), col("Tên", "nvarchar(50)", true)],
+                columns: vec![
+                    col("Id", "int", false),
+                    col("Code", "varchar(10)", true),
+                    col("Tên", "nvarchar(50)", true),
+                ],
                 params: vec![],
             },
             DbObject {
                 schema: "dbo".into(),
                 name: "Orders".into(),
                 kind: ObjectKind::Table,
-                columns: vec![col("Id", "int", false), col("CustomerId", "int", false), col("NgàyĐặt", "datetime2", false)],
+                columns: vec![
+                    col("Id", "int", false),
+                    col("CustomerId", "int", false),
+                    col("NgàyĐặt", "datetime2", false),
+                ],
                 params: vec![],
             },
             DbObject {
@@ -45,7 +53,12 @@ fn catalog() -> Catalog {
                 name: "GetOrders".into(),
                 kind: ObjectKind::Procedure,
                 columns: vec![],
-                params: vec![Param { name: "@CustomerId".into(), data_type: "int".into(), is_output: false, has_default: false }],
+                params: vec![Param {
+                    name: "@CustomerId".into(),
+                    data_type: "int".into(),
+                    is_output: false,
+                    has_default: false,
+                }],
             },
         ],
         foreign_keys: vec![ForeignKey {
@@ -95,7 +108,11 @@ fn editor_functions_never_panic_on_partial_text() {
                 let _ = variables::prelude(
                     text,
                     d,
-                    &[variables::VariableValue { name: "@a".into(), data_type: "int".into(), value: Some("1".into()) }],
+                    &[variables::VariableValue {
+                        name: "@a".into(),
+                        data_type: "int".into(),
+                        value: Some("1".into()),
+                    }],
                 );
                 let _ = format_sql(text, d, &fmt);
                 let _ = refactor::expand_wildcards(text, d, Some(&cat));
@@ -138,13 +155,33 @@ fn editor_functions_never_panic_on_partial_text() {
 
 #[test]
 fn plan_parsers_reject_garbage_without_panicking() {
-    for junk in ["", "<", "<ShowPlanXML/>", "<a><StmtSimple><QueryPlan><RelOp/></QueryPlan></StmtSimple></a>", "not xml ẫ"] {
+    for junk in [
+        "",
+        "<",
+        "<ShowPlanXML/>",
+        "<a><StmtSimple><QueryPlan><RelOp/></QueryPlan></StmtSimple></a>",
+        "not xml ẫ",
+    ] {
         let _ = plan::parse_showplan_xml(junk);
     }
-    for junk in ["", "[]", "[{}]", "[{\"Plan\": 1}]", "{", "[{\"Plan\":{\"Plans\":[{\"Plans\":null}]}}]"] {
+    for junk in [
+        "",
+        "[]",
+        "[{}]",
+        "[{\"Plan\": 1}]",
+        "{",
+        "[{\"Plan\":{\"Plans\":[{\"Plans\":null}]}}]",
+    ] {
         let _ = plan::parse_pg_json("x", junk);
     }
-    for junk in ["", "->", "-> ", "    -> x  (cost=", "-> a\n-> b\n        -> c\n  -> d", "ẫ -> ẫ  (rows=ẫ)"] {
+    for junk in [
+        "",
+        "->",
+        "-> ",
+        "    -> x  (cost=",
+        "-> a\n-> b\n        -> c\n  -> d",
+        "ẫ -> ẫ  (rows=ẫ)",
+    ] {
         let _ = plan::parse_mysql_tree("x", junk);
     }
     let _ = plan::parse_mysql_table("x", &[], &[vec![None]]);

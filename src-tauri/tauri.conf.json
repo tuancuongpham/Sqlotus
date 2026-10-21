@@ -21,7 +21,8 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self' ipc: http://ipc.localhost; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; worker-src 'self' blob:; connect-src 'self' ipc: http://ipc.localhost",
+      "devCsp": null
     }
   },
   "bundle": {
@@ -36,6 +37,12 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "publisher": "Tuan Cuong Pham",
+    "copyright": "Copyright (c) 2026 Tuan Cuong Pham",
+    "license": "MIT",
+    "category": "DeveloperTool",
+    "homepage": "https://github.com/tuancuongpham/Sqlotus",
+    "shortDescription": "SQL editor for SQL Server, PostgreSQL and MySQL"
   }
 }

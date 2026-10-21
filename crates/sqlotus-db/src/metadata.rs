@@ -3,9 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 use sqlotus_core::Dialect;
-use sqlotus_core::catalog::{
-    Catalog, Column, DbObject, ForeignKey, ObjectDefinition, ObjectKind, Param,
-};
+use sqlotus_core::catalog::{Catalog, Column, DbObject, ForeignKey, ObjectDefinition, ObjectKind, Param};
 
 use crate::{Connection, Result, kind_from_mssql};
 
@@ -23,10 +21,7 @@ fn s(row: &[Option<String>], i: usize) -> String {
 }
 
 fn b(row: &[Option<String>], i: usize) -> bool {
-    matches!(
-        s(row, i).to_ascii_lowercase().as_str(),
-        "1" | "t" | "true" | "yes"
-    )
+    matches!(s(row, i).to_ascii_lowercase().as_str(), "1" | "t" | "true" | "yes")
 }
 
 fn n(row: &[Option<String>], i: usize) -> i64 {
@@ -50,9 +45,7 @@ fn push_object_row(
     kind: ObjectKind,
     column: Option<Column>,
 ) {
-    let same = objects
-        .last()
-        .is_some_and(|o| o.schema == schema && o.name == name);
+    let same = objects.last().is_some_and(|o| o.schema == schema && o.name == name);
     if !same {
         objects.push(DbObject {
             schema,
@@ -68,10 +61,7 @@ fn push_object_row(
 }
 
 fn attach_params(objects: &mut [DbObject], schema: &str, name: &str, p: Param) {
-    if let Some(o) = objects
-        .iter_mut()
-        .find(|o| o.schema == schema && o.name == name)
-    {
+    if let Some(o) = objects.iter_mut().find(|o| o.schema == schema && o.name == name) {
         o.params.push(p);
     }
 }
@@ -134,9 +124,7 @@ fn mssql_type(name: &str, max_length: i64, precision: i64, scale: i64) -> String
 
 async fn load_mssql(conn: &mut Connection) -> Result<CatalogSnapshot> {
     let mut cat = Catalog::default();
-    let head = conn
-        .query_strings("SELECT DB_NAME(), SCHEMA_NAME()")
-        .await?;
+    let head = conn.query_strings("SELECT DB_NAME(), SCHEMA_NAME()").await?;
     if let Some(r) = head.first() {
         cat.database = s(r, 0);
         cat.default_schema = s(r, 1);
@@ -395,8 +383,7 @@ async fn load_pg(conn: &mut Connection) -> Result<CatalogSnapshot> {
         push_object_row(&mut cat.objects, s(&r, 0), s(&r, 1), kind, column);
     }
 
-    let not_extension =
-        "NOT EXISTS (SELECT 1 FROM pg_depend dep WHERE dep.objid = p.oid AND dep.deptype = 'e')";
+    let not_extension = "NOT EXISTS (SELECT 1 FROM pg_depend dep WHERE dep.objid = p.oid AND dep.deptype = 'e')";
     let routines = match conn
         .query_strings(&format!(
             "SELECT n.nspname, p.proname, p.prokind::text, p.proretset::text, pg_get_function_arguments(p.oid), \
@@ -452,21 +439,12 @@ async fn load_pg(conn: &mut Connection) -> Result<CatalogSnapshot> {
         ))
         .await?;
     for r in views {
-        let what = if s(&r, 2) == "m" {
-            "MATERIALIZED VIEW"
-        } else {
-            "VIEW"
-        };
+        let what = if s(&r, 2) == "m" { "MATERIALIZED VIEW" } else { "VIEW" };
         definitions.push(ObjectDefinition {
             schema: s(&r, 0),
             name: s(&r, 1),
             kind: ObjectKind::View,
-            definition: format!(
-                "CREATE OR REPLACE {what} {}.{} AS\n{}",
-                s(&r, 0),
-                s(&r, 1),
-                s(&r, 3)
-            ),
+            definition: format!("CREATE OR REPLACE {what} {}.{} AS\n{}", s(&r, 0), s(&r, 1), s(&r, 3)),
         });
     }
 
@@ -638,14 +616,7 @@ mod tests {
         let p = pg_params("a integer, OUT b text, c numeric(10,2) DEFAULT 0");
         let got: Vec<_> = p
             .iter()
-            .map(|p| {
-                (
-                    p.name.as_str(),
-                    p.data_type.as_str(),
-                    p.is_output,
-                    p.has_default,
-                )
-            })
+            .map(|p| (p.name.as_str(), p.data_type.as_str(), p.is_output, p.has_default))
             .collect();
         assert_eq!(
             got,
@@ -671,11 +642,7 @@ mod tests {
             ]
         };
         let fks = foreign_keys(
-            vec![
-                row("fk1", "x", "id1"),
-                row("fk1", "y", "id2"),
-                row("fk2", "z", "id"),
-            ],
+            vec![row("fk1", "x", "id1"), row("fk1", "y", "id2"), row("fk2", "z", "id")],
             None,
         );
         assert_eq!(fks.len(), 2);

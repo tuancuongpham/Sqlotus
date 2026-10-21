@@ -105,9 +105,7 @@ pub fn same_tokens(a: &str, b: &str, dialect: Dialect) -> bool {
             x.kind == y.kind
                 && match x.kind {
                     TokenKind::Word => x.text.eq_ignore_ascii_case(y.text),
-                    TokenKind::LineComment | TokenKind::BlockComment => {
-                        x.text.trim_end() == y.text.trim_end()
-                    }
+                    TokenKind::LineComment | TokenKind::BlockComment => x.text.trim_end() == y.text.trim_end(),
                     _ => x.text == y.text,
                 }
         })
@@ -208,13 +206,7 @@ fn build_items<'a>(tokens: &[Token<'a>]) -> Vec<Item<'a>> {
                 let parts = &raw[i..i + seq.len()];
                 out.push(Item {
                     kind: TokenKind::Word,
-                    text: Cow::Owned(
-                        parts
-                            .iter()
-                            .map(|p| p.text.as_ref())
-                            .collect::<Vec<_>>()
-                            .join(" "),
-                    ),
+                    text: Cow::Owned(parts.iter().map(|p| p.text.as_ref()).collect::<Vec<_>>().join(" ")),
                     upper: seq.join(" "),
                     newlines_before: parts[0].newlines_before,
                     merged: true,
@@ -661,9 +653,7 @@ impl<'a, 'o> Formatter<'a, 'o> {
                 }
                 !matches!(clause, Clause::Insert | Clause::Into | Clause::With)
             }
-            TokenKind::QuotedIdent => {
-                !matches!(clause, Clause::Insert | Clause::Into | Clause::With)
-            }
+            TokenKind::QuotedIdent => !matches!(clause, Clause::Insert | Clause::Into | Clause::With),
             _ => false,
         }
     }
@@ -766,9 +756,7 @@ impl<'a, 'o> Formatter<'a, 'o> {
         }
         let prev = self.prev_item();
         let next = self.items.get(i + 1);
-        if prev.is_some_and(|p| p.kind == TokenKind::Dot)
-            || next.is_some_and(|n| n.kind == TokenKind::Dot)
-        {
+        if prev.is_some_and(|p| p.kind == TokenKind::Dot) || next.is_some_and(|n| n.kind == TokenKind::Dot) {
             return false;
         }
         let u = it.upper.as_str();
@@ -872,11 +860,9 @@ impl<'a, 'o> Formatter<'a, 'o> {
         let indent = self.indent();
         let prev_upper = self.prev_upper().to_string();
         let b = self.top_ref();
-        let columns = (self.stmt.create_table
-            && !self.stmt.columns_opened
-            && b.kind == BlockKind::Root
-            && b.inline_depth == 0)
-            || prev_upper == "TABLE";
+        let columns =
+            (self.stmt.create_table && !self.stmt.columns_opened && b.kind == BlockKind::Root && b.inline_depth == 0)
+                || prev_upper == "TABLE";
         if columns {
             self.stmt.columns_opened = true;
             self.out.write("(", true);
@@ -892,10 +878,8 @@ impl<'a, 'o> Formatter<'a, 'o> {
         if matches!(next.as_str(), "SELECT" | "WITH") {
             self.emit(i, "(");
             let close_col = self.out.line_indent;
-            self.blocks.push(Block::new(
-                BlockKind::Subquery { close_col },
-                close_col + indent,
-            ));
+            self.blocks
+                .push(Block::new(BlockKind::Subquery { close_col }, close_col + indent));
             self.parens.push(Paren::Block);
             return;
         }
@@ -961,8 +945,7 @@ impl<'a, 'o> Formatter<'a, 'o> {
                     TokenKind::Operator | TokenKind::LParen | TokenKind::Comma => true,
                     TokenKind::Word => {
                         let u = p.upper.as_str();
-                        (p.merged || keywords::is_reserved(u, self.dialect))
-                            && !keywords::is_function(u)
+                        (p.merged || keywords::is_reserved(u, self.dialect)) && !keywords::is_function(u)
                     }
                     _ => false,
                 },
@@ -999,10 +982,7 @@ impl<'a, 'o> Formatter<'a, 'o> {
                 return;
             }
         }
-        if self.dialect == Dialect::MsSql
-            && up == "GO"
-            && (item.newlines_before > 0 || self.prev.is_none())
-        {
+        if self.dialect == Dialect::MsSql && up == "GO" && (item.newlines_before > 0 || self.prev.is_none()) {
             self.go(&text);
             return;
         }
@@ -1015,9 +995,7 @@ impl<'a, 'o> Formatter<'a, 'o> {
         let prev_up = self.prev_upper().to_string();
         let prev_kind = self.prev_item().map(|p| p.kind);
         let next_up = self.next_upper(i).to_string();
-        let next_is_paren = self
-            .next_sig(i)
-            .is_some_and(|n| n.kind == TokenKind::LParen);
+        let next_is_paren = self.next_sig(i).is_some_and(|n| n.kind == TokenKind::LParen);
 
         match up.as_str() {
             "SELECT" => return self.clause(i, &text, Clause::Select, true),
@@ -1026,8 +1004,7 @@ impl<'a, 'o> Formatter<'a, 'o> {
             "GROUP BY" => return self.clause(i, &text, Clause::GroupBy, false),
             "HAVING" => return self.clause(i, &text, Clause::Having, false),
             "ORDER BY" => return self.clause(i, &text, Clause::OrderBy, false),
-            "UNION" | "UNION ALL" | "UNION DISTINCT" | "EXCEPT" | "EXCEPT ALL" | "INTERSECT"
-            | "INTERSECT ALL" => {
+            "UNION" | "UNION ALL" | "UNION DISTINCT" | "EXCEPT" | "EXCEPT ALL" | "INTERSECT" | "INTERSECT ALL" => {
                 self.clause(i, &text, Clause::SetOp, false);
                 let base = self.top_ref().base;
                 self.out.newline(base, false);
@@ -1044,11 +1021,7 @@ impl<'a, 'o> Formatter<'a, 'o> {
                 return self.clause(i, &text, Clause::Values, false);
             }
             "UPDATE" | "DELETE" | "DELETE FROM" if prev_up != "ON" => {
-                let c = if up == "UPDATE" {
-                    Clause::Update
-                } else {
-                    Clause::Delete
-                };
+                let c = if up == "UPDATE" { Clause::Update } else { Clause::Delete };
                 return self.clause(i, &text, c, true);
             }
             "SET" if !matches!(prev_up.as_str(), "DELETE" | "UPDATE") => {
@@ -1083,10 +1056,8 @@ impl<'a, 'o> Formatter<'a, 'o> {
                 return self.clause(i, &text, Clause::Other, false);
             }
             "FOR"
-                if matches!(
-                    next_up.as_str(),
-                    "XML" | "JSON" | "UPDATE" | "BROWSE" | "SHARE"
-                ) && clause != Clause::None =>
+                if matches!(next_up.as_str(), "XML" | "JSON" | "UPDATE" | "BROWSE" | "SHARE")
+                    && clause != Clause::None =>
             {
                 return self.clause(i, &text, Clause::Other, false);
             }
@@ -1105,22 +1076,15 @@ impl<'a, 'o> Formatter<'a, 'o> {
                 return;
             }
             "BEGIN" | "BEGIN TRY" | "BEGIN CATCH"
-                if !(up == "BEGIN"
-                    && (next_up.is_empty()
-                        || matches!(next_up.as_str(), "WORK" | "TRANSACTION")))
-                    && self
-                        .next_sig(i)
-                        .is_none_or(|n| n.kind != TokenKind::Semicolon) =>
+                if !(up == "BEGIN" && (next_up.is_empty() || matches!(next_up.as_str(), "WORK" | "TRANSACTION")))
+                    && self.next_sig(i).is_none_or(|n| n.kind != TokenKind::Semicolon) =>
             {
                 return self.begin_block(i, &text);
             }
             "END" | "END TRY" | "END CATCH" if self.top_ref().kind == BlockKind::BeginEnd => {
                 return self.end_block(&text);
             }
-            "AS" if self.stmt.routine
-                && !self.stmt.body_started
-                && self.top_ref().kind == BlockKind::Root =>
-            {
+            "AS" if self.stmt.routine && !self.stmt.body_started && self.top_ref().kind == BlockKind::Root => {
                 self.stmt.body_started = true;
                 let base = self.top_ref().base;
                 self.top().clause = Clause::None;
@@ -1136,9 +1100,7 @@ impl<'a, 'o> Formatter<'a, 'o> {
             _ => {}
         }
 
-        if STATEMENT_WORDS.contains(&up.as_str())
-            && self.is_statement_start(i, &up, &prev_up, prev_kind, &next_up)
-        {
+        if STATEMENT_WORDS.contains(&up.as_str()) && self.is_statement_start(i, &up, &prev_up, prev_kind, &next_up) {
             self.statement(i, &text, &up, &next_up);
             return;
         }
@@ -1150,10 +1112,7 @@ impl<'a, 'o> Formatter<'a, 'o> {
             None => true,
             Some(p) => match p.kind {
                 TokenKind::Semicolon | TokenKind::LParen => true,
-                TokenKind::Word => matches!(
-                    p.upper.as_str(),
-                    "AS" | "GO" | "BEGIN" | "ELSE" | "THEN" | "END"
-                ),
+                TokenKind::Word => matches!(p.upper.as_str(), "AS" | "GO" | "BEGIN" | "ELSE" | "THEN" | "END"),
                 _ => false,
             },
         }
@@ -1184,10 +1143,7 @@ impl<'a, 'o> Formatter<'a, 'o> {
                 !OBJECT_KINDS.contains(&prev_up)
                     && prev_up != "ELSE"
                     && !(self.dialect == Dialect::MySql
-                        && self
-                            .items
-                            .get(i + 1)
-                            .is_some_and(|n| n.kind == TokenKind::LParen))
+                        && self.items.get(i + 1).is_some_and(|n| n.kind == TokenKind::LParen))
             }
             "ELSE" | "END" => self.top_ref().case_stack.is_empty(),
             _ => true,
@@ -1212,11 +1168,7 @@ impl<'a, 'o> Formatter<'a, 'o> {
             self.stmt = Stmt::default();
         }
         let b = self.top();
-        b.clause = if up == "DECLARE" {
-            Clause::Declare
-        } else {
-            Clause::None
-        };
+        b.clause = if up == "DECLARE" { Clause::Declare } else { Clause::None };
         b.content_col = None;
         b.pending_break = false;
         b.mods = Mods::Off;
@@ -1227,8 +1179,7 @@ impl<'a, 'o> Formatter<'a, 'o> {
 
     fn clause(&mut self, i: usize, text: &str, clause: Clause, stmt_start: bool) {
         let stacked = self.opts.list_layout == ListLayout::Stacked;
-        let blank =
-            stmt_start && self.items[i].newlines_before >= 2 && self.top_ref().statement_level();
+        let blank = stmt_start && self.items[i].newlines_before >= 2 && self.top_ref().statement_level();
         let b = self.top();
         let base = b.base;
         b.clause = clause;
@@ -1245,11 +1196,7 @@ impl<'a, 'o> Formatter<'a, 'o> {
     }
 
     fn join(&mut self, _i: usize, text: &str) {
-        let extra = if self.opts.indent_joins {
-            self.indent()
-        } else {
-            0
-        };
+        let extra = if self.opts.indent_joins { self.indent() } else { 0 };
         let b = self.top();
         let col = b.base + extra;
         b.clause = Clause::Join;
@@ -1290,10 +1237,7 @@ impl<'a, 'o> Formatter<'a, 'o> {
         }
         let breaks = enabled
             && b.case_stack.is_empty()
-            && matches!(
-                b.clause,
-                Clause::Where | Clause::Having | Clause::On | Clause::Join
-            );
+            && matches!(b.clause, Clause::Where | Clause::Having | Clause::On | Clause::Join);
         if breaks {
             let col = b.content_col.unwrap_or(b.base + indent);
             self.out.newline(col, false);
@@ -1312,8 +1256,7 @@ impl<'a, 'o> Formatter<'a, 'o> {
         let base = b.base;
         self.out.newline(base, blank);
         self.out.write(text, false);
-        self.blocks
-            .push(Block::new(BlockKind::BeginEnd, base + indent));
+        self.blocks.push(Block::new(BlockKind::BeginEnd, base + indent));
         self.out.newline(base + indent, false);
     }
 
@@ -1370,9 +1313,7 @@ mod tests {
     #[test]
     fn simple_select_aligned() {
         assert_eq!(
-            fmt(
-                "select a, b, count(*) from dbo.t where x = 1 and y in (1,2) group by a, b order by a desc"
-            ),
+            fmt("select a, b, count(*) from dbo.t where x = 1 and y in (1,2) group by a, b order by a desc"),
             "SELECT a,\n       b,\n       COUNT(*)\nFROM dbo.t\nWHERE x = 1\n      AND y IN (1, 2)\nGROUP BY a,\n         b\nORDER BY a DESC"
         );
     }
@@ -1470,9 +1411,7 @@ mod tests {
     #[test]
     fn procedure_with_params_and_body() {
         assert_eq!(
-            fmt(
-                "create procedure dbo.p @a int, @b varchar(max) as begin set nocount on; select @a end"
-            ),
+            fmt("create procedure dbo.p @a int, @b varchar(max) as begin set nocount on; select @a end"),
             "CREATE PROCEDURE dbo.p\n    @a INT,\n    @b VARCHAR(MAX)\nAS\nBEGIN\n    SET NOCOUNT ON;\n    SELECT @a\nEND"
         );
     }

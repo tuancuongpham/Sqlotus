@@ -79,7 +79,12 @@ fn monitor_key(connection_id: &str, database: &str) -> String {
 
 /// Sessions of the server, with blocking counts.
 #[tauri::command]
-pub async fn server_activity(state: State<'_, AppState>, connection_id: String, database: String, dialect: Dialect) -> CmdResult<Activity> {
+pub async fn server_activity(
+    state: State<'_, AppState>,
+    connection_id: String,
+    database: String,
+    dialect: Dialect,
+) -> CmdResult<Activity> {
     let key = monitor_key(&connection_id, &database);
     let mut monitors = state.monitors.lock().await;
     let sql = match dialect {
@@ -107,7 +112,9 @@ pub async fn server_activity(state: State<'_, AppState>, connection_id: String, 
                     "LEFT JOIN (SELECT NULL AS waiting_pid, NULL AS blocking_pid) w ON 1 = 0",
                 );
                 if let Ok(r) = conn.query_strings(&plain).await {
-                    note = Some("Lock waits are not available (the sys schema is missing), so blocking is not shown.".into());
+                    note = Some(
+                        "Lock waits are not available (the sys schema is missing), so blocking is not shown.".into(),
+                    );
                     rows = Some(r);
                     break;
                 }
@@ -116,7 +123,9 @@ pub async fn server_activity(state: State<'_, AppState>, connection_id: String, 
                 // the monitor connection may have dropped: reconnect once
                 monitors.remove(&key);
                 if e.to_string().contains("permission") || e.to_string().contains("VIEW SERVER STATE") {
-                    return Err(format!("{e}\nSeeing other sessions needs the VIEW SERVER STATE permission."));
+                    return Err(format!(
+                        "{e}\nSeeing other sessions needs the VIEW SERVER STATE permission."
+                    ));
                 }
             }
             Err(e) => return Err(err(e)),
@@ -124,7 +133,12 @@ pub async fn server_activity(state: State<'_, AppState>, connection_id: String, 
     }
     let rows = rows.ok_or("The activity query did not return.")?;
     let s = |r: &[Option<String>], i: usize| r.get(i).cloned().flatten().unwrap_or_default();
-    let n = |r: &[Option<String>], i: usize| r.get(i).cloned().flatten().and_then(|v| v.split('.').next().and_then(|x| x.parse::<i64>().ok()));
+    let n = |r: &[Option<String>], i: usize| {
+        r.get(i)
+            .cloned()
+            .flatten()
+            .and_then(|v| v.split('.').next().and_then(|x| x.parse::<i64>().ok()))
+    };
     let mut sessions: Vec<SessionInfo> = rows
         .iter()
         .map(|r| SessionInfo {
@@ -148,7 +162,11 @@ pub async fn server_activity(state: State<'_, AppState>, connection_id: String, 
         })
         .collect();
     // count everyone waiting behind each session (whole chain)
-    let edges: Vec<(i64, i64)> = sessions.iter().filter(|x| x.blocked_by != 0 && x.blocked_by != x.id).map(|x| (x.id, x.blocked_by)).collect();
+    let edges: Vec<(i64, i64)> = sessions
+        .iter()
+        .filter(|x| x.blocked_by != 0 && x.blocked_by != x.id)
+        .map(|x| (x.id, x.blocked_by))
+        .collect();
     for sess in &mut sessions {
         let mut seen = vec![sess.id];
         let mut frontier = vec![sess.id];
@@ -162,7 +180,12 @@ pub async fn server_activity(state: State<'_, AppState>, connection_id: String, 
         }
         sess.blocking = seen.len() - 1;
     }
-    sessions.sort_by(|a, b| b.blocking.cmp(&a.blocking).then(b.running.cmp(&a.running)).then(b.elapsed_ms.cmp(&a.elapsed_ms)));
+    sessions.sort_by(|a, b| {
+        b.blocking
+            .cmp(&a.blocking)
+            .then(b.running.cmp(&a.running))
+            .then(b.elapsed_ms.cmp(&a.elapsed_ms))
+    });
     Ok(Activity { sessions, note })
 }
 
@@ -193,7 +216,9 @@ pub async fn kill_session(
         monitors.insert(key.clone(), c);
     }
     let conn = monitors.get_mut(&key).expect("inserted");
-    conn.query_strings(&sql).await.map_err(|e| format!("{sql} failed: {e}"))?;
+    conn.query_strings(&sql)
+        .await
+        .map_err(|e| format!("{sql} failed: {e}"))?;
     Ok(if whole_session || dialect == Dialect::MsSql {
         format!("Session {id} was ended; its open transaction (if any) is rolled back.")
     } else {
@@ -204,7 +229,12 @@ pub async fn kill_session(
 /// Close the monitor connection (when the monitor window closes).
 #[tauri::command]
 pub async fn close_activity(state: State<'_, AppState>, connection_id: String, database: String) -> CmdResult<()> {
-    if let Some(c) = state.monitors.lock().await.remove(&monitor_key(&connection_id, &database)) {
+    if let Some(c) = state
+        .monitors
+        .lock()
+        .await
+        .remove(&monitor_key(&connection_id, &database))
+    {
         c.close().await;
     }
     Ok(())
