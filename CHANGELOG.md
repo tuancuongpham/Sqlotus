@@ -1,9 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.2.4
 
+- **Read-only connections** on PostgreSQL and MySQL are now read-only on the server too, so procedures and
+  functions cannot write either. (SQL Server has no read-only session; the README says so.)
+- **Production connections** also confirm procedure calls (`EXEC`, `CALL`), which may change data.
+- **Execution warnings** now cover `TRUNCATE t` without the TABLE keyword (PostgreSQL, MySQL) and
+  `ALTER TABLE … DROP COLUMN`.
 - **Tab after `*`** without a `FROM` clause now says to write `FROM` first instead of silently inserting a tab;
   the READMEs explain that the columns come from the tables in `FROM`.
+- README: states exactly which statements ask first, the SQL Server read-only limit, and that MariaDB is untested.
 
 ## 0.2.3
 
