@@ -1,4 +1,4 @@
-// Writes THIRD_PARTY_LICENSES.md: the license texts of every Rust crate and
+// Writes licenses/THIRD_PARTY_LICENSES.md: the license texts of every Rust crate and
 // npm package that ships in the app. Run before a release (the installer
 // bundles the file); needs cargo-about (`cargo install cargo-about --locked --features cli`).
 //
@@ -18,7 +18,7 @@ const out = [
 ];
 
 // Rust: cargo-about groups crates under each distinct license text
-const about = JSON.parse(run("cargo", ["about", "generate", "--format", "json", "--manifest-path", "src-tauri/Cargo.toml"]));
+const about = JSON.parse(run("cargo", ["about", "generate", "--format", "json", "-c", "licenses/about.toml", "--manifest-path", "src-tauri/Cargo.toml"]));
 const own = new Set(["sqlotus", "sqlotus-core", "sqlotus-db", "sqlotus-store"]);
 const groups = about.licenses
   .map((l) => ({
@@ -52,6 +52,6 @@ for (const p of packages) {
   out.push(`### ${p.key} (${p.license})`, "", ...p.texts.map(fence).flatMap((t) => [t, ""]));
 }
 
-const target = "THIRD_PARTY_LICENSES.md";
+const target = "licenses/THIRD_PARTY_LICENSES.md";
 writeFileSync(target, out.join("\n"));
 console.log(`${target}: ${crateCount} crates, ${packages.length} npm packages`);

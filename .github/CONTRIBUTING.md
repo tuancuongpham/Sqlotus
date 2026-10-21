@@ -21,6 +21,8 @@ npm install
 npx tauri dev
 ```
 
+`npx tauri build` produces the installers in `target/release/bundle`.
+
 ## Project layout
 
 - `crates/sqlotus-core` — the SQL engine: tokenizer, formatter, completion, analysis, refactorings, plans,
@@ -29,7 +31,8 @@ npx tauri dev
 - `crates/sqlotus-store` — local SQLite storage (connections, settings, snippets, history).
 - `src-tauri` — the desktop app's commands.
 - `src` — the React + Monaco user interface.
-- `scripts` — end-to-end UI tests and Docker test databases.
+- `scripts` — end-to-end UI tests, Docker test databases and the third-party license generator.
+- `docs` — README translations and screenshots; `licenses` — third-party licenses shipped with the app.
 
 ## Before you open a pull request
 
@@ -56,14 +59,14 @@ environment variables are not set, so `cargo test` works without Docker.
 
 ### Dependencies
 
-When you add or update a dependency, regenerate `THIRD_PARTY_LICENSES.md` (it ships with the installer):
+When you add or update a dependency, regenerate `licenses/THIRD_PARTY_LICENSES.md` (it ships with the installer):
 
 ```bash
 cargo install cargo-about --locked --features cli
 node scripts/third-party-licenses.mjs
 ```
 
-New dependencies need a permissive license accepted in `about.toml`.
+New dependencies need a permissive license accepted in `licenses/about.toml`.
 
 ## Code of conduct
 
@@ -71,4 +74,4 @@ This project follows the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## License
 
-By contributing you agree that your contributions are licensed under the [MIT License](LICENSE).
+By contributing you agree that your contributions are licensed under the [MIT License](../LICENSE).

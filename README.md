@@ -1,24 +1,77 @@
+<div align="center">
+
+**English** · [Tiếng Việt](docs/readme/README.vi.md)
+
 # Sqlotus
 
-[![CI](https://github.com/tuancuongpham/Sqlotus/actions/workflows/ci.yml/badge.svg)](https://github.com/tuancuongpham/Sqlotus/actions/workflows/ci.yml)
+### A fast desktop SQL editor for SQL Server, PostgreSQL and MySQL.
 
-**English** · [Tiếng Việt](README.vi.md)
+**Write queries faster, catch mistakes before they run, and understand your database — all on your own machine.**
 
-A fast desktop SQL editor inspired by Redgate SQL Prompt, SQL Search and SQL History — for
-**SQL Server, PostgreSQL and MySQL/MariaDB**.
+[![Latest release](https://img.shields.io/github/v/release/tuancuongpham/Sqlotus?style=flat-square&color=2f81f7)](https://github.com/tuancuongpham/Sqlotus/releases/latest)
+[![CI](https://img.shields.io/github/actions/workflow/status/tuancuongpham/Sqlotus/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/tuancuongpham/Sqlotus/actions/workflows/ci.yml)
+[![Windows 10/11](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078d4?style=flat-square)](#quick-start)
+[![Databases](https://img.shields.io/badge/SQL%20Server%20%7C%20PostgreSQL%20%7C%20MySQL-supported-cc2927?style=flat-square)](#what-you-can-do)
+[![Built with Rust and Tauri](https://img.shields.io/badge/built%20with-Rust%20%2B%20Tauri-dea584?style=flat-square&logo=rust&logoColor=white)](#how-sqlotus-works)
+[![MIT license](https://img.shields.io/badge/license-MIT-f4c430?style=flat-square)](LICENSE)
 
-Built with Rust (Tauri 2), React/TypeScript and the Monaco editor. The SQL intelligence (tokenizer,
-formatter, completion, code analysis, refactorings) is a pure-Rust library with no IO.
+<img src="docs/images/completion.png" alt="Sqlotus suggesting a JOIN with its ON clause from the foreign keys, above a result grid" width="900">
 
-## Features
+</div>
 
-### Writing SQL fast
+## Quick start
+
+### Install
+
+1. Download **`Sqlotus_<version>_x64-setup.exe`** from the [latest release](https://github.com/tuancuongpham/Sqlotus/releases/latest)
+   (the `.msi` is for managed, machine-wide installs).
+2. Run it — it installs per user and needs no administrator rights. Windows 11 already has the WebView2 runtime;
+   on Windows 10 the setup installs it if it is missing.
+3. The installers are not code-signed yet, so SmartScreen may warn: choose **More info → Run anyway**.
+   `SHA256SUMS.txt` in the release lets you check the download.
+
+### Connect
+
+Click the connection button at the top left, pick **SQL Server**, **PostgreSQL** or **MySQL**, and enter the host,
+port and login (SQL Server also offers Windows authentication). If the connection fails, the
+**Connection Doctor** explains why and offers a fix.
+
+### Try it
+
+| Type or press | What happens |
+|---|---|
+| `SELECT * FROM dbo.Orders o JOIN ` | related tables are suggested together with the `ON` clause |
+| `SELECT *` then **Tab** | the `*` becomes the column list |
+| **Ctrl+K, Ctrl+Y** | the script is formatted |
+| **Ctrl+L** | estimated execution plan, without running the query |
+| `UPDATE … ` without `WHERE`, then **F5** | Sqlotus asks before running it |
+
+### Update
+
+Run the newer installer. Connections, saved passwords, history and settings are kept.
+
+## What you can do
+
+| Area | Highlights |
+|---|---|
+| **Write SQL fast** | context-aware completion, foreign-key joins, `INSERT`/`EXEC` generation, wildcard expansion, snippets |
+| **Format and refactor** | configurable formatter, qualify names, rename variables and aliases, go to definition |
+| **Stay safe** | analysis while you type, confirmations for risky statements, read-only and production connections, open-transaction reminders |
+| **Understand the database** | SQL Search, Object Explorer, ER diagram, Used by, index health, activity monitor, schema compare |
+| **Work with results** | virtualized grid, edit rows, copy as INSERT/CSV/JSON/Markdown, Excel, charts, result compare, estimated plans |
+| **Never lose a query** | every tab versioned automatically, full-text history, closed tabs reopened, tabs restored on restart |
+
+Click a group for the details.
+
+<details>
+<summary><b>Writing SQL fast</b></summary>
+
 - **Context-aware completion**: keywords, schemas, tables, views, columns, procedures and functions;
   understands aliases, CTEs, derived tables, `#temp` tables and `@table` variables; assigns table aliases
   automatically (`OrderDetails` → `od`).
 - **Foreign-key joins**: after `JOIN` it suggests related tables together with the `ON` clause, and after
   `ON` the join condition.
-- **Statement generation like SQL Prompt**:
+- **Statement generation**:
   - pick a table after `INSERT INTO` → full column list plus a commented `VALUES` block
     (identity/computed/rowversion columns skipped, Tab jumps between values);
   - `EXEC proc` → one parameter per line with sample values, type comments and `(has default)`;
@@ -28,10 +81,14 @@ formatter, completion, code analysis, refactorings) is a pure-Rust library with 
   in other databases.
 - **Hover** shows a table's columns, a column's type or a variable's type; **parameter hints** while typing
   function and procedure calls.
-- **Snippets** with placeholders; SQL Prompt snippets are imported automatically on first run.
+- **Snippets** with placeholders; snippets from Redgate SQL Prompt are imported automatically on first run.
 
-### Formatting and refactoring
-- **Format SQL** (Ctrl+K, Ctrl+Y): keyword case, Redgate-style aligned or stacked lists, leading/trailing
+</details>
+
+<details>
+<summary><b>Formatting and refactoring</b></summary>
+
+- **Format SQL** (Ctrl+K, Ctrl+Y): keyword case, aligned or stacked lists, leading/trailing
   commas, JOIN indentation, ON/AND/OR on new lines. The formatter verifies that only whitespace and keyword
   case changed.
 - **Actions** (right-click or F1): expand wildcards, qualify object names, insert semicolons, remove square
@@ -39,7 +96,11 @@ formatter, completion, code analysis, refactorings) is a pure-Rust library with 
 - **Rename** (F2) a variable, table alias or CTE everywhere it is used.
 - **Go to definition** (F12) and **Script as ALTER** (Alt+F12).
 
-### Safety and code analysis
+</details>
+
+<details>
+<summary><b>Safety and code analysis</b></summary>
+
 - Squiggles while typing: UPDATE/DELETE without WHERE, `SELECT *`, `= NULL` comparisons, deprecated types,
   unused variables, unknown objects and columns, Unicode literals without the `N` prefix
   (`'Nguyễn'` would be stored as `Nguy?n`), `NOT IN (SELECT …)` over a nullable column, functions wrapped
@@ -58,7 +119,11 @@ formatter, completion, code analysis, refactorings) is a pure-Rust library with 
   declares it for you; values are remembered.
 - **Find invalid objects**: views, procedures, functions and triggers that reference missing tables or columns.
 
-### Connection Doctor and notifications
+</details>
+
+<details>
+<summary><b>Connection Doctor and notifications</b></summary>
+
 - When a connection fails, the **Connection Doctor** explains why: server refused, timeout, unknown host or
   instance, login failed, certificate, database, Windows authentication. For a SQL Server on this computer it
   checks the service, TCP/IP, listening ports, SQL Server Browser and the authentication mode.
@@ -74,7 +139,11 @@ formatter, completion, code analysis, refactorings) is a pure-Rust library with 
 - Every action and setting shows a notification: connecting, query finished (time and rows), errors with
   **Diagnose** / **Retry**, format and refactor, copy, CSV export, saving connections and options, restored tabs.
 
-### Search, history, explorer
+</details>
+
+<details>
+<summary><b>Search, history, explorer</b></summary>
+
 - **SQL Search** (Ctrl+Alt+D): find objects by name, column name or definition text in one or all databases,
   with a highlighted preview.
 - **SQL History** (Ctrl+Shift+H): every tab is versioned automatically (periodically and on each execute),
@@ -99,7 +168,11 @@ formatter, completion, code analysis, refactorings) is a pure-Rust library with 
   dates); foreign keys use rows that exist in the parent table and non-identity keys continue after the current
   maximum. The INSERT script opens in a new tab to review and run.
 
-### Running queries
+</details>
+
+<details>
+<summary><b>Running queries</b></summary>
+
 - F5 / Ctrl+E runs the selection or the tab, Shift+F5 the statement at the cursor; `GO` / `GO n` batches;
   cancel; multiple result sets.
 - **Run on multiple databases** (Ctrl+Shift+F5): every row gets a `Database` column; results with the same
@@ -122,7 +195,10 @@ formatter, completion, code analysis, refactorings) is a pure-Rust library with 
   badge, manual commit, and a confirmation naming the server before every change.
 - Per-connection tab colours. Passwords are stored in the Windows Credential Manager.
 
-## Keyboard shortcuts
+</details>
+
+<details>
+<summary><b>Keyboard shortcuts</b></summary>
 
 | Keys | Action |
 |---|---|
@@ -145,43 +221,90 @@ formatter, completion, code analysis, refactorings) is a pure-Rust library with 
 | Ctrl+Shift+T | Reopen closed tab |
 | Ctrl+R | Toggle results |
 
-## Development
+</details>
 
-Requirements: Rust (MSVC toolchain), Node 22+, Visual Studio Build Tools (C++). Windows is the primary
-target (WebView2).
+## Screenshots
 
-```bash
-npm install
-npx tauri dev
-```
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/schema-compare.png" alt="Schema compare: objects that differ between two databases with a side-by-side diff"></td>
+    <td width="50%"><img src="docs/images/plan.png" alt="Estimated execution plan with the cost of each step, next to the Object Explorer"></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Schema compare</b> — review the differences, then get a dependency-ordered sync script</td>
+    <td align="center"><b>Estimated plan</b> — the cost of each step and warnings, without running the query</td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/images/diagram.png" alt="ER diagram of a database laid out automatically"></td>
+    <td width="50%"><img src="docs/images/completion.png" alt="Completion suggesting JOINs from foreign keys"></td>
+  </tr>
+  <tr>
+    <td align="center"><b>ER diagram</b> — a whole database or one table and its neighbours</td>
+    <td align="center"><b>Completion</b> — joins with their <code>ON</code> clause from the foreign keys</td>
+  </tr>
+</table>
 
-```bash
-cargo test --workspace
-```
+## How Sqlotus works
 
-```bash
-npx tauri build
-```
+- **The SQL engine** (`crates/sqlotus-core`) is a pure-Rust library with no IO: a fault-tolerant tokenizer that
+  copes with half-typed queries, the formatter, completion, code analysis, refactorings, plans and schema compare.
+- **Drivers** (`crates/sqlotus-db`) talk to each server directly — tiberius for SQL Server, tokio-postgres and
+  mysql_async — and load the metadata that completion and analysis use.
+- **The app** is built with [Tauri 2](https://tauri.app): a small native Rust backend with a React + Monaco
+  interface. The installer is under 10 MB.
+- **Everything stays local**: connections, history and settings live in a SQLite file on your computer and
+  passwords in the Windows Credential Manager.
 
-### Layout
+## FAQ
 
-- `crates/sqlotus-core` — fault-tolerant tokenizer, formatter, completion, scope analysis, code analysis,
-  refactorings, rename, snippets, search. No IO.
-- `crates/sqlotus-db` — connections and query execution (tiberius / tokio-postgres / mysql_async), metadata loading.
-- `crates/sqlotus-store` — SQLite storage: connections, settings, snippets, history (FTS5 trigram), catalog cache.
-- `src-tauri` — Tauri commands, per-tab database sessions.
-- `src` — React + Monaco UI.
-- `scripts/` — end-to-end UI tests that drive the running app over WebView2's DevTools Protocol
-  (`ui-smoke.mjs`, `e2e-*.mjs`), Docker test databases (`test-db/`) and the third-party license
-  generator (`third-party-licenses.mjs`).
+<details>
+<summary><b>Is Sqlotus free?</b></summary>
 
-### Testing against real databases
+Yes. It is open source under the MIT license, with no account, subscription or paid edition.
+</details>
 
-`scripts/test-db/README.md` starts SQL Server, PostgreSQL and MySQL in Docker with a sample schema. Then set
-`SQLOTUS_TEST_MSSQL` / `SQLOTUS_TEST_PG` / `SQLOTUS_TEST_MYSQL` (see `crates/sqlotus-db/tests/live.rs`) and run
-`cargo test -p sqlotus-db` (the live tests are skipped when the variables are not set). The UI scripts need the
-app running with `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222` and
-`SQLOTUS_E2E_PASSWORD` set to the test databases' password.
+<details>
+<summary><b>Does it send my data or queries anywhere?</b></summary>
+
+No. Sqlotus has no telemetry and talks only to the database servers you connect to. See the
+[security policy](.github/SECURITY.md) for how data is stored.
+</details>
+
+<details>
+<summary><b>Can it change my data without asking?</b></summary>
+
+No. Generated scripts (sync scripts, index fixes, test data, edited rows) open for review and are never run for
+you. Statements without `WHERE`, `TRUNCATE` and `DROP` ask first, scripts that change many rows ask before
+committing, and production connections confirm every change.
+</details>
+
+<details>
+<summary><b>Which database versions are supported?</b></summary>
+
+The tests run against SQL Server 2022, PostgreSQL 17 and MySQL 8.4. Older versions usually work; if something
+does not, please [open an issue](https://github.com/tuancuongpham/Sqlotus/issues).
+</details>
+
+<details>
+<summary><b>Does it replace SSMS, pgAdmin or MySQL Workbench?</b></summary>
+
+Sqlotus focuses on writing, running and understanding SQL. Server administration — backups, jobs, users and
+permissions — stays in those tools.
+</details>
+
+<details>
+<summary><b>Does it run on macOS or Linux?</b></summary>
+
+Not yet. Windows authentication and the Connection Doctor use Windows APIs; the rest is portable, so other
+platforms are possible later.
+</details>
+
+<details>
+<summary><b>Can I bring my SQL Prompt snippets?</b></summary>
+
+Yes. Snippets from Redgate SQL Prompt are imported automatically on first run, and any time from
+**Options → Snippets**.
+</details>
 
 ## Known limitations
 
@@ -189,24 +312,37 @@ app running with `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=
   (the tiberius driver does not expose them for other batches).
 - Schema compare treats a renamed column or table as drop + add, and leaves identity / computed column changes
   to be done by hand.
-- Windows only for now (the Connection Doctor and Windows Authentication use Windows APIs).
+- Windows only for now.
 - Named-pipe connections (LocalDB) are not supported; use TCP.
-- No AI assistant yet.
 
-## Privacy
+## Development
 
-Sqlotus has no telemetry. Connections, history and settings stay on your computer; saved passwords are kept in
-the Windows Credential Manager. See [SECURITY.md](SECURITY.md).
+Requirements: Windows 10/11, Rust (MSVC toolchain), Node 22+ and Visual Studio Build Tools (C++).
+
+```bash
+npm install
+npx tauri dev
+```
+
+[CONTRIBUTING.md](.github/CONTRIBUTING.md) covers the project layout, the checks to run before a pull request,
+and testing against real databases in Docker. Changes are listed in [CHANGELOG.md](CHANGELOG.md).
+
+## Disclaimer
+
+Sqlotus is provided as is, without warranty. Review generated scripts before you run them, especially against
+production databases.
+
+SQL Prompt, SQL Search and SQL History are trademarks of Redgate Software Ltd. SQL Server is a trademark of
+Microsoft, MySQL of Oracle, and PostgreSQL of the PostgreSQL Community Association. Sqlotus is an independent
+project and is not affiliated with or endorsed by any of them.
 
 ## Contributing
 
-Issues and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) and the
-[Code of Conduct](CODE_OF_CONDUCT.md). Changes are listed in [CHANGELOG.md](CHANGELOG.md).
+Bug reports, ideas and pull requests are welcome — see [CONTRIBUTING.md](.github/CONTRIBUTING.md) and the
+[Code of Conduct](.github/CODE_OF_CONDUCT.md). Please report security problems privately as described in
+[SECURITY.md](.github/SECURITY.md).
 
 ## License
 
 [MIT](LICENSE). Sqlotus is built on open-source crates and npm packages; their licenses are collected in
-[THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) and installed with the app.
-
-SQL Prompt, SQL Search and SQL History are trademarks of Redgate Software Ltd. Sqlotus is an independent project
-and is not affiliated with or endorsed by Redgate.
+[licenses/THIRD_PARTY_LICENSES.md](licenses/THIRD_PARTY_LICENSES.md) and installed with the app.

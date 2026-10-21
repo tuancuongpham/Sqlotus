@@ -46,7 +46,7 @@
     "shortDescription": "SQL editor for SQL Server, PostgreSQL and MySQL",
     "resources": {
       "../LICENSE": "LICENSE",
-      "../THIRD_PARTY_LICENSES.md": "THIRD_PARTY_LICENSES.md"
+      "../licenses/THIRD_PARTY_LICENSES.md": "THIRD_PARTY_LICENSES.md"
     }
   }
 }
