@@ -43,7 +43,7 @@ port and login (SQL Server also offers Windows authentication). If the connectio
 | Type or press | What happens |
 |---|---|
 | `SELECT * FROM dbo.Orders o JOIN ` | related tables are suggested together with the `ON` clause |
-| `SELECT *` then **Tab** | the `*` becomes the column list |
+| `SELECT * FROM dbo.Orders`, cursor right after `*`, **Tab** | the `*` becomes the column list of the tables in `FROM` |
 | **Ctrl+K, Ctrl+Y** | the script is formatted |
 | **Ctrl+L** | estimated execution plan, without running the query |
 | `UPDATE … ` without `WHERE`, then **F5** | Sqlotus asks before running it |
@@ -78,7 +78,8 @@ Click a group for the details.
     (identity/computed/rowversion columns skipped, Tab jumps between values);
   - `EXEC proc` → one parameter per line with sample values, type comments and `(has default)`;
   - `GROUP BY` → the non-aggregated SELECT items.
-- **Wildcard expansion**: type `SELECT *` (or `t.*`) and press **Tab** to get the column list.
+- **Wildcard expansion**: with the `FROM` clause written, put the cursor right after `*` (or `t.*`) and press **Tab** to
+  get the column list.
 - **Cross-database completion**: `OtherDb.` → schemas, `OtherDb.dbo.` → objects, and columns of tables
   in other databases.
 - **Hover** shows a table's columns, a column's type or a variable's type; **parameter hints** while typing

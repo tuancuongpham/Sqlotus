@@ -129,6 +129,19 @@ const hoverText = await until(async () => {
 check("hover shows columns", !!hoverText, (hoverText ?? "").slice(0, 80).replace(/\n/g, " "));
 await shot("f4-hover");
 
+// 4b. Tab right after `*` lists the columns of the tables in FROM
+await setText("SELECT c.* FROM dbo.Customers c");
+await press("Home");
+for (let i = 0; i < "SELECT c.*".length; i++) await press("ArrowRight");
+await press("Tab");
+await sleep(800);
+check("Tab after * expands", (await editorText()).startsWith("SELECT c.Id, c.Name, c.Country, c.CreatedAt FROM"), JSON.stringify(await editorText()));
+// without FROM there is nothing to expand: a hint instead of a tab
+await setText("SELECT *");
+await press("Tab");
+const starHint = await until(() => evaluate(`[...document.querySelectorAll(".toast")].some((t) => t.textContent.includes("No columns to expand yet"))`), 4000);
+check("Tab after * without FROM explains", !!starHint && (await editorText()).trimEnd() === "SELECT *", JSON.stringify(await editorText()));
+
 // 5. expand wildcards (Ctrl+B, Ctrl+W) and qualify names (Ctrl+B, Ctrl+Q)
 await setText("SELECT * FROM Customers");
 await press("Control+B");

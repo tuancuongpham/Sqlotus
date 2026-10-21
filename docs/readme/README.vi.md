@@ -43,7 +43,7 @@ cách sửa.
 | Gõ hoặc nhấn | Kết quả |
 |---|---|
 | `SELECT * FROM dbo.Orders o JOIN ` | gợi ý các bảng liên quan kèm sẵn điều kiện `ON` |
-| `SELECT *` rồi **Tab** | `*` được thay bằng danh sách cột |
+| `SELECT * FROM dbo.Orders`, con trỏ ngay sau `*`, **Tab** | `*` được thay bằng danh sách cột của các bảng trong `FROM` |
 | **Ctrl+K, Ctrl+Y** | format script |
 | **Ctrl+L** | kế hoạch thực thi ước tính, không chạy query |
 | `UPDATE … ` không có `WHERE`, rồi **F5** | Sqlotus hỏi lại trước khi chạy |
@@ -73,7 +73,8 @@ Bấm vào từng nhóm để xem chi tiết.
 - **JOIN theo khoá ngoại**: sau `JOIN` gợi ý bảng liên quan kèm `ON`, sau `ON` gợi ý điều kiện join.
 - **Sinh câu lệnh**: chọn bảng sau `INSERT INTO` → danh sách cột + `VALUES` có chú thích kiểu (Tab nhảy giữa các giá
   trị); `EXEC proc` → mỗi tham số một dòng kèm kiểu; `GROUP BY` → các cột không phải aggregate.
-- **Mở rộng `*`**: gõ `SELECT *` (hoặc `t.*`) rồi nhấn **Tab** để thay bằng danh sách cột.
+- **Mở rộng `*`**: khi đã viết mệnh đề `FROM`, đặt con trỏ ngay sau `*` (hoặc `t.*`) rồi nhấn **Tab** để thay bằng danh
+  sách cột.
 - **Gợi ý xuyên database**: `OtherDb.` → schema, `OtherDb.dbo.` → bảng, và cột của bảng ở database khác.
 - **Hover** xem cột của bảng, kiểu của cột hoặc biến; **gợi ý tham số** khi gõ hàm/proc.
 - **Snippet** có placeholder; import thêm từ một thư mục chứa các file snippet `.json` (Options → Snippets).

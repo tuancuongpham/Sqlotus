@@ -262,24 +262,29 @@ export function registerProviders() {
   }
 }
 
+/** `*` in a select list: after SELECT [DISTINCT] [TOP n], after a comma, or `alias.*`. */
+const SELECT_STAR = /(\bselect\s+(distinct\s+)?(top\s*\(?\s*\d+\s*\)?\s+)?|,\s*|[\w\]"`]\.)\*$/i;
+
 /**
- * Wildcard expansion: Tab right after `*` replaces it with the
- * column list. Returns true when it handled the key.
+ * Wildcard expansion: Tab right after `*` replaces it with the column list.
+ * "no-tables" means a select-list `*` with no table in FROM yet.
  */
-export async function expandWildcard(editor: monaco.editor.IStandaloneCodeEditor): Promise<boolean> {
+export async function expandWildcard(
+  editor: monaco.editor.IStandaloneCodeEditor,
+): Promise<"expanded" | "no-tables" | "none"> {
   const model = editor.getModel();
   const pos = editor.getPosition();
-  if (!model || !pos || pos.column < 2) return false;
-  const prev = model.getValueInRange({
-    startLineNumber: pos.lineNumber,
-    startColumn: pos.column - 1,
+  if (!model || !pos || pos.column < 2) return "none";
+  const before = model.getValueInRange({
+    startLineNumber: Math.max(1, pos.lineNumber - 5),
+    startColumn: 1,
     endLineNumber: pos.lineNumber,
     endColumn: pos.column,
   });
-  if (prev !== "*") return false;
+  if (!before.endsWith("*")) return "none";
   const { result, range } = await fetchCompletions(model, pos);
   const exp = result.items.find((i) => i.kind === "expansion");
-  if (!exp || exp.replaceStart == null) return false;
+  if (!exp || exp.replaceStart == null) return SELECT_STAR.test(before) ? "no-tables" : "none";
   const start = model.getPositionAt(exp.replaceStart);
   editor.executeEdits("expand-wildcard", [
     {
@@ -287,5 +292,5 @@ export async function expandWildcard(editor: monaco.editor.IStandaloneCodeEditor
       text: exp.insertText,
     },
   ]);
-  return true;
+  return "expanded";
 }

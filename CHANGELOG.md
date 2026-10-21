@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **Tab after `*`** without a `FROM` clause now says to write `FROM` first instead of silently inserting a tab;
+  the READMEs explain that the columns come from the tables in `FROM`.
+
 ## 0.2.3
 
 - New app icon: earlier builds still used the default icon of the Tauri framework.

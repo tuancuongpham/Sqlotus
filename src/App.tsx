@@ -798,8 +798,12 @@ ${r.notice}` : failure.text);
     ed.addCommand(
       KC.Tab,
       () => {
-        void expandWildcard(ed).then((done) => {
-          if (!done) ed.trigger("keyboard", "tab", null);
+        void expandWildcard(ed).then((r) => {
+          if (r === "no-tables") {
+            toast.info("No columns to expand yet", "Write the FROM clause first, then press Tab right after * to list the columns.");
+          } else if (r === "none") {
+            ed.trigger("keyboard", "tab", null);
+          }
         });
       },
       "editorTextFocus && !suggestWidgetVisible && !inSnippetMode && !editorTabMovesFocus && !editorHasSelection",
