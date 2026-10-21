@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.2
 
 - **Schema compare**: compare two databases (tables, keys, indexes, foreign keys, checks, views, routines,
   triggers) and generate a dependency-ordered sync script with data-loss warnings. SQL Server requires
