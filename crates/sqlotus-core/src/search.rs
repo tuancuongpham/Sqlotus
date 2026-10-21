@@ -1,4 +1,4 @@
-//! SQL Search: find objects by name, column name or text of their definition.
+//! Object Search: find objects by name, column name or text of their definition.
 
 use serde::{Deserialize, Serialize};
 

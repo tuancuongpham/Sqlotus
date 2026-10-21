@@ -321,10 +321,10 @@ impl Store {
         self.with(|db| Ok(db.query_row("SELECT COUNT(*) FROM snippets", [], |r| r.get(0))?))
     }
 
-    /// Import every `*.json` snippet from a Redgate SQL Prompt snippets
-    /// folder. Snippets with the same id are replaced. Returns how many
-    /// were imported.
-    pub fn import_redgate_snippets(&self, dir: &Path) -> Result<usize> {
+    /// Import every `*.json` snippet file of a folder (`prefix`,
+    /// `description`, `body`, `placeholders`). Snippets with the same id are
+    /// replaced. Returns how many were imported.
+    pub fn import_snippets(&self, dir: &Path) -> Result<usize> {
         let mut count = 0;
         for entry in std::fs::read_dir(dir)? {
             let path = entry?.path();
@@ -612,7 +612,7 @@ mod tests {
     }
 
     #[test]
-    fn imports_redgate_snippets() {
+    fn imports_snippet_files() {
         let dir = std::env::temp_dir().join(format!("sqlotus-snip-{}", now_ms()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
@@ -622,7 +622,7 @@ mod tests {
         .unwrap();
         std::fs::write(dir.join("broken.json"), "{").unwrap();
         let s = Store::open_in_memory().unwrap();
-        assert_eq!(s.import_redgate_snippets(&dir).unwrap(), 1);
+        assert_eq!(s.import_snippets(&dir).unwrap(), 1);
         assert_eq!(s.list_snippets().unwrap()[0].prefix, "ssf");
         std::fs::remove_dir_all(dir).ok();
     }

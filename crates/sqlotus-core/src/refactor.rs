@@ -1,4 +1,4 @@
-//! Whole-document refactorings in the spirit of SQL Prompt's actions:
+//! Whole-document refactorings:
 //! expand wildcards, qualify object names, insert semicolons, remove square
 //! brackets, apply keyword casing. Each returns the new text; callers apply
 //! it as one undoable edit.

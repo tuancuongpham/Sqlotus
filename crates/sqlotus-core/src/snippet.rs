@@ -1,7 +1,7 @@
-//! Snippets stored in Redgate SQL Prompt's JSON shape, converted to
-//! Monaco/VS Code snippet syntax for insertion.
+//! Snippets stored as JSON (`prefix`, `description`, `body`, `placeholders`),
+//! converted to Monaco/VS Code snippet syntax for insertion.
 //!
-//! Redgate bodies use `$name$` placeholders plus built-ins such as
+//! Bodies use `$name$` placeholders plus built-ins such as
 //! `$CURSOR$`, `$SELECTEDTEXT$`, `$SELECTIONSTART$`/`$SELECTIONEND$`.
 
 use std::collections::HashMap;
@@ -181,14 +181,14 @@ mod tests {
     }
 
     #[test]
-    fn redgate_add_column() {
+    fn placeholders_defaults_and_selection() {
         let s = snip(
-            "ALTER TABLE $table_name$ ADD [$column_name$] $SELECTIONEND$INT$SELECTIONSTART$ --NULL|NOT NULL",
-            &[("table_name", "[schema].[table_name]"), ("column_name", "")],
+            "UPDATE $target$ SET [$flag$] = $SELECTIONEND$0$SELECTIONSTART$ -- 0|1",
+            &[("target", "[dbo].[Orders]"), ("flag", "")],
         );
         assert_eq!(
             to_monaco(&s, &HashMap::new()),
-            "ALTER TABLE ${1:[schema].[table_name]} ADD [${2:column_name}] ${3:INT} --NULL|NOT NULL"
+            "UPDATE ${1:[dbo].[Orders]} SET [${2:flag}] = ${3:0} -- 0|1"
         );
     }
 

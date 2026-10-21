@@ -297,7 +297,7 @@ fn hex(bytes: &[u8]) -> String {
     s
 }
 
-/// `.fffffff` with exactly `scale` digits, as SSMS shows datetime2/time.
+/// `.fffffff` with exactly `scale` digits, the usual display of datetime2/time.
 fn fraction(nanos: u32, scale: u8) -> String {
     if scale == 0 {
         return String::new();
@@ -306,7 +306,7 @@ fn fraction(nanos: u32, scale: u8) -> String {
     format!(".{}", &digits[..(scale as usize).min(9)])
 }
 
-/// Render a value the way SSMS's grid shows it.
+/// Render a value the way SQL Server tools usually show it.
 fn cell(cd: ColumnData<'static>) -> Option<String> {
     Some(match &cd {
         ColumnData::U8(v) => v.as_ref()?.to_string(),

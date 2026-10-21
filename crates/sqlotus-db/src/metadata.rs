@@ -1,5 +1,5 @@
 //! Loading the catalog (objects, columns, parameters, foreign keys) and the
-//! source of programmable objects for SQL Search.
+//! source of programmable objects for Object Search.
 
 use serde::{Deserialize, Serialize};
 use sqlotus_core::Dialect;

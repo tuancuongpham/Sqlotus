@@ -49,15 +49,10 @@ pub fn run() {
             let notice = migrated.then(|| {
                 "Your connections, query history and snippets from SqlSupportQuery were moved over.".to_string()
             });
-            // First run: the user's SQL Prompt snippets if present, else built-ins.
+            // First run: a few built-in snippets.
             if store.snippet_count()? == 0 {
-                let imported = commands::redgate_snippets_dir()
-                    .and_then(|dir| store.import_redgate_snippets(&dir).ok())
-                    .unwrap_or(0);
-                if imported == 0 {
-                    for s in sqlotus_core::snippet::builtin_snippets() {
-                        store.save_snippet(&s)?;
-                    }
+                for s in sqlotus_core::snippet::builtin_snippets() {
+                    store.save_snippet(&s)?;
                 }
             }
             let state = AppState::new(store);
@@ -91,7 +86,7 @@ pub fn run() {
             commands::list_snippets,
             commands::save_snippet,
             commands::delete_snippet,
-            commands::import_redgate_snippets,
+            commands::import_snippets,
             commands::history_record,
             commands::history_search,
             commands::history_tab,

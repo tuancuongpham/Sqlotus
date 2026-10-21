@@ -1,6 +1,5 @@
 //! Variables a script uses without declaring them, and the declarations
-//! that bind values to them before it runs (like SSMS's "Specify values for
-//! template parameters", but for plain `@variables`).
+//! that bind values to them before it runs.
 
 use std::collections::HashSet;
 

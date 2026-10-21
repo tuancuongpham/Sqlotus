@@ -181,7 +181,7 @@ await sleep(600);
 const formatted = await editorText();
 check("MSSQL: format", formatted.includes("    INNER JOIN") || formatted.includes("    JOIN dbo.Customers c\n        ON c.Id"), JSON.stringify(formatted));
 
-// SQL Search
+// Object Search
 await press("Control+Alt+D");
 await waitFor(".search-panel input");
 await sleep(200);
@@ -194,7 +194,7 @@ const hits = await waitUntil(async () => {
 await sleep(500);
 await shot("mssql-4-search");
 check(
-  "MSSQL: SQL Search",
+  "MSSQL: Object Search",
   !!hits && hits.some((h) => h.includes("GetCustomerOrders")) && hits.some((h) => h.includes("Orders") && h.includes("column")),
   JSON.stringify(hits),
 );
@@ -202,7 +202,7 @@ const preview = await evaluate(`document.querySelector(".search-preview pre")?.t
 check("MSSQL: search preview shows definition", preview.length > 20, preview.slice(0, 60));
 await press("Control+Alt+D");
 
-// SQL History finds executed queries
+// Query History finds executed queries
 await press("Control+Shift+H");
 await waitFor(".history-panel input");
 await sleep(200);

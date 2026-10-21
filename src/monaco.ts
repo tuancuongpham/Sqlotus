@@ -263,7 +263,7 @@ export function registerProviders() {
 }
 
 /**
- * Redgate-style wildcard expansion: Tab right after `*` replaces it with the
+ * Wildcard expansion: Tab right after `*` replaces it with the
  * column list. Returns true when it handled the key.
  */
 export async function expandWildcard(editor: monaco.editor.IStandaloneCodeEditor): Promise<boolean> {

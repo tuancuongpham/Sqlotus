@@ -1,4 +1,4 @@
-//! Statement generators in SQL Prompt's layout: INSERT with column list and
+//! Statement generators: INSERT with column list and
 //! commented VALUES, EXEC with one parameter per line, SELECT/UPDATE/DELETE
 //! templates, CREATE TABLE, and "script as ALTER".
 //!
@@ -321,9 +321,9 @@ mod tests {
         }
     }
 
-    /// Exactly SQL Prompt's output for the user's table.
+    /// Column list, one commented NULL per column, identity column left out.
     #[test]
-    fn insert_matches_sql_prompt() {
+    fn insert_lists_columns_with_type_comments() {
         let got = format!(
             "INSERT INTO {}",
             insert_tail(&sinh_vien(), "dbo.SinhVien", Dialect::MsSql, 4, false)

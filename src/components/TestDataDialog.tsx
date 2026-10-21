@@ -215,7 +215,7 @@ export function TestDataDialog({
           </div>
         </div>
         <div className="modal-actions">
-          <small>Foreign keys use rows that exist in the parent tables. Nothing is inserted until you run the script.</small>
+          <small>Foreign keys use rows that exist in the parent tables. E-mails use reserved example domains; phone numbers follow real formats and may belong to real people, so never send messages to them. Nothing is inserted until you run the script.</small>
           <span className="spacer" />
           <button className="primary" onClick={() => void create()} disabled={busy || !plans || !!error}>
             {busy ? "Generating…" : "Open script"}

@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- Sqlotus app icon: a lotus resting on a database. Source for `npx tauri icon`. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#24365c"/>
+      <stop offset="1" stop-color="#101a30"/>
+    </linearGradient>
+    <linearGradient id="petal" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#ec4899"/>
+      <stop offset="1" stop-color="#fda4c8"/>
+    </linearGradient>
+    <linearGradient id="side" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#c026d3"/>
+      <stop offset="1" stop-color="#f0abfc"/>
+    </linearGradient>
+    <linearGradient id="outer" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#7c3aed"/>
+      <stop offset="1" stop-color="#c4b5fd"/>
+    </linearGradient>
+    <linearGradient id="body" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#0d9488"/>
+      <stop offset="0.5" stop-color="#2dd4bf"/>
+      <stop offset="1" stop-color="#0d9488"/>
+    </linearGradient>
+    <path id="p" d="M0,0 C120,-95 125,-265 0,-390 C-125,-265 -120,-95 0,0 Z"/>
+  </defs>
+
+  <rect width="1024" height="1024" rx="224" fill="url(#bg)"/>
+
+  <g transform="translate(0 -84)">
+  <!-- database -->
+  <path d="M282,690 L282,820 A230,62 0 0 0 742,820 L742,690 Z" fill="url(#body)"/>
+  <path d="M282,755 A230,62 0 0 0 742,755" fill="none" stroke="#115e59" stroke-width="14"/>
+  <ellipse cx="512" cy="690" rx="230" ry="62" fill="#5eead4"/>
+
+  <!-- lotus -->
+  <g transform="translate(512 700)">
+    <use href="#p" transform="rotate(-68) scale(0.78)" fill="url(#outer)"/>
+    <use href="#p" transform="rotate(68) scale(0.78)" fill="url(#outer)"/>
+    <use href="#p" transform="rotate(-34) scale(0.92)" fill="url(#side)"/>
+    <use href="#p" transform="rotate(34) scale(0.92)" fill="url(#side)"/>
+    <use href="#p" fill="url(#petal)"/>
+  </g>
+  </g>
+</svg>

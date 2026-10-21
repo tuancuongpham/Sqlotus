@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { open } from "@tauri-apps/plugin-dialog";
 import { api, errorText, newId } from "../api";
 import { toast } from "../notify";
 import type { Dialect, Settings, Snippet } from "../types";
@@ -50,11 +51,13 @@ export function SettingsDialog({ settings, dialect, onClose, onSaved }: Props) {
     onClose();
   };
 
-  const importRedgate = async () => {
+  const importSnippets = async () => {
     try {
-      const n = await api.importRedgateSnippets(null);
-      setNote(`Imported ${n} snippets from SQL Prompt.`);
-      toast.success(`Imported ${n} snippets from SQL Prompt`);
+      const dir = await open({ directory: true, title: "Folder with snippet .json files" });
+      if (typeof dir !== "string") return;
+      const n = await api.importSnippets(dir);
+      setNote(`Imported ${n} snippets.`);
+      toast.success(`Imported ${n} snippets`);
       await loadSnippets();
     } catch (err) {
       setNote(errorText(err));
@@ -94,7 +97,7 @@ export function SettingsDialog({ settings, dialect, onClose, onSaved }: Props) {
               <label>
                 List layout
                 <select value={f.listLayout} onChange={(ev) => setF("listLayout", ev.target.value as typeof f.listLayout)}>
-                  <option value="aligned">Aligned with keyword (Redgate default)</option>
+                  <option value="aligned">Aligned with keyword</option>
                   <option value="stacked">Keyword on its own line</option>
                 </select>
               </label>
@@ -207,7 +210,7 @@ export function SettingsDialog({ settings, dialect, onClose, onSaved }: Props) {
             <div className="snippet-list">
               <div className="preview-bar">
                 <button onClick={() => setSnip({ id: newId(), prefix: "", description: "", body: "", placeholders: [] })}>New</button>
-                <button onClick={importRedgate}>Import from SQL Prompt</button>
+                <button onClick={importSnippets} title="Each .json file holds prefix, description, body and placeholders">Import snippets…</button>
               </div>
               {note && <small>{note}</small>}
               {snippets.map((x) => (

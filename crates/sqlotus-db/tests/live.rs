@@ -154,7 +154,7 @@ async fn exercise(var: &str, script: &str, expected_sets: usize, names: Names) {
         r.items
     );
 
-    // SQL Search: column hit and text hit inside the procedure/view definitions
+    // Object Search: column hit and text hit inside the procedure/view definitions
     let hits = search(
         names.fk_column,
         &cat.database,
@@ -219,7 +219,7 @@ async fn mssql_value_rendering_and_use() {
     assert_eq!(row[4].as_deref(), Some("12.5"));
     conn.use_database("master").await.expect("use");
     assert_eq!(conn.current_database().await.unwrap(), "master");
-    // server error formatting like SSMS
+    // server errors formatted as "Msg <number>, Level …"
     let bad = conn.execute("SELECT 1/0", &Limits::default()).await;
     assert!(first_error(&bad).starts_with("Msg 8134"), "{bad:?}");
 }

@@ -644,7 +644,8 @@ fn value(
                 (Some(l), Some(f)) => format!("{f}.{l}"),
                 _ => "user".into(),
             };
-            let domain = ["example.com", "example.vn", "mail.test", "demo.local"][rng.below(4)];
+            // reserved domains only (RFC 2606 / 6761), so no address can reach a real mailbox
+            let domain = ["example.com", "example.net", "mail.test", "demo.local"][rng.below(4)];
             text(format!("{local}{}@{domain}", row + 1))
         }
         Generator::Phone => text(match loc {

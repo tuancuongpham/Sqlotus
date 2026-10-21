@@ -11,6 +11,10 @@ docker run -d --name sqlotus-pg -e "POSTGRES_PASSWORD=$SQLOTUS_TEST_PASSWORD" -p
 docker run -d --name sqlotus-mysql -e "MYSQL_ROOT_PASSWORD=$SQLOTUS_TEST_PASSWORD" -e MYSQL_DATABASE=shop -p 33069:3306 mysql:8.4
 ```
 
+`ACCEPT_EULA=Y` accepts Microsoft's license terms for the SQL Server container image (the Developer edition it
+runs by default is for development and testing only) — read them before you run the command. PostgreSQL and MySQL
+images come under their own licenses.
+
 Once the servers accept connections:
 
 ```bash

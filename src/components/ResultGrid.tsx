@@ -382,7 +382,7 @@ export function ResultGrid({
   const range = selected && rangeEnd != null ? [Math.min(selected.row, rangeEnd), Math.max(selected.row, rangeEnd)] : null;
   const inRange = (i: number, j: number) => !!range && selected?.col === j && i >= range[0] && i <= range[1];
 
-  // aggregates of the selected range (like SSMS add-ins' status bar totals)
+  // aggregates of the selected range
   const aggregates = useMemo(() => {
     if (!range || !selected) return null;
     const values = rows.slice(range[0], range[1] + 1).map((r) => r[selected.col]);

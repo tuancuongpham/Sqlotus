@@ -47,8 +47,8 @@ interface SessionTab {
 type Panel = "search" | "history" | "explorer" | null;
 
 const PANEL_TITLE: Record<Exclude<Panel, null>, string> = {
-  search: "SQL Search",
-  history: "SQL History",
+  search: "Object Search",
+  history: "Query History",
   explorer: "Object Explorer",
 };
 
@@ -469,7 +469,7 @@ ${r.notice}` : failure.text);
         toast.info("Nothing to run", "The editor is empty.");
         return;
       }
-      // like SQL Prompt's execution warnings: confirm destructive statements
+      // execution warnings: confirm destructive statements
       const warnings = await api.executionWarnings(sql, tab.dialect).catch(() => [] as string[]);
       if (warnings.length > 0) {
         const ok = await new Promise<boolean>((resolve) => setConfirmState({ messages: warnings, resolve }));
@@ -806,7 +806,7 @@ ${r.notice}` : failure.text);
     );
     ed.onDidChangeCursorPosition((e) => setCursor({ line: e.position.lineNumber, col: e.position.column }));
 
-    // context menu / F1 actions, SQL Prompt style
+    // context menu / F1 actions
     const action = (
       id: string,
       label: string,
@@ -1056,10 +1056,10 @@ ${r.notice}` : failure.text);
         <button onClick={format} title="Format SQL (Ctrl+K, Ctrl+Y)">
           Format
         </button>
-        <button className={panel === "search" ? "active" : ""} onClick={() => setPanel(panel === "search" ? null : "search")} title="SQL Search (Ctrl+Alt+D)">
+        <button className={panel === "search" ? "active" : ""} onClick={() => setPanel(panel === "search" ? null : "search")} title="Object Search (Ctrl+Alt+D)">
           Search
         </button>
-        <button className={panel === "history" ? "active" : ""} onClick={() => setPanel(panel === "history" ? null : "history")} title="SQL History (Ctrl+Shift+H)">
+        <button className={panel === "history" ? "active" : ""} onClick={() => setPanel(panel === "history" ? null : "history")} title="Query History (Ctrl+Shift+H)">
           History
         </button>
         <button

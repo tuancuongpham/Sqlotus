@@ -2,6 +2,8 @@
 
 [English](../../README.md) · **Tiếng Việt**
 
+<img src="../../src-tauri/icons/128x128@2x.png" alt="Icon Sqlotus: bông sen trên khối database" width="104">
+
 # Sqlotus
 
 ### Trình soạn SQL desktop nhanh cho SQL Server, PostgreSQL và MySQL.
@@ -57,7 +59,7 @@ Chạy bộ cài bản mới. Kết nối, mật khẩu đã lưu, lịch sử v
 | **Viết SQL nhanh** | gợi ý theo ngữ cảnh, JOIN theo khoá ngoại, sinh `INSERT`/`EXEC`, mở rộng `*`, snippet |
 | **Format và refactor** | formatter tuỳ chỉnh, qualify tên, đổi tên biến và alias, đi tới định nghĩa |
 | **An toàn** | phân tích khi gõ, hỏi lại câu lệnh nguy hiểm, kết nối read-only và production, nhắc transaction đang mở |
-| **Hiểu database** | SQL Search, Object Explorer, sơ đồ ER, Used by, sức khoẻ index, Activity, so sánh schema |
+| **Hiểu database** | Object Search, Object Explorer, sơ đồ ER, Used by, sức khoẻ index, Activity, so sánh schema |
 | **Làm việc với kết quả** | lưới ảo hoá, sửa dữ liệu, copy dạng INSERT/CSV/JSON/Markdown, Excel, biểu đồ, so sánh kết quả, kế hoạch thực thi |
 | **Không mất query** | tự lưu phiên bản mọi tab, tìm full-text, mở lại tab đã đóng, khôi phục tab khi mở lại app |
 
@@ -74,8 +76,7 @@ Bấm vào từng nhóm để xem chi tiết.
 - **Mở rộng `*`**: gõ `SELECT *` (hoặc `t.*`) rồi nhấn **Tab** để thay bằng danh sách cột.
 - **Gợi ý xuyên database**: `OtherDb.` → schema, `OtherDb.dbo.` → bảng, và cột của bảng ở database khác.
 - **Hover** xem cột của bảng, kiểu của cột hoặc biến; **gợi ý tham số** khi gõ hàm/proc.
-- **Snippet** có placeholder; lần chạy đầu tự import snippet của Redgate SQL Prompt
-  (`%LOCALAPPDATA%\Red Gate\SQL Prompt *\Snippets`).
+- **Snippet** có placeholder; import thêm từ một thư mục chứa các file snippet `.json` (Options → Snippets).
 
 </details>
 
@@ -130,9 +131,9 @@ Bấm vào từng nhóm để xem chi tiết.
 <details>
 <summary><b>Tìm kiếm, lịch sử, explorer</b></summary>
 
-- **SQL Search** (Ctrl+Alt+D): tìm theo tên object, tên cột, nội dung view/proc/function/trigger trong một hoặc tất
+- **Object Search** (Ctrl+Alt+D): tìm theo tên object, tên cột, nội dung view/proc/function/trigger trong một hoặc tất
   cả database; xem định nghĩa có highlight, mở ra tab mới.
-- **SQL History** (Ctrl+Shift+H): tự lưu phiên bản các tab (định kỳ và mỗi lần Execute), tìm full-text, mở lại tab đã
+- **Query History** (Ctrl+Shift+H): tự lưu phiên bản các tab (định kỳ và mỗi lần Execute), tìm full-text, mở lại tab đã
   đóng (Ctrl+Shift+T), diff với phiên bản trước hoặc với tab hiện tại. Các tab đang mở được khôi phục khi mở lại app.
 - **Object Explorer** (F8, mở sẵn): lọc object/cột, Select top 100, script SELECT/INSERT/UPDATE/DELETE/EXEC/CREATE/ALTER.
 - **Sơ đồ ER**: bảng và khoá ngoại của cả database hoặc một bảng cùng các bảng liên quan, tự sắp xếp; kéo thả, zoom,
@@ -149,6 +150,8 @@ Bấm vào từng nhóm để xem chi tiết.
   heap lớn. Cách sửa là script CREATE/DROP mở ra tab, không tự chạy.
 - **Sinh dữ liệu test**: dòng dữ liệu thực tế cho một bảng (tên tiếng Việt/Anh, email, số điện thoại, địa chỉ, số
   tiền, ngày); khoá ngoại lấy giá trị có thật ở bảng cha. Script INSERT mở ra tab mới để xem trước rồi mới chạy.
+  Email dùng tên miền ví dụ dành riêng; số điện thoại theo định dạng thật nên có thể trùng số của người khác — đừng
+  dùng chúng để gửi tin nhắn.
 
 </details>
 
@@ -190,8 +193,8 @@ Bấm vào từng nhóm để xem chi tiết.
 | Ctrl+B, Ctrl+W | Expand wildcards |
 | Ctrl+B, Ctrl+Q | Qualify object names |
 | F8 | Object Explorer |
-| Ctrl+Alt+D | SQL Search |
-| Ctrl+Shift+H | SQL History |
+| Ctrl+Alt+D | Object Search |
+| Ctrl+Shift+H | Query History |
 | F1 | Bảng lệnh (mọi thao tác) |
 | Ctrl+N / Ctrl+W / Ctrl+Tab | Tab mới / đóng / chuyển |
 | Ctrl+Shift+T | Mở lại tab vừa đóng |
@@ -261,10 +264,10 @@ hãy [tạo issue](https://github.com/tuancuongpham/Sqlotus/issues).
 </details>
 
 <details>
-<summary><b>Sqlotus có thay thế SSMS, pgAdmin hay MySQL Workbench không?</b></summary>
+<summary><b>Sqlotus có thay thế công cụ quản trị database không?</b></summary>
 
-Sqlotus tập trung vào viết, chạy và hiểu SQL. Các việc quản trị server — backup, job, người dùng và phân quyền — vẫn
-làm trong các công cụ đó.
+Không. Sqlotus tập trung vào viết, chạy và hiểu SQL. Các việc quản trị server — backup, job, người dùng và phân quyền —
+vẫn làm trong các công cụ chuyên cho việc đó.
 </details>
 
 <details>
@@ -275,10 +278,10 @@ sau này.
 </details>
 
 <details>
-<summary><b>Tôi có dùng lại được snippet của SQL Prompt không?</b></summary>
+<summary><b>Tôi có import được snippet của riêng mình không?</b></summary>
 
-Có. Snippet của Redgate SQL Prompt được import tự động ở lần chạy đầu, và có thể import lại bất cứ lúc nào trong
-**Options → Snippets**.
+Có. **Options → Snippets → Import snippets…** đọc một thư mục các file `.json`, mỗi file một snippet, gồm `prefix`,
+`description`, `body` (dùng placeholder `$name$` và `$CURSOR$`) và `placeholders`.
 </details>
 
 ## Giới hạn hiện tại
@@ -306,9 +309,9 @@ và cách test với database thật chạy bằng Docker. Các thay đổi đư
 Sqlotus được cung cấp nguyên trạng, không kèm bảo hành. Hãy xem lại script được sinh ra trước khi chạy, nhất là trên
 database production.
 
-SQL Prompt, SQL Search và SQL History là thương hiệu của Redgate Software Ltd. SQL Server là thương hiệu của Microsoft,
-MySQL của Oracle và PostgreSQL của PostgreSQL Community Association. Sqlotus là dự án độc lập, không liên kết và không
-được các bên trên bảo trợ.
+SQL Server là thương hiệu của Microsoft, MySQL của Oracle và PostgreSQL của PostgreSQL Community Association. Các tên
+này chỉ được nhắc để cho biết Sqlotus kết nối tới database nào; Sqlotus là dự án độc lập, không liên kết và không được
+các bên trên bảo trợ.
 
 ## Đóng góp
 

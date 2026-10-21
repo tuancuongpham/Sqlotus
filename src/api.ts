@@ -83,7 +83,7 @@ export const api = {
   listSnippets: () => invoke<Snippet[]>("list_snippets"),
   saveSnippet: (snippet: Snippet) => invoke<void>("save_snippet", { snippet }),
   deleteSnippet: (id: string) => invoke<void>("delete_snippet", { id }),
-  importRedgateSnippets: (dir: string | null) => invoke<number>("import_redgate_snippets", { dir }),
+  importSnippets: (dir: string) => invoke<number>("import_snippets", { dir }),
 
   historyRecord: (entry: {
     tabId: string;

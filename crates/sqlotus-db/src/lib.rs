@@ -141,7 +141,7 @@ impl BatchOutput {
 #[derive(Debug, Clone, Copy)]
 pub struct Limits {
     pub max_rows: usize,
-    /// Longer cell values are cut (like SSMS's grid limit).
+    /// Longer cell values are cut to keep the grid responsive.
     pub max_cell_chars: usize,
 }
 
@@ -459,8 +459,8 @@ pub struct ScriptBatch {
 }
 
 /// Run a whole script: T-SQL is split on `GO` (honouring `GO n`); other
-/// dialects run as a single multi-statement batch. Like SSMS, later batches
-/// still run after a failed one.
+/// dialects run as a single multi-statement batch. Later batches still run
+/// after a failed one.
 pub async fn execute_script(conn: &mut Connection, script: &str, limits: &Limits) -> Vec<ScriptBatch> {
     execute_script_with(conn, script, limits, &ScriptOptions::default()).await
 }

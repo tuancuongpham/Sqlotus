@@ -700,7 +700,7 @@ impl<'a> Ctx<'a> {
     }
 
     /// Item for a table after `INSERT INTO`: the whole column list and a
-    /// commented VALUES block, as SQL Prompt does.
+    /// commented VALUES block.
     fn insert_item(&mut self, o: &DbObject, name: String, rank: u8) {
         let insertable = o.columns.iter().any(|c| c.is_insertable());
         let insert_text = if insertable {

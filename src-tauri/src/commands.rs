@@ -730,7 +730,7 @@ pub fn statement_at(text: String, dialect: Dialect, offset: usize) -> CmdResult<
 }
 
 // ---------------------------------------------------------------------------
-// SQL Search
+// Object Search
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
@@ -804,31 +804,10 @@ pub fn delete_snippet(state: State<'_, AppState>, id: String) -> CmdResult<()> {
     state.store.delete_snippet(&id).map_err(err)
 }
 
-/// The newest `%LOCALAPPDATA%\Red Gate\SQL Prompt *\Snippets` folder.
-pub fn redgate_snippets_dir() -> Option<PathBuf> {
-    let base = PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("Red Gate");
-    let mut dirs: Vec<PathBuf> = std::fs::read_dir(&base)
-        .ok()?
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("SQL Prompt"))
-        })
-        .map(|p| p.join("Snippets"))
-        .filter(|p| p.is_dir())
-        .collect();
-    dirs.sort();
-    dirs.pop()
-}
-
+/// Import the `*.json` snippet files of a folder the user picked.
 #[tauri::command]
-pub fn import_redgate_snippets(state: State<'_, AppState>, dir: Option<String>) -> CmdResult<usize> {
-    let dir = dir
-        .map(PathBuf::from)
-        .or_else(redgate_snippets_dir)
-        .ok_or("Redgate snippets folder not found")?;
-    state.store.import_redgate_snippets(&dir).map_err(err)
+pub fn import_snippets(state: State<'_, AppState>, dir: String) -> CmdResult<usize> {
+    state.store.import_snippets(&PathBuf::from(dir)).map_err(err)
 }
 
 // ---------------------------------------------------------------------------

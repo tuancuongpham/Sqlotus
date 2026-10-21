@@ -2,6 +2,8 @@
 
 **English** · [Tiếng Việt](docs/readme/README.vi.md)
 
+<img src="src-tauri/icons/128x128@2x.png" alt="Sqlotus icon: a lotus on a database" width="104">
+
 # Sqlotus
 
 ### A fast desktop SQL editor for SQL Server, PostgreSQL and MySQL.
@@ -57,7 +59,7 @@ Run the newer installer. Connections, saved passwords, history and settings are 
 | **Write SQL fast** | context-aware completion, foreign-key joins, `INSERT`/`EXEC` generation, wildcard expansion, snippets |
 | **Format and refactor** | configurable formatter, qualify names, rename variables and aliases, go to definition |
 | **Stay safe** | analysis while you type, confirmations for risky statements, read-only and production connections, open-transaction reminders |
-| **Understand the database** | SQL Search, Object Explorer, ER diagram, Used by, index health, activity monitor, schema compare |
+| **Understand the database** | Object Search, Object Explorer, ER diagram, Used by, index health, activity monitor, schema compare |
 | **Work with results** | virtualized grid, edit rows, copy as INSERT/CSV/JSON/Markdown, Excel, charts, result compare, estimated plans |
 | **Never lose a query** | every tab versioned automatically, full-text history, closed tabs reopened, tabs restored on restart |
 
@@ -81,7 +83,7 @@ Click a group for the details.
   in other databases.
 - **Hover** shows a table's columns, a column's type or a variable's type; **parameter hints** while typing
   function and procedure calls.
-- **Snippets** with placeholders; snippets from Redgate SQL Prompt are imported automatically on first run.
+- **Snippets** with placeholders; import more from a folder of `.json` snippet files (Options → Snippets).
 
 </details>
 
@@ -144,9 +146,9 @@ Click a group for the details.
 <details>
 <summary><b>Search, history, explorer</b></summary>
 
-- **SQL Search** (Ctrl+Alt+D): find objects by name, column name or definition text in one or all databases,
+- **Object Search** (Ctrl+Alt+D): find objects by name, column name or definition text in one or all databases,
   with a highlighted preview.
-- **SQL History** (Ctrl+Shift+H): every tab is versioned automatically (periodically and on each execute),
+- **Query History** (Ctrl+Shift+H): every tab is versioned automatically (periodically and on each execute),
   full-text search, reopen closed tabs (Ctrl+Shift+T), diff against the previous version or the current tab.
   Open tabs are restored on restart.
 - **Object Explorer** (F8, open by default): filter objects and columns, Select top 100, script
@@ -166,7 +168,8 @@ Click a group for the details.
   tables read by full scans and large heaps. Fixes are CREATE/DROP scripts opened in a tab, never run directly.
 - **Test data**: realistic rows for a table (Vietnamese or English names, e-mails, phones, addresses, amounts,
   dates); foreign keys use rows that exist in the parent table and non-identity keys continue after the current
-  maximum. The INSERT script opens in a new tab to review and run.
+  maximum. The INSERT script opens in a new tab to review and run. E-mails use reserved example domains; phone
+  numbers follow real formats and may belong to real people, so never send messages to them.
 
 </details>
 
@@ -214,8 +217,8 @@ Click a group for the details.
 | Ctrl+B, Ctrl+W | Expand wildcards |
 | Ctrl+B, Ctrl+Q | Qualify object names |
 | F8 | Object Explorer |
-| Ctrl+Alt+D | SQL Search |
-| Ctrl+Shift+H | SQL History |
+| Ctrl+Alt+D | Object Search |
+| Ctrl+Shift+H | Query History |
 | F1 | Command palette |
 | Ctrl+N / Ctrl+W / Ctrl+Tab | New / close / next tab |
 | Ctrl+Shift+T | Reopen closed tab |
@@ -286,10 +289,10 @@ does not, please [open an issue](https://github.com/tuancuongpham/Sqlotus/issues
 </details>
 
 <details>
-<summary><b>Does it replace SSMS, pgAdmin or MySQL Workbench?</b></summary>
+<summary><b>Does it replace my database's administration tools?</b></summary>
 
-Sqlotus focuses on writing, running and understanding SQL. Server administration — backups, jobs, users and
-permissions — stays in those tools.
+No. Sqlotus focuses on writing, running and understanding SQL. Server administration — backups, jobs, users and
+permissions — stays in the tools made for it.
 </details>
 
 <details>
@@ -300,10 +303,10 @@ platforms are possible later.
 </details>
 
 <details>
-<summary><b>Can I bring my SQL Prompt snippets?</b></summary>
+<summary><b>Can I import my own snippets?</b></summary>
 
-Yes. Snippets from Redgate SQL Prompt are imported automatically on first run, and any time from
-**Options → Snippets**.
+Yes. **Options → Snippets → Import snippets…** reads a folder of `.json` files, one snippet each, with `prefix`,
+`description`, `body` (using `$name$` placeholders and `$CURSOR$`) and `placeholders`.
 </details>
 
 ## Known limitations
@@ -332,9 +335,9 @@ and testing against real databases in Docker. Changes are listed in [CHANGELOG.m
 Sqlotus is provided as is, without warranty. Review generated scripts before you run them, especially against
 production databases.
 
-SQL Prompt, SQL Search and SQL History are trademarks of Redgate Software Ltd. SQL Server is a trademark of
-Microsoft, MySQL of Oracle, and PostgreSQL of the PostgreSQL Community Association. Sqlotus is an independent
-project and is not affiliated with or endorsed by any of them.
+SQL Server is a trademark of Microsoft, MySQL of Oracle, and PostgreSQL of the PostgreSQL Community Association.
+They are named only to say which databases Sqlotus connects to; Sqlotus is an independent project and is not
+affiliated with or endorsed by any of them.
 
 ## Contributing
 
