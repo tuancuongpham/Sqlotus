@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.2.6
+
+- **Source control (git)**: link a database to a folder, usually a git repository. Sqlotus writes one `.sql` file per
+  object plus a snapshot, sorts differences into changes in the database (commit), changes in the folder (get
+  latest) and conflicts, commits with git, and builds Get latest scripts between pre- and post-deploy scripts —
+  opened for review, never run. Pull, Push and History; hand-edited files are reported.
+- **Problems** tab: every analysis problem of the tab, grouped and filtered, with quick fixes (`= NULL` → `IS NULL`,
+  the N prefix, unused declarations), Fix all as one undo step, and copy as Markdown. The light bulb (Ctrl+.)
+  offers the fix and "Ignore on this line".
+- **Rules**: switch them off in Options → Analysis, or in the script with `-- sqlotus-disable-line`,
+  `-- sqlotus-disable-next-line` and `-- sqlotus-disable` / `-- sqlotus-enable` comments.
+- **`sqlotus-lint`**: the same analysis for `.sql` files on the command line — text, JSON or GitHub annotations,
+  `--fix`, `--fail-on`, and `--schema` to check names against a source-control folder.
+- **Schema compare**: filter the list, see the identical objects, save comparisons, export an HTML or Markdown report.
+
 ## 0.2.5
 
 - **MySQL `DELIMITER` scripts** (dumps, procedures, triggers) now run: each statement ending in the custom
