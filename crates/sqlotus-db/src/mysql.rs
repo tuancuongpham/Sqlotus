@@ -55,6 +55,10 @@ impl MySqlConn {
             .client_found_rows(true)
             .db_name(cfg.database.clone().filter(|d| !d.is_empty()))
             .prefer_socket(false);
+        if cfg.read_only {
+            // the server itself refuses writes, also inside procedures (also after a reconnect)
+            b = b.init(vec!["SET SESSION TRANSACTION READ ONLY"]);
+        }
         if cfg.encrypt {
             b = b.ssl_opts(
                 SslOpts::default()

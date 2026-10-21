@@ -53,6 +53,10 @@ impl PgConn {
         if let Some(p) = password {
             config.password(p);
         }
+        if cfg.read_only {
+            // the server itself refuses writes, also inside functions
+            config.options("-c default_transaction_read_only=on");
+        }
         let tls = tls(cfg.trust_server_certificate || !cfg.encrypt)?;
         let (client, mut connection) = config
             .connect(tls.clone())

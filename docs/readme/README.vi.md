@@ -100,14 +100,16 @@ Bấm vào từng nhóm để xem chi tiết.
   object/cột không tồn tại, chuỗi tiếng Việt thiếu tiền tố `N` (`'Nguyễn'` sẽ thành `Nguy?n`),
   `NOT IN (SELECT …)` trên cột cho phép NULL, hàm bọc cột trong WHERE/ON (`YEAR(NgayTao) = 2024` không dùng được
   index), so sánh gây chuyển kiểu ngầm (`cot_varchar = N'x'`, `cot_chuoi = 123`).
-- **Cảnh báo trước khi chạy** UPDATE/DELETE không WHERE, TRUNCATE, DROP.
-- **Kết nối read-only**: chặn INSERT/UPDATE/DELETE/MERGE/DDL/GRANT, vẫn chạy được SELECT (tab có 🔒).
+- **Cảnh báo trước khi chạy** UPDATE/DELETE không WHERE, TRUNCATE, DROP TABLE/DATABASE/SCHEMA và DROP COLUMN.
+- **Kết nối read-only**: chặn INSERT/UPDATE/DELETE/MERGE/DDL/GRANT, vẫn chạy được SELECT (tab có 🔒). Với PostgreSQL
+  và MySQL, phiên kết nối còn được đặt chỉ đọc ngay trên server, nên procedure và function cũng không ghi được. SQL
+  Server không có phiên chỉ đọc: procedure được gọi không bị kiểm tra, nên hãy dùng login chỉ có quyền đọc khi cần.
 - **Nhắc transaction đang mở**: tab hiện **TRAN**, thanh công cụ có nút Commit / Roll back, đóng tab sẽ hỏi.
 - **Hỏi trước khi lưu thay đổi lớn**: script chỉ INSERT/UPDATE/DELETE chạy trong transaction; nếu đổi quá số dòng
   giới hạn (mặc định 1.000, Options → Safety) hoặc lỗi giữa chừng thì hỏi Commit hay Roll back; ít hơn thì tự commit
   và báo số dòng. **Manual commit** theo từng kết nối: thay đổi nằm trong transaction tới khi bấm Commit.
 - **Môi trường kết nối** Development/Test/Staging/Production: Production có tab đỏ, nhãn PROD, manual commit và hỏi
-  lại (ghi rõ server) trước mọi thay đổi.
+  lại (ghi rõ server) trước mọi câu lệnh thay đổi dữ liệu hoặc schema và trước mọi lời gọi procedure (`EXEC` / `CALL`).
 - **Biến chưa khai báo**: chạy `… WHERE Id = @Id` mà chưa `DECLARE` sẽ hỏi giá trị (và kiểu), tự khai báo, nhớ giá trị.
 - **Find invalid objects**: view/proc/function/trigger tham chiếu tới bảng/cột không còn tồn tại.
 
@@ -253,15 +255,17 @@ Không. Sqlotus không có telemetry và chỉ kết nối tới các database s
 <summary><b>Sqlotus có tự thay đổi dữ liệu mà không hỏi không?</b></summary>
 
 Không. Script được sinh ra (đồng bộ schema, sửa index, dữ liệu test, sửa dòng) đều mở ra để bạn xem trước và không bao
-giờ tự chạy. Câu lệnh thiếu `WHERE`, `TRUNCATE` và `DROP` luôn hỏi trước; script đổi nhiều dòng hỏi trước khi commit;
-kết nối production xác nhận mọi thay đổi.
+giờ tự chạy. Câu lệnh thiếu `WHERE`, `TRUNCATE`, `DROP TABLE` và `DROP COLUMN` luôn hỏi trước; script đổi nhiều dòng
+hỏi trước khi commit; kết nối production xác nhận mọi thay đổi và mọi lời gọi procedure. Thay đổi nằm bên trong procedure
+hay function thì không nhìn thấy được từ script, nên với SQL Server hãy dùng login chỉ đọc cho database bạn chỉ cần đọc.
 </details>
 
 <details>
 <summary><b>Hỗ trợ những phiên bản database nào?</b></summary>
 
-Bộ test chạy với SQL Server 2022, PostgreSQL 17 và MySQL 8.4. Các phiên bản cũ hơn thường vẫn dùng được; nếu gặp lỗi,
-hãy [tạo issue](https://github.com/tuancuongpham/Sqlotus/issues).
+Bộ test chạy với SQL Server 2022, PostgreSQL 17 và MySQL 8.4. Các phiên bản cũ hơn thường vẫn dùng được. MariaDB kết
+nối như MySQL và có lẽ cũng chạy được, nhưng chưa được test. Nếu gặp lỗi, hãy
+[tạo issue](https://github.com/tuancuongpham/Sqlotus/issues).
 </details>
 
 <details>

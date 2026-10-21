@@ -421,3 +421,31 @@ async fn postgres_failed_transaction_is_detected() {
     assert!(!conn.execute("ROLLBACK", &limits).await.failed);
     assert_eq!(conn.open_transactions().await.unwrap(), 0);
 }
+
+/// A read-only PostgreSQL / MySQL session refuses writes on the server, even
+/// when the statement reaches the driver without the keyword check.
+async fn read_only_session_refuses_writes(var: &str, refused: &str) {
+    let Some(mut e) = env(var) else {
+        return;
+    };
+    e.config.read_only = true;
+    let mut conn = connect(&e).await;
+    let limits = Limits::default();
+    let read = conn.execute("SELECT COUNT(*) FROM customers", &limits).await;
+    assert!(!read.failed, "{read:?}");
+    let write = conn
+        .execute("UPDATE customers SET name = name WHERE 1 = 0", &limits)
+        .await;
+    assert!(write.failed, "write was not refused: {write:?}");
+    assert!(first_error(&write).to_lowercase().contains(refused), "{write:?}");
+}
+
+#[tokio::test]
+async fn postgres_read_only_session() {
+    read_only_session_refuses_writes("SQLOTUS_TEST_PG", "read-only transaction").await;
+}
+
+#[tokio::test]
+async fn mysql_read_only_session() {
+    read_only_session_refuses_writes("SQLOTUS_TEST_MYSQL", "read only transaction").await;
+}

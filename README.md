@@ -109,9 +109,12 @@ Click a group for the details.
   (`'Nguyễn'` would be stored as `Nguy?n`), `NOT IN (SELECT …)` over a nullable column, functions wrapped
   around a column in WHERE/ON (`YEAR(OrderDate) = 2024` cannot use an index), and comparisons that force an
   implicit conversion of the column (`varchar_col = N'x'`, `text_col = 123`).
-- **Execution warnings**: confirmation before running UPDATE/DELETE without WHERE, TRUNCATE or DROP.
+- **Execution warnings**: confirmation before running UPDATE/DELETE without WHERE, TRUNCATE, DROP
+  TABLE/DATABASE/SCHEMA and DROP COLUMN.
 - **Read-only connections**: block INSERT/UPDATE/DELETE/MERGE/DDL/GRANT on a connection (e.g. production)
-  while still running queries; such tabs show a 🔒.
+  while still running queries; such tabs show a 🔒. On PostgreSQL and MySQL the session is read-only on the
+  server too, so procedures and functions cannot write either. SQL Server has no read-only session: procedures
+  called on it are not checked, so use a login with read-only permissions where it matters.
 - **Open transaction reminder**: when a run leaves a transaction open (SQL Server, PostgreSQL, MySQL) the tab
   shows **TRAN**, the toolbar shows **Commit** / **Roll back**, and closing the tab asks what to do.
 - **Confirm large changes**: scripts that only insert, update or delete rows run inside a transaction; if they
@@ -196,7 +199,8 @@ Click a group for the details.
 - **Activity monitor**: sessions, running queries, waits, open transactions and blocking chains (who blocks whom);
   cancel a query or kill a session after confirming. SQL Server, PostgreSQL and MySQL.
 - **Environments**: mark connections Development / Test / Staging / Production. Production gets a red tab, a PROD
-  badge, manual commit, and a confirmation naming the server before every change.
+  badge, manual commit, and a confirmation naming the server before every statement that changes data or schema
+  and before every procedure call (`EXEC` / `CALL`).
 - Per-connection tab colours. Passwords are stored in the Windows Credential Manager.
 
 </details>
@@ -278,15 +282,18 @@ No. Sqlotus has no telemetry and talks only to the database servers you connect 
 <summary><b>Can it change my data without asking?</b></summary>
 
 No. Generated scripts (sync scripts, index fixes, test data, edited rows) open for review and are never run for
-you. Statements without `WHERE`, `TRUNCATE` and `DROP` ask first, scripts that change many rows ask before
-committing, and production connections confirm every change.
+you. Statements without `WHERE`, `TRUNCATE`, `DROP TABLE` and `DROP COLUMN` ask first, scripts that change many rows
+ask before committing, and production connections confirm every change and procedure call. Changes made inside a
+procedure or function cannot be seen in the script, so on SQL Server use a read-only login for databases you only
+read.
 </details>
 
 <details>
 <summary><b>Which database versions are supported?</b></summary>
 
-The tests run against SQL Server 2022, PostgreSQL 17 and MySQL 8.4. Older versions usually work; if something
-does not, please [open an issue](https://github.com/tuancuongpham/Sqlotus/issues).
+The tests run against SQL Server 2022, PostgreSQL 17 and MySQL 8.4. Older versions usually work. MariaDB connects
+as MySQL and should work too, but it is not tested yet. If something does not work, please
+[open an issue](https://github.com/tuancuongpham/Sqlotus/issues).
 </details>
 
 <details>

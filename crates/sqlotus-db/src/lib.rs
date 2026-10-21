@@ -59,7 +59,8 @@ pub struct ConnectionConfig {
     pub trust_server_certificate: bool,
     /// Tab colour, e.g. red for production.
     pub color: Option<String>,
-    /// Refuse statements that change data or schema.
+    /// Refuse statements that change data or schema. PostgreSQL and MySQL
+    /// sessions are also read-only on the server; SQL Server has no such mode.
     pub read_only: bool,
     /// Start a transaction before changes and leave it open until the user
     /// commits or rolls back.

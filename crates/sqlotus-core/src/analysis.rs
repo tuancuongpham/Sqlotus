@@ -144,6 +144,32 @@ pub fn modifying_statements(sql: &str, dialect: Dialect) -> Vec<String> {
     out
 }
 
+/// Procedure calls (`EXEC p`, `EXECUTE p`, `CALL p`): they may change data
+/// without any modifying keyword in the script itself.
+pub fn routine_calls(sql: &str, dialect: Dialect) -> Vec<String> {
+    let tokens = tokenize(sql, dialect);
+    let t = sig(&tokens);
+    let mut out = Vec::new();
+    for (i, tok) in t.iter().enumerate() {
+        let u = word(Some(tok));
+        if !matches!(u.as_str(), "EXEC" | "EXECUTE" | "CALL") {
+            continue;
+        }
+        let prev = if i > 0 { word(t.get(i - 1)) } else { String::new() };
+        let next = word(t.get(i + 1));
+        // GRANT EXECUTE ON, WITH EXECUTE AS, EXECUTE AS USER, a column named "call"
+        let not_a_call = matches!(prev.as_str(), "GRANT" | "DENY" | "REVOKE" | "WITH" | ",")
+            || next == "AS"
+            || next == "ON"
+            || i.checked_sub(1).is_some_and(|p| t[p].kind == TokenKind::Dot)
+            || t.get(i + 1).is_none_or(|n| n.kind == TokenKind::Semicolon);
+        if !not_a_call {
+            out.push(format!("{u} {}", statement_target(&t[i + 1..])).trim().to_string());
+        }
+    }
+    out
+}
+
 /// Whether the script manages transactions itself (BEGIN TRAN, COMMIT,
 /// ROLLBACK, SAVEPOINT, autocommit settings, ...).
 pub fn has_transaction_control(sql: &str, dialect: Dialect) -> bool {
@@ -232,8 +258,19 @@ fn statement_target(rest: &[Token<'_>]) -> String {
     words.join(" ").trim().to_string()
 }
 
+/// Whether the statement these tokens belong to is an ALTER TABLE.
+fn in_alter_table(before: &[Token<'_>]) -> bool {
+    let start = before
+        .iter()
+        .rposition(|x| x.kind == TokenKind::Semicolon)
+        .map_or(0, |p| p + 1);
+    let stmt = &before[start..];
+    stmt.windows(2)
+        .any(|w| word(Some(&w[0])) == "ALTER" && word(Some(&w[1])) == "TABLE")
+}
+
 /// Warnings to confirm before executing `sql`: UPDATE/DELETE without WHERE,
-/// TRUNCATE, DROP TABLE/DATABASE.
+/// TRUNCATE, DROP TABLE/DATABASE/SCHEMA/COLUMN.
 pub fn execution_warnings(sql: &str, dialect: Dialect) -> Vec<String> {
     let tokens = tokenize(sql, dialect);
     let t = sig(&tokens);
@@ -256,11 +293,25 @@ pub fn execution_warnings(sql: &str, dialect: Dialect) -> Vec<String> {
         let u = word(Some(tok));
         let next = word(t.get(i + 1));
         let prev = if i > 0 { word(t.get(i - 1)) } else { String::new() };
-        if u == "TRUNCATE" && next == "TABLE" {
+        // `TRUNCATE t` is valid in PostgreSQL and MySQL; `TRUNCATE(x, 2)` is a MySQL function
+        let next_is_name = t.get(i + 1).is_some_and(|n| n.is_name());
+        let call = t.get(i + 1).is_some_and(|n| n.kind == TokenKind::LParen);
+        if u == "TRUNCATE" && !call && (next == "TABLE" || next_is_name) {
             out.push("TRUNCATE TABLE removes every row.".into());
         }
         if u == "DROP" && matches!(next.as_str(), "TABLE" | "DATABASE" | "SCHEMA") && prev != "IF" {
             out.push(format!("DROP {next} permanently removes the object and its data."));
+        }
+        // ALTER TABLE ... DROP COLUMN c, or MySQL's ALTER TABLE ... DROP c
+        let mysql_short = dialect == Dialect::MySql
+            && next_is_name
+            && !matches!(
+                next.as_str(),
+                "CONSTRAINT" | "INDEX" | "KEY" | "PRIMARY" | "FOREIGN" | "CHECK" | "PARTITION" | "DEFAULT" | "TRIGGER"
+            )
+            && in_alter_table(&t[..i]);
+        if u == "DROP" && (next == "COLUMN" || mysql_short) {
+            out.push("DROP COLUMN permanently removes the column and its data.".into());
         }
     }
     out
@@ -1121,6 +1172,44 @@ mod tests {
             execution_warnings("TRUNCATE TABLE t; DROP TABLE t", Dialect::MsSql).len(),
             2
         );
+        // PostgreSQL / MySQL allow TRUNCATE without TABLE; MySQL's TRUNCATE() is a function
+        assert_eq!(execution_warnings("TRUNCATE orders", Dialect::Postgres).len(), 1);
+        assert_eq!(execution_warnings("truncate orders;", Dialect::MySql).len(), 1);
+        assert!(execution_warnings("SELECT TRUNCATE(total, 0) FROM orders", Dialect::MySql).is_empty());
+        // dropping a column loses its data
+        let w = execution_warnings("ALTER TABLE dbo.Orders DROP COLUMN Total", Dialect::MsSql);
+        assert_eq!(w, vec!["DROP COLUMN permanently removes the column and its data."]);
+        assert_eq!(
+            execution_warnings("ALTER TABLE orders DROP total", Dialect::MySql).len(),
+            1
+        );
+        assert_eq!(
+            execution_warnings("ALTER TABLE orders ADD note text, DROP total", Dialect::MySql).len(),
+            1
+        );
+        assert!(execution_warnings("ALTER TABLE orders DROP CONSTRAINT fk", Dialect::MsSql).is_empty());
+        assert!(execution_warnings("ALTER TABLE orders DROP INDEX ix", Dialect::MySql).is_empty());
+    }
+
+    #[test]
+    fn procedure_calls() {
+        let c = |s: &str, d: Dialect| routine_calls(s, d);
+        assert_eq!(
+            c("EXEC dbo.ArchiveOrders @Days = 30", Dialect::MsSql),
+            vec!["EXEC dbo.ArchiveOrders"]
+        );
+        assert_eq!(
+            c("execute sp_rename 'a', 'b'", Dialect::MsSql),
+            vec!["EXECUTE sp_rename"]
+        );
+        assert_eq!(
+            c("CALL archive_orders(30)", Dialect::MySql),
+            vec!["CALL archive_orders"]
+        );
+        assert!(c("GRANT EXECUTE ON dbo.p TO u", Dialect::MsSql).is_empty());
+        assert!(c("EXECUTE AS USER = 'u'; SELECT 1", Dialect::MsSql).is_empty());
+        assert!(c("SELECT 1 -- exec dbo.p", Dialect::MsSql).is_empty());
+        assert!(c("SELECT t.call FROM t", Dialect::Postgres).is_empty());
     }
 
     #[test]

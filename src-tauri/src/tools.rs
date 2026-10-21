@@ -212,11 +212,14 @@ pub async fn object_references(
     })
 }
 
-/// Statements that change data or schema (for the production confirmation).
+/// Statements that change or may change data or schema (for the production
+/// confirmation): modifying statements plus procedure calls.
 #[tauri::command]
 pub fn modifying_statements(text: String, dialect: Dialect) -> CmdResult<Vec<String>> {
     no_panic("analysis", || {
-        sqlotus_core::analysis::modifying_statements(&text, dialect)
+        let mut out = sqlotus_core::analysis::modifying_statements(&text, dialect);
+        out.extend(sqlotus_core::analysis::routine_calls(&text, dialect));
+        out
     })
 }
 
