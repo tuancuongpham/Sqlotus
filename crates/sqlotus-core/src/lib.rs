@@ -38,6 +38,17 @@ pub enum Dialect {
 }
 
 impl Dialect {
+    /// `value` as a string literal: quotes doubled, and for MySQL backslashes
+    /// too, since MySQL reads `\t` inside a string as a tab.
+    pub fn string_literal(self, value: &str) -> String {
+        let escaped = if self == Dialect::MySql {
+            value.replace('\\', "\\\\")
+        } else {
+            value.to_string()
+        };
+        format!("'{}'", escaped.replace('\'', "''"))
+    }
+
     /// Quote an identifier for this dialect when it needs quoting.
     pub fn quote_ident(self, name: &str) -> String {
         if !self.needs_quoting(name) {
@@ -120,6 +131,16 @@ mod tests {
         assert_eq!(Dialect::MySql.quote_ident("groups"), "`groups`");
         assert_eq!(Dialect::Postgres.quote_ident("user"), "\"user\"");
         assert_eq!(Dialect::MsSql.quote_ident("Status"), "Status");
+    }
+
+    #[test]
+    fn string_literals() {
+        assert_eq!(Dialect::MsSql.string_literal("O'Brien"), "'O''Brien'");
+        assert_eq!(Dialect::Postgres.string_literal("C:\\temp"), "'C:\\temp'");
+        // MySQL would read `\t` and `\n` as a tab and a newline
+        assert_eq!(Dialect::MySql.string_literal("C:\\temp\\new"), "'C:\\\\temp\\\\new'");
+        assert_eq!(Dialect::MySql.string_literal("it's \\"), "'it''s \\\\'");
+        assert_eq!(Dialect::MySql.string_literal(""), "''");
     }
 }
 

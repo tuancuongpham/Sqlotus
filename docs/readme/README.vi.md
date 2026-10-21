@@ -96,12 +96,14 @@ Bấm vào từng nhóm để xem chi tiết.
 <details>
 <summary><b>An toàn và phân tích code</b></summary>
 
-- **Gạch chân khi gõ**: UPDATE/DELETE thiếu WHERE, `SELECT *`, `= NULL`, kiểu deprecated, biến không dùng,
+- **Gạch chân khi gõ**: UPDATE/DELETE thiếu WHERE, `SELECT *`, `= NULL`, kiểu deprecated, biến không dùng (kể cả biến
+  chỉ được gán mà không được đọc),
   object/cột không tồn tại, chuỗi tiếng Việt thiếu tiền tố `N` (`'Nguyễn'` sẽ thành `Nguy?n`),
   `NOT IN (SELECT …)` trên cột cho phép NULL, hàm bọc cột trong WHERE/ON (`YEAR(NgayTao) = 2024` không dùng được
   index), so sánh gây chuyển kiểu ngầm (`cot_varchar = N'x'`, `cot_chuoi = 123`).
-- **Cảnh báo trước khi chạy** UPDATE/DELETE không WHERE, TRUNCATE, DROP TABLE/DATABASE/SCHEMA và DROP COLUMN.
-- **Kết nối read-only**: chặn INSERT/UPDATE/DELETE/MERGE/DDL/GRANT, vẫn chạy được SELECT (tab có 🔒). Với PostgreSQL
+- **Cảnh báo trước khi chạy** UPDATE/DELETE không WHERE, TRUNCATE, DROP TABLE/DATABASE/SCHEMA và DROP COLUMN, cùng các
+  lệnh ảnh hưởng tới phiên của người khác hoặc cả server (`WITH ROLLBACK IMMEDIATE`, `SET OFFLINE`, `KILL`, `SHUTDOWN`).
+- **Kết nối read-only**: chặn INSERT/UPDATE/DELETE/MERGE/DDL/GRANT/KILL, vẫn chạy được SELECT (tab có 🔒). Với PostgreSQL
   và MySQL, phiên kết nối còn được đặt chỉ đọc ngay trên server, nên procedure và function cũng không ghi được. SQL
   Server không có phiên chỉ đọc: procedure được gọi không bị kiểm tra, nên hãy dùng login chỉ có quyền đọc khi cần.
 - **Nhắc transaction đang mở**: tab hiện **TRAN**, thanh công cụ có nút Commit / Roll back, đóng tab sẽ hỏi.
@@ -161,8 +163,8 @@ Bấm vào từng nhóm để xem chi tiết.
 <details>
 <summary><b>Chạy query và kết quả</b></summary>
 
-- F5 / Ctrl+E chạy vùng chọn hoặc cả tab, Shift+F5 chạy câu lệnh tại con trỏ; tách batch `GO` / `GO n`; huỷ query;
-  nhiều result set.
+- F5 / Ctrl+E chạy vùng chọn hoặc cả tab, Shift+F5 chạy câu lệnh tại con trỏ; tách batch `GO` / `GO n`; script MySQL
+  có dòng `DELIMITER` (file dump, procedure, trigger) chạy giống công cụ dòng lệnh mysql; huỷ query; nhiều result set.
 - **Chạy trên nhiều database** (Ctrl+Shift+F5): mỗi dòng có cột `Database`, gộp lại nếu cùng cấu trúc.
 - **Lưới kết quả ảo hoá**: sắp xếp, lọc, copy kèm header, **copy dạng INSERT / CSV / IN list / Markdown / JSON /
   HTML**, lưu CSV. Shift+click chọn vùng trong một cột để xem Count / Sum / Avg / Min / Max.
@@ -296,6 +298,8 @@ Có. **Options → Snippets → Import snippets…** đọc một thư mục cá
 - So sánh schema coi đổi tên cột/bảng là xoá + thêm; identity / cột computed khác nhau phải sửa tay.
 - Hiện chỉ chạy trên Windows.
 - Chưa hỗ trợ kết nối named pipe (LocalDB); dùng TCP.
+- Dữ liệu test chưa đọc ràng buộc CHECK và UNIQUE: giá trị có thể vi phạm điều kiện CHECK hoặc bị trùng ở cột UNIQUE (mã
+  và email khác nhau theo từng dòng, các giá trị khác thì không chắc). Hãy xem lại script trước khi chạy.
 
 ## Phát triển
 

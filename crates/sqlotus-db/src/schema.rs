@@ -466,7 +466,8 @@ fn mysql_default(r: &Row, type_col: usize, default_col: usize, extra_col: usize)
     Some(if numeric {
         raw
     } else {
-        format!("'{}'", raw.replace('\'', "''"))
+        // information_schema shows the plain value: escape it the way MySQL reads it
+        Dialect::MySql.string_literal(&raw)
     })
 }
 
@@ -664,6 +665,27 @@ mod tests {
             ),
             "CREATE PROCEDURE `p`() BEGIN SELECT 1; END"
         );
+    }
+
+    #[test]
+    fn mysql_defaults() {
+        let row = |ty: &str, default: Option<&str>, extra: &str| -> Row {
+            vec![Some(ty.into()), default.map(String::from), Some(extra.into())]
+        };
+        let d = |r: Row| mysql_default(&r, 0, 1, 2);
+        assert_eq!(d(row("int", Some("0"), "")).as_deref(), Some("0"));
+        assert_eq!(d(row("decimal(12,2)", Some("1.50"), "")).as_deref(), Some("1.50"));
+        assert_eq!(d(row("varchar(10)", Some("it's"), "")).as_deref(), Some("'it''s'"));
+        // information_schema shows the plain value; the script must escape the backslash
+        assert_eq!(
+            d(row("varchar(20)", Some("C:\\tmp"), "")).as_deref(),
+            Some("'C:\\\\tmp'")
+        );
+        assert_eq!(
+            d(row("datetime", Some("CURRENT_TIMESTAMP"), "DEFAULT_GENERATED")).as_deref(),
+            Some("CURRENT_TIMESTAMP")
+        );
+        assert_eq!(d(row("varchar(5)", None, "")), None);
     }
 
     #[test]

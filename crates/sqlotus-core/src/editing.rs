@@ -332,7 +332,11 @@ fn literal(v: &Option<String>, col: &EditColumn, dialect: Dialect, problems: &mu
     let b = base(&col.data_type);
     if NUMERIC.contains(&b.as_str()) {
         let s = v.trim();
-        if s.parse::<f64>().is_err() {
+        // a plain number only: `NaN` or `inf` would reach the server as SQL text
+        let plain = s
+            .chars()
+            .all(|c| c.is_ascii_digit() || matches!(c, '-' | '+' | '.' | 'e' | 'E'));
+        if !plain || !s.parse::<f64>().is_ok_and(f64::is_finite) {
             problems.push(format!("{name}: '{v}' is not a number."));
         }
         return s.to_string();
@@ -381,7 +385,7 @@ fn literal(v: &Option<String>, col: &EditColumn, dialect: Dialect, problems: &mu
             col.data_type
         ));
     }
-    let quoted = format!("'{}'", v.replace('\'', "''"));
+    let quoted = dialect.string_literal(v);
     if dialect == Dialect::MsSql && matches!(b.as_str(), "nchar" | "nvarchar" | "ntext") {
         format!("N{quoted}")
     } else {
@@ -667,5 +671,47 @@ mod tests {
         let plan = edit_statements(&src, &bad, Dialect::MsSql);
         assert_eq!(plan.problems.len(), 3, "{:?}", plan.problems);
         assert!(plan.problems[0].starts_with("Row 1: Name cannot be NULL"));
+    }
+
+    #[test]
+    fn values_are_written_exactly() {
+        let cat = catalog();
+        let cols = names(&["Id", "Name", "Country", "Score"]);
+        let original = HashMap::from([
+            ("Id".to_string(), Some("1".to_string())),
+            ("Name".to_string(), Some("An".to_string())),
+            ("Country".to_string(), None),
+            ("Score".to_string(), None),
+        ]);
+        let update = |col: &str, value: &str| {
+            vec![RowEdit::Update {
+                original: original.clone(),
+                values: HashMap::from([(col.to_string(), Some(value.to_string()))]),
+            }]
+        };
+        // MySQL reads backslashes in strings as escapes, so they are doubled
+        let my = editable_source("SELECT * FROM dbo.Customers", Dialect::MySql, &cat, &cols).unwrap();
+        let plan = edit_statements(&my, &update("Name", "a\\b"), Dialect::MySql);
+        assert!(
+            plan.statements[0].contains("SET Name = 'a\\\\b'"),
+            "{:?}",
+            plan.statements
+        );
+        let ms = editable_source("SELECT * FROM dbo.Customers", Dialect::MsSql, &cat, &cols).unwrap();
+        let plan = edit_statements(&ms, &update("Name", "a\\b"), Dialect::MsSql);
+        assert!(
+            plan.statements[0].contains("SET Name = N'a\\b'"),
+            "{:?}",
+            plan.statements
+        );
+        // only plain numbers reach the server: NaN, inf and words are refused
+        for bad in ["NaN", "inf", "-infinity", "1_000", "0x10", "1e999", ""] {
+            let plan = edit_statements(&ms, &update("Score", bad), Dialect::MsSql);
+            assert_eq!(plan.problems.len(), 1, "{bad:?} was accepted: {:?}", plan.statements);
+        }
+        for good in ["0", "-1.5", "+2", "3e2", " 4 "] {
+            let plan = edit_statements(&ms, &update("Score", good), Dialect::MsSql);
+            assert!(plan.problems.is_empty(), "{good:?}: {:?}", plan.problems);
+        }
     }
 }

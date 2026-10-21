@@ -40,6 +40,7 @@ npx tauri dev
 cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+npm test
 npx tsc --noEmit
 ```
 

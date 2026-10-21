@@ -125,6 +125,10 @@ await setText("SELECT COUNT(*) FROM dbo.OrderItems");
 await press("F5");
 check("read-only allows SELECT", !!(await waitToast("Query finished", 8000)), await toastText());
 check("read-only lock on tab", await evaluate(`!!document.querySelector(".tab.active .tab-badge.ro")`));
+// the activity monitor does not end sessions through a read-only connection either
+const killArgs = JSON.stringify({ connectionId: ro.id, database: "Shop", dialect: "mssql", id: 9999, wholeSession: true });
+const killRefused = await evaluate(`window.__TAURI_INTERNALS__.invoke("kill_session", ${killArgs}).then(() => "", (e) => String(e))`);
+check("read-only refuses to kill sessions", killRefused.includes("read-only"), killRefused);
 await press("Control+W");
 await sleep(300);
 await invoke("delete_connection", { id: ro.id });

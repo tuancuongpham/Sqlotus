@@ -152,7 +152,13 @@ impl Lexer<'_> {
                 self.eat_while(char::is_whitespace);
                 TokenKind::Whitespace
             }
-            '-' if next == Some('-') => self.line_comment(),
+            // MySQL needs a space or control character after `--` (`5--2` is 5 - -2)
+            '-' if next == Some('-')
+                && (self.dialect != Dialect::MySql
+                    || self.peek_at(2).is_none_or(|c| c.is_whitespace() || c.is_control())) =>
+            {
+                self.line_comment()
+            }
             '#' if self.dialect == Dialect::MySql => self.line_comment(),
             '/' if next == Some('*') => self.block_comment(),
             '\'' => {

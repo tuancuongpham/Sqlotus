@@ -829,7 +829,7 @@ fn literal(v: Value, c: &ColumnPlan, dialect: Dialect) -> String {
         Value::Raw(s) if matches!(ty.as_str(), "bool" | "boolean") => if s == "1" { "TRUE" } else { "FALSE" }.into(),
         Value::Raw(s) => s,
         Value::Text(s) => {
-            let q = format!("'{}'", s.replace('\'', "''"));
+            let q = dialect.string_literal(&s);
             if dialect == Dialect::MsSql && matches!(ty.as_str(), "nchar" | "nvarchar" | "ntext") {
                 format!("N{q}")
             } else {

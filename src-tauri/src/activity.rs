@@ -202,6 +202,19 @@ pub async fn kill_session(
     if id <= 0 {
         return Err("Invalid session id.".into());
     }
+    // cancelling or ending someone's session changes the server: not on a read-only connection
+    let read_only = state
+        .store
+        .get_connection(&connection_id)
+        .map_err(err)?
+        .is_some_and(|c| c.read_only);
+    if read_only {
+        return Err(
+            "This connection is read-only, so Sqlotus does not cancel queries or end sessions on it. \
+                    Turn off \"Read-only\" in the connection settings first."
+                .into(),
+        );
+    }
     let sql = match (dialect, whole_session) {
         (Dialect::MsSql, _) => format!("KILL {id}"),
         (Dialect::Postgres, false) => format!("SELECT pg_cancel_backend({id})"),

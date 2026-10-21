@@ -105,13 +105,15 @@ Click a group for the details.
 <summary><b>Safety and code analysis</b></summary>
 
 - Squiggles while typing: UPDATE/DELETE without WHERE, `SELECT *`, `= NULL` comparisons, deprecated types,
-  unused variables, unknown objects and columns, Unicode literals without the `N` prefix
+  unused variables (also ones that are assigned but never read), unknown objects and columns, Unicode literals
+  without the `N` prefix
   (`'Nguyễn'` would be stored as `Nguy?n`), `NOT IN (SELECT …)` over a nullable column, functions wrapped
   around a column in WHERE/ON (`YEAR(OrderDate) = 2024` cannot use an index), and comparisons that force an
   implicit conversion of the column (`varchar_col = N'x'`, `text_col = 123`).
 - **Execution warnings**: confirmation before running UPDATE/DELETE without WHERE, TRUNCATE, DROP
-  TABLE/DATABASE/SCHEMA and DROP COLUMN.
-- **Read-only connections**: block INSERT/UPDATE/DELETE/MERGE/DDL/GRANT on a connection (e.g. production)
+  TABLE/DATABASE/SCHEMA and DROP COLUMN, and statements that reach other sessions or the server
+  (`WITH ROLLBACK IMMEDIATE`, `SET OFFLINE`, `KILL`, `SHUTDOWN`).
+- **Read-only connections**: block INSERT/UPDATE/DELETE/MERGE/DDL/GRANT/KILL on a connection (e.g. production)
   while still running queries; such tabs show a 🔒. On PostgreSQL and MySQL the session is read-only on the
   server too, so procedures and functions cannot write either. SQL Server has no read-only session: procedures
   called on it are not checked, so use a login with read-only permissions where it matters.
@@ -181,7 +183,8 @@ Click a group for the details.
 <summary><b>Running queries</b></summary>
 
 - F5 / Ctrl+E runs the selection or the tab, Shift+F5 the statement at the cursor; `GO` / `GO n` batches;
-  cancel; multiple result sets.
+  MySQL scripts with `DELIMITER` lines (dumps, procedures, triggers) run as the mysql client runs them; cancel;
+  multiple result sets.
 - **Run on multiple databases** (Ctrl+Shift+F5): every row gets a `Database` column; results with the same
   shape are combined.
 - Virtualized result grid: sort by column, filter, copy (with headers), **copy as INSERT statements / CSV /
@@ -325,6 +328,8 @@ Yes. **Options → Snippets → Import snippets…** reads a folder of `.json` f
   to be done by hand.
 - Windows only for now.
 - Named-pipe connections (LocalDB) are not supported; use TCP.
+- Test data does not read CHECK or UNIQUE constraints: a value may break a CHECK rule or repeat in a UNIQUE column
+  (codes and e-mails differ per row, other values may not). Review the script before you run it.
 
 ## Development
 

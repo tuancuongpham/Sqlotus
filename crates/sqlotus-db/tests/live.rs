@@ -449,3 +449,67 @@ async fn postgres_read_only_session() {
 async fn mysql_read_only_session() {
     read_only_session_refuses_writes("SQLOTUS_TEST_MYSQL", "read only transaction").await;
 }
+
+/// A script with `DELIMITER` lines (as from a dump or a tutorial) creates the
+/// procedure and trigger, and the statements after `DELIMITER ;` still run.
+#[tokio::test]
+async fn mysql_delimiter_script() {
+    let Some(e) = env("SQLOTUS_TEST_MYSQL") else {
+        return;
+    };
+    let mut conn = connect(&e).await;
+    let limits = Limits::default();
+    let script = "DROP PROCEDURE IF EXISTS sqlotus_delim_p;\n\
+                  DROP TABLE IF EXISTS sqlotus_delim_t;\n\
+                  CREATE TABLE sqlotus_delim_t (a int);\n\
+                  DELIMITER //\n\
+                  CREATE PROCEDURE sqlotus_delim_p(IN n int)\nBEGIN\n  INSERT INTO sqlotus_delim_t VALUES (n);\n  SELECT COUNT(*) AS c FROM sqlotus_delim_t;\nEND //\n\
+                  CREATE TRIGGER sqlotus_delim_tr BEFORE INSERT ON sqlotus_delim_t FOR EACH ROW BEGIN SET NEW.a = NEW.a * 10; END//\n\
+                  DELIMITER ;\n\
+                  CALL sqlotus_delim_p(4);\n\
+                  SELECT a FROM sqlotus_delim_t;";
+    let out = execute_script(&mut conn, script, &limits).await;
+    assert!(errors(&out).is_empty(), "{:?}", errors(&out));
+    let last = out.last().unwrap();
+    let rows = &last.output.result_sets.last().expect("result set").rows;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0][0].as_deref(), Some("40"), "the trigger ran");
+    execute_script(
+        &mut conn,
+        "DROP PROCEDURE sqlotus_delim_p; DROP TABLE sqlotus_delim_t;",
+        &limits,
+    )
+    .await;
+}
+
+/// String literals built by Sqlotus come back from each server character for
+/// character: quotes, backslashes, Vietnamese and an emoji.
+async fn literals_round_trip(var: &str, dialect: sqlotus_core::Dialect) {
+    let Some(e) = env(var) else {
+        return;
+    };
+    let mut conn = connect(&e).await;
+    let value = "C:\temp\new 'quoted' \"double\" Nguyễn 😀 %_ \\\\";
+    let mut lit = dialect.string_literal(value);
+    if dialect == sqlotus_core::Dialect::MsSql {
+        lit = format!("N{lit}");
+    }
+    let out = conn.execute(&format!("SELECT {lit} AS v"), &Limits::default()).await;
+    assert!(!out.failed, "{out:?}");
+    assert_eq!(out.result_sets[0].rows[0][0].as_deref(), Some(value));
+}
+
+#[tokio::test]
+async fn mssql_literals_round_trip() {
+    literals_round_trip("SQLOTUS_TEST_MSSQL", sqlotus_core::Dialect::MsSql).await;
+}
+
+#[tokio::test]
+async fn postgres_literals_round_trip() {
+    literals_round_trip("SQLOTUS_TEST_PG", sqlotus_core::Dialect::Postgres).await;
+}
+
+#[tokio::test]
+async fn mysql_literals_round_trip() {
+    literals_round_trip("SQLOTUS_TEST_MYSQL", sqlotus_core::Dialect::MySql).await;
+}

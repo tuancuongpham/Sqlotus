@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { api, errorText } from "../api";
+import { sqlLiteral, toCsv, toHtml, toInsert, toJson, toMarkdown, toTsv } from "../export";
 import { toast, update } from "../notify";
 import { pin, unpin, usePinned } from "../pinned";
 import type { Dialect, EditContext, EditSource, ResultSet, RowEdit } from "../types";
@@ -21,73 +22,6 @@ function columnWidths(rs: ResultSet): number[] {
     }
     return Math.max(60, Math.min(420, Math.round(max * CHAR_W + 20)));
   });
-}
-
-function toTsv(rs: ResultSet, rows: (string | null)[][], headers: boolean): string {
-  const esc = (v: string | null) => (v == null ? "NULL" : v.replace(/\t/g, " ").replace(/\r?\n/g, " "));
-  const lines = rows.map((r) => r.map(esc).join("\t"));
-  if (headers) lines.unshift(rs.columns.map((c) => c.name).join("\t"));
-  return lines.join("\r\n");
-}
-
-const NUMERIC = /^(tinyint|smallint|int|bigint|decimal|numeric|money|smallmoney|float|real|bit|integer|double|serial|bigserial|int[248]?|float[48]|LONGLONG|LONG|SHORT|TINY|NEWDECIMAL|DOUBLE|FLOAT)/i;
-
-function sqlLiteral(v: string | null, typeName: string, dialect: Dialect): string {
-  if (v == null) return "NULL";
-  const numeric = typeName ? NUMERIC.test(typeName) : /^-?\d+(\.\d+)?$/.test(v);
-  if (numeric && /^-?\d+(\.\d+)?(e-?\d+)?$/i.test(v)) return v;
-  if (typeName === "varbinary" || typeName === "binary") return v;
-  const quoted = `'${v.replace(/'/g, "''")}'`;
-  return dialect === "mssql" ? `N${quoted}` : quoted;
-}
-
-/** Rows as INSERT statements (1000-row VALUES batches, the SQL Server limit). */
-function toInsert(rs: ResultSet, rows: (string | null)[][], dialect: Dialect): string {
-  const q = (n: string) => (dialect === "mssql" ? `[${n.replace(/]/g, "]]")}]` : dialect === "mysql" ? `\`${n}\`` : `"${n}"`);
-  const target = dialect === "mssql" ? "#Results" : "results";
-  const cols = rs.columns.map((c) => q(c.name || "column")).join(", ");
-  const parts: string[] = [];
-  for (let i = 0; i < rows.length; i += 1000) {
-    const values = rows
-      .slice(i, i + 1000)
-      .map((r) => `(${r.map((v, j) => sqlLiteral(v, rs.columns[j].typeName, dialect)).join(", ")})`)
-      .join(",\n       ");
-    parts.push(`INSERT INTO ${target} (${cols})\nVALUES ${values};`);
-  }
-  return parts.join("\n\n");
-}
-
-function toMarkdown(rs: ResultSet, rows: (string | null)[][]): string {
-  const esc = (v: string | null) => (v == null ? "NULL" : v.replace(/\|/g, "\\|").replace(/\r?\n/g, "<br>"));
-  const head = `| ${rs.columns.map((c) => esc(c.name)).join(" | ")} |`;
-  const numeric = rs.columns.map((c) => NUMERIC.test(c.typeName));
-  const sep = `| ${numeric.map((n) => (n ? "---:" : "---")).join(" | ")} |`;
-  return [head, sep, ...rows.map((r) => `| ${r.map(esc).join(" | ")} |`)].join("\n");
-}
-
-function toJson(rs: ResultSet, rows: (string | null)[][]): string {
-  const numeric = rs.columns.map((c) => NUMERIC.test(c.typeName) && !/^bit$/i.test(c.typeName));
-  const objects = rows.map((r) =>
-    Object.fromEntries(
-      r.map((v, j) => {
-        const n = v != null && numeric[j] && /^-?\d+(\.\d+)?$/.test(v) && Math.abs(Number(v)) <= Number.MAX_SAFE_INTEGER ? Number(v) : v;
-        return [rs.columns[j].name || `column${j + 1}`, n];
-      }),
-    ),
-  );
-  return JSON.stringify(objects, null, 2);
-}
-
-function toHtml(rs: ResultSet, rows: (string | null)[][]): string {
-  const esc = (v: string | null) => (v == null ? "<i>NULL</i>" : v.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"));
-  const head = rs.columns.map((c) => `<th>${esc(c.name)}</th>`).join("");
-  const body = rows.map((r) => `<tr>${r.map((v) => `<td>${esc(v)}</td>`).join("")}</tr>`).join("\n");
-  return `<table border="1" cellspacing="0" cellpadding="4">\n<thead><tr>${head}</tr></thead>\n<tbody>\n${body}\n</tbody>\n</table>`;
-}
-
-function toCsv(rs: ResultSet, rows: (string | null)[][]): string {
-  const esc = (v: string | null) => (v == null ? "" : /[",\r\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
-  return [rs.columns.map((c) => esc(c.name)).join(","), ...rows.map((r) => r.map(esc).join(","))].join("\r\n");
 }
 
 type Row = (string | null)[];

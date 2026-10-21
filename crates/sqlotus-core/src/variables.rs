@@ -178,7 +178,7 @@ pub fn literal(value: Option<&str>, data_type: &str, dialect: Dialect) -> String
     {
         return v.trim().to_string();
     }
-    let quoted = format!("'{}'", v.replace('\'', "''"));
+    let quoted = dialect.string_literal(v);
     let unicode = dialect == Dialect::MsSql
         && !matches!(
             base.as_str(),
@@ -310,5 +310,8 @@ mod tests {
         assert_eq!(literal(Some("2024-01-31"), "date", Dialect::MsSql), "'2024-01-31'");
         assert_eq!(literal(Some("abc"), "int", Dialect::MsSql), "N'abc'");
         assert!(prelude("SELECT @Id", Dialect::MySql, &vars[..1]).starts_with("SET @Id = 5; "));
+        // a path typed for MySQL keeps its backslashes
+        assert_eq!(literal(Some("C:\\temp"), "", Dialect::MySql), "'C:\\\\temp'");
+        assert_eq!(literal(Some("C:\\temp"), "nvarchar(50)", Dialect::MsSql), "N'C:\\temp'");
     }
 }

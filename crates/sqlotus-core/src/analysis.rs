@@ -136,6 +136,11 @@ pub fn modifying_statements(sql: &str, dialect: Dialect) -> Vec<String> {
         if MODIFYING.contains(&u.as_str()) && !part_of_other && !(u == "REPLACE" && dialect != Dialect::MySql) {
             out.push(format!("{u} {}", statement_target(&t[i + 1..])).trim().to_string());
         }
+        // KILL / SHUTDOWN reach other sessions; only as a statement, not a column named kill
+        let statement_start = i == 0 || t[i - 1].kind == TokenKind::Semicolon || prev == "GO";
+        if statement_start && (u == "KILL" || (u == "SHUTDOWN" && dialect == Dialect::MsSql)) {
+            out.push(u.clone());
+        }
         // SELECT ... INTO new_table creates a table
         if u == "INTO" && prev != "INSERT" && prev != "MERGE" && t[..i].iter().any(|x| word(Some(x)) == "SELECT") {
             out.push("SELECT INTO".into());
@@ -270,7 +275,8 @@ fn in_alter_table(before: &[Token<'_>]) -> bool {
 }
 
 /// Warnings to confirm before executing `sql`: UPDATE/DELETE without WHERE,
-/// TRUNCATE, DROP TABLE/DATABASE/SCHEMA/COLUMN.
+/// TRUNCATE, DROP TABLE/DATABASE/SCHEMA/COLUMN, and statements that reach
+/// other sessions (ROLLBACK IMMEDIATE, SET OFFLINE, KILL, SHUTDOWN).
 pub fn execution_warnings(sql: &str, dialect: Dialect) -> Vec<String> {
     let tokens = tokenize(sql, dialect);
     let t = sig(&tokens);
@@ -312,6 +318,20 @@ pub fn execution_warnings(sql: &str, dialect: Dialect) -> Vec<String> {
             && in_alter_table(&t[..i]);
         if u == "DROP" && (next == "COLUMN" || mysql_short) {
             out.push("DROP COLUMN permanently removes the column and its data.".into());
+        }
+        // statements that reach other people's sessions or the whole server
+        let statement_start = i == 0 || t[i - 1].kind == TokenKind::Semicolon || prev == "GO";
+        if u == "ROLLBACK" && next == "IMMEDIATE" && prev == "WITH" {
+            out.push("WITH ROLLBACK IMMEDIATE disconnects other users and rolls back their open transactions.".into());
+        }
+        if u == "OFFLINE" && prev == "SET" {
+            out.push("SET OFFLINE takes the database offline for everyone.".into());
+        }
+        if u == "KILL" && statement_start && t.get(i + 1).is_some_and(|n| n.kind == TokenKind::Number || n.is_name()) {
+            out.push("KILL ends another session and rolls back its open transaction.".into());
+        }
+        if u == "SHUTDOWN" && statement_start && dialect == Dialect::MsSql {
+            out.push("SHUTDOWN stops the SQL Server instance for everyone.".into());
         }
     }
     out
@@ -576,24 +596,68 @@ fn unused_variables(src: &str, dialect: Dialect, tokens: &[Token<'_>], out: &mut
         }
         let routine = matches!(word(t.first()).as_str(), "CREATE" | "ALTER");
         for (_, idx) in uses {
-            if idx.len() != 1 {
-                continue;
-            }
             let i = idx[0];
             let prev = if i > 0 { word(t.get(i - 1)) } else { String::new() };
-            let declared = prev == "DECLARE"
-                || (i > 0 && t[i - 1].kind == TokenKind::Comma && in_declare(&t, i))
-                || (routine && is_parameter(&t, i));
-            if declared {
-                out.push(diag(
-                    &t[i],
-                    Severity::Info,
-                    "SQ005",
-                    format!("{} is declared but never used", t[i].text),
-                ));
-            }
+            let declared = prev == "DECLARE" || (i > 0 && t[i - 1].kind == TokenKind::Comma && in_declare(&t, i));
+            let message = if declared {
+                // a DECLAREd variable that is only ever assigned is not used either
+                let assigned = idx[1..].iter().any(|&k| is_assignment(&t, k));
+                if idx[1..].iter().any(|&k| !is_assignment(&t, k)) {
+                    continue;
+                }
+                if assigned {
+                    "is assigned but never read"
+                } else {
+                    "is declared but never used"
+                }
+            } else if routine && idx.len() == 1 && is_parameter(&t, i) {
+                // parameters: an assignment may be the point (OUTPUT), so only a parameter that never appears
+                "is declared but never used"
+            } else {
+                continue;
+            };
+            out.push(diag(&t[i], Severity::Info, "SQ005", format!("{} {message}", t[i].text)));
         }
     }
+}
+
+/// `@v` at `i` is only written: `SET @v = …` (or `+=` etc.), `SELECT @v = …`,
+/// or `UPDATE … SET …, @v = …`.
+fn is_assignment(t: &[Token<'_>], i: usize) -> bool {
+    const ASSIGN: &[&str] = &["=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^="];
+    if !t
+        .get(i + 1)
+        .is_some_and(|n| n.kind == TokenKind::Operator && ASSIGN.contains(&n.text))
+    {
+        return false;
+    }
+    let prev = if i > 0 { word(t.get(i - 1)) } else { return false };
+    if prev == "SET" || prev == "SELECT" {
+        return true;
+    }
+    // in a SELECT list or an UPDATE's SET list: walk back to the clause keyword
+    if t[i - 1].kind != TokenKind::Comma {
+        return false;
+    }
+    let mut depth = 0i32;
+    for k in (0..i - 1).rev() {
+        match t[k].kind {
+            TokenKind::RParen => depth += 1,
+            TokenKind::LParen => depth -= 1,
+            TokenKind::Semicolon => return false,
+            TokenKind::Word if depth == 0 => {
+                let w = t[k].upper();
+                if w == "SELECT" || w == "SET" {
+                    return true;
+                }
+                if STATEMENT_KEYWORDS.contains(&w.as_str()) || matches!(w.as_str(), "FROM" | "WHERE" | "AS") {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Inside `DECLARE a, b, ...` (walk back over the list to DECLARE).
@@ -608,7 +672,9 @@ pub(crate) fn in_declare(t: &[Token<'_>], i: usize) -> bool {
                 if w == "DECLARE" {
                     return true;
                 }
-                if STATEMENT_KEYWORDS.contains(&w.as_str()) || w == "AS" {
+                // `DECLARE @a AS int, @b ...`: an AS right after a variable is part of the list
+                let type_as = w == "AS" && k > 0 && t[k - 1].kind == TokenKind::Variable;
+                if STATEMENT_KEYWORDS.contains(&w.as_str()) || (w == "AS" && !type_as) {
                     return false;
                 }
             }
@@ -1189,6 +1255,25 @@ mod tests {
         );
         assert!(execution_warnings("ALTER TABLE orders DROP CONSTRAINT fk", Dialect::MsSql).is_empty());
         assert!(execution_warnings("ALTER TABLE orders DROP INDEX ix", Dialect::MySql).is_empty());
+        // statements that reach other sessions or the server
+        let ms = |s: &str| execution_warnings(s, Dialect::MsSql);
+        assert_eq!(
+            ms("ALTER DATABASE Shop SET SINGLE_USER WITH ROLLBACK IMMEDIATE;").len(),
+            1
+        );
+        assert_eq!(ms("ALTER DATABASE Shop SET OFFLINE").len(), 1);
+        assert_eq!(ms("KILL 53").len(), 1);
+        assert_eq!(execution_warnings("KILL QUERY 12", Dialect::MySql).len(), 1);
+        assert_eq!(
+            ms("SELECT 1;
+SHUTDOWN WITH NOWAIT")
+            .len(),
+            1
+        );
+        assert!(ms("ALTER DATABASE Shop SET MULTI_USER").is_empty());
+        assert!(ms("SELECT kill, shutdown FROM t").is_empty());
+        assert!(ms("ROLLBACK TRANSACTION").is_empty());
+        assert!(execution_warnings("SELECT 1 AS shutdown", Dialect::Postgres).is_empty());
     }
 
     #[test]
@@ -1227,6 +1312,9 @@ mod tests {
         assert_eq!(m("SELECT a INTO #x FROM t"), vec!["SELECT INTO"]);
         assert_eq!(m("CREATE TABLE t (a int REFERENCES u(a) ON DELETE CASCADE)").len(), 1);
         assert!(modifying_statements("SELECT 1; -- delete from t", Dialect::MsSql).is_empty());
+        assert_eq!(m("KILL 53"), vec!["KILL"]);
+        assert_eq!(m("SELECT 1; SHUTDOWN"), vec!["SHUTDOWN"]);
+        assert!(m("SELECT kill, shutdown FROM t").is_empty());
         let ms = Dialect::MsSql;
         assert!(row_changes_only(
             "UPDATE t SET a = 1 WHERE b = 2; DELETE FROM u WHERE 1 = 0",
@@ -1281,6 +1369,74 @@ mod tests {
         assert_eq!(codes("DECLARE @a int, @b int; SELECT @a"), vec!["SQ005"]);
         assert!(codes("CREATE PROCEDURE p @x int AS SELECT @x").is_empty());
         assert_eq!(codes("CREATE PROCEDURE p @x int, @y int AS SELECT @x"), vec!["SQ005"]);
+    }
+
+    #[test]
+    fn assigned_but_never_read() {
+        let msgs = |s: &str| {
+            diagnostics(s, Dialect::MsSql, None)
+                .into_iter()
+                .filter(|d| d.code == "SQ005")
+                .map(|d| d.message)
+                .collect::<Vec<_>>()
+        };
+        // only assigned, in every assignment form
+        assert_eq!(
+            msgs("DECLARE @a int; SET @a = 1"),
+            vec!["@a is assigned but never read"]
+        );
+        assert_eq!(
+            msgs("DECLARE @n int = 0; SET @n += 1"),
+            vec!["@n is assigned but never read"]
+        );
+        assert_eq!(
+            msgs("DECLARE @c int; SELECT @c = COUNT(*) FROM t"),
+            vec!["@c is assigned but never read"]
+        );
+        assert_eq!(
+            msgs("DECLARE @c int; SELECT a, @c = b FROM t"),
+            vec!["@c is assigned but never read"]
+        );
+        assert_eq!(
+            msgs("DECLARE @v int; UPDATE t SET a = 1, @v = a"),
+            vec!["@v is assigned but never read"]
+        );
+        assert_eq!(
+            msgs(
+                "DECLARE @a varchar(10) SET @a = 'x'
+DECLARE @b varchar(10) SET @b = 'y'"
+            ),
+            vec!["@a is assigned but never read", "@b is assigned but never read"]
+        );
+        // DECLARE ... AS type, the form used in many scripts
+        assert_eq!(
+            msgs("DECLARE @Current AS VARCHAR(100) SET @Current = 'a'"),
+            vec!["@Current is assigned but never read"]
+        );
+        assert_eq!(
+            msgs("DECLARE @a AS int, @b AS int; SELECT @a"),
+            vec!["@b is declared but never used"]
+        );
+        // read somewhere: not reported
+        assert!(msgs("DECLARE @a int; SET @a = 1; SELECT @a").is_empty());
+        assert!(msgs("DECLARE @a int; SET @a = @a + 1").is_empty());
+        assert!(msgs("DECLARE @a int = 1; IF @a = 1 PRINT 'x'").is_empty());
+        assert!(msgs("DECLARE @a int = 1; SELECT x FROM t WHERE y = 2 AND @a = 1").is_empty());
+        assert!(msgs("DECLARE @a int = 1; SELECT CASE WHEN @a = 1 THEN 1 END").is_empty());
+        assert!(msgs("DECLARE @a int = 1; EXEC p @x = 1, @y = @a").is_empty());
+        assert!(msgs("DECLARE @a int = 1; EXEC p @a = 5, @b = @a").is_empty());
+        assert!(msgs("DECLARE @t TABLE (a int); INSERT INTO @t VALUES (1); SELECT * FROM @t").is_empty());
+        // separate batches are separate scopes
+        assert_eq!(
+            msgs(
+                "DECLARE @a int = 1
+GO
+DECLARE @a int = 2 SELECT @a"
+            ),
+            vec!["@a is declared but never used"]
+        );
+        // an assigned OUTPUT parameter is the point of the procedure
+        assert!(msgs("CREATE PROCEDURE p @r int OUTPUT AS SET @r = 1").is_empty());
     }
 
     #[test]
