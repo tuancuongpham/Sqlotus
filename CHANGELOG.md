@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.3
+
+- New app icon: earlier builds still used the default icon of the Tauri framework.
+- The search and history panels are now called **Object Search** and **Query History**.
+- Snippets: **Import snippets…** (Options → Snippets) reads any folder of `.json` snippet files; snippets are no
+  longer imported automatically on first run.
+- Test data: e-mail addresses use reserved example domains only, and the dialog notes that generated phone numbers
+  may belong to real people.
+- Third-party licenses now say where to get the source code of every component (as MPL-2.0 requires).
+
 ## 0.2.2
 
 - **Schema compare**: compare two databases (tables, keys, indexes, foreign keys, checks, views, routines,
@@ -29,5 +39,5 @@
 
 ## 0.1.0
 
-- First preview: completion, formatting, refactorings, code analysis, SQL Search, SQL History,
+- First preview: completion, formatting, refactorings, code analysis, object search, query history,
   Object Explorer, multi-database runs.
