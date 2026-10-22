@@ -52,9 +52,13 @@ async function setText(sql) {
     await sleep(100);
     // one insertion: typed keys can accept a completion or auto-close a bracket
     await send("Input.insertText", { text: sql });
-    if (await until(async () => flat(await editorText()) === flat(sql), 3000)) break;
+    if (await until(async () => flat(await editorText()) === flat(sql), 3000)) {
+      await press("Escape");
+      return;
+    }
   }
-  await press("Escape");
+  // running other text than meant would make the later checks fail for the wrong reason
+  throw new Error(`the editor did not take the text: ${JSON.stringify(flat(await editorText()).slice(0, 200))}`);
 }
 
 async function run(sql) {
@@ -170,7 +174,9 @@ try {
 
   // 4. activity monitor with a real blocking chain
   await run("BEGIN TRAN; UPDATE dbo.Customers SET Country = Country WHERE Id = 1");
-  await waitToast("transaction still open", 8000);
+  const holding = await waitToast("transaction still open", 8000);
+  // the row stays locked only if the UPDATE itself ran
+  check("blocker holds the row", !!holding && !holding.includes("finished with errors"), holding ?? (await toastText()));
   check("connect second tab", !!(await connectNewTab("E2E SQL Server")));
   const tabB = await activeTitle();
   await setText("SELECT * FROM dbo.Customers WHERE Id = 1");
@@ -255,6 +261,8 @@ try {
   await run("SELECT COUNT(*) FROM dbo.Customers");
   check("reads run without asking", !!(await waitToast("Query finished", 8000)), await toastText());
   await invoke("delete_connection", { id: prod.id });
+} catch (e) {
+  check("suite ran to the end", false, String(e?.message ?? e));
 } finally {
   for (let i = 0; i < 12; i++) {
     const own = (await tabTitles()).findIndex((t) => !before.has(t));
