@@ -10,8 +10,9 @@
 
 use std::ops::Range;
 
+use crate::catalog::{ObjectDefinition, ObjectKind};
 use crate::keywords::STATEMENT_KEYWORDS;
-use crate::lexer::{Token, TokenKind, tokenize, word};
+use crate::lexer::{Token, TokenKind, matching_paren, tokenize, word};
 use crate::statements::{definition_ranges, split_batches, split_statements};
 use crate::{Dialect, keywords};
 
@@ -25,6 +26,8 @@ pub struct ScriptRun<'a> {
     /// Index ranges of routine, trigger and view definitions, sorted: of each,
     /// only the first token (CREATE / ALTER) is part of the run.
     definitions: Vec<Range<usize>>,
+    /// Indexes into `t` where batches start, sorted.
+    batch_starts: Vec<usize>,
 }
 
 impl<'a> ScriptRun<'a> {
@@ -51,11 +54,13 @@ impl<'a> ScriptRun<'a> {
             .map(|b| index(b.span.start)..index(b.span.end))
             .collect();
         let definitions = definition_ranges(&t, &batches, &starts, dialect);
+        let batch_starts = batches.iter().filter(|b| b.start < b.end).map(|b| b.start).collect();
         Self {
             dialect,
             t,
             starts,
             definitions,
+            batch_starts,
         }
     }
 
@@ -92,10 +97,18 @@ impl<'a> ScriptRun<'a> {
             let part_of_other = matches!(
                 prev.as_str(),
                 "ON" | "OF" | "AFTER" | "BEFORE" | "FOR" | "INSTEAD" | "GRANT" | "DENY" | "REVOKE" | "KEY" | "THEN"
-            ) || matches!(prev_kind, Some(TokenKind::Dot | TokenKind::Comma | TokenKind::LParen))
+            ) || matches!(prev_kind, Some(TokenKind::Dot | TokenKind::Comma))
+                || (prev_kind == Some(TokenKind::LParen) && !nested_change(t, i))
                 || t.get(i + 1)
                     .is_some_and(|n| n.kind == TokenKind::LParen && u != "INSERT");
-            if MODIFYING.contains(&u.as_str())
+            if u == "UPDATE" && word(t.get(i + 1)) == "STATISTICS" && !part_of_other {
+                // maintenance, not a row change
+                out.push(
+                    format!("UPDATE STATISTICS {}", statement_target(&t[i + 2..]))
+                        .trim()
+                        .to_string(),
+                );
+            } else if MODIFYING.contains(&u.as_str())
                 && !part_of_other
                 && !(u == "REPLACE" && dialect != Dialect::MySql)
                 && !session_local(&u, &t[i + 1..], dialect)
@@ -138,12 +151,17 @@ impl<'a> ScriptRun<'a> {
         out
     }
 
-    /// Procedure calls (`EXEC p`, `EXECUTE p`, `CALL p`): they may change
-    /// data without any modifying keyword in the script itself.
+    /// Procedure calls (`EXEC p`, `EXECUTE p`, `CALL p`, and in T-SQL a
+    /// procedure named first in a batch, which runs without EXEC): they may
+    /// change data without any modifying keyword in the script itself.
     pub fn calls(&self) -> Vec<String> {
         let t = &self.t;
         let mut out = Vec::new();
         for (i, tok) in t.iter().enumerate() {
+            if self.dialect == Dialect::MsSql && self.batch_starts.binary_search(&i).is_ok() && bare_call(t, i) {
+                out.push(format!("EXEC {}", statement_target(&t[i..])).trim().to_string());
+                continue;
+            }
             let u = word(Some(tok));
             if !matches!(u.as_str(), "EXEC" | "EXECUTE" | "CALL") || self.stored(i) {
                 continue;
@@ -194,8 +212,16 @@ impl<'a> ScriptRun<'a> {
             matches!(
                 c.split(' ').next().unwrap_or(""),
                 "INSERT" | "UPDATE" | "DELETE" | "MERGE" | "REPLACE" | "UPSERT"
-            )
+            ) && !c.starts_with("UPDATE STATISTICS")
         }) && !self.controls_transactions()
+    }
+
+    /// Whether rows change in a statement nested in another, whose count
+    /// the server does not report: a PostgreSQL CTE that deletes (`WITH d AS
+    /// (DELETE ... RETURNING *) SELECT ...`), or the OUTPUT of a T-SQL change
+    /// read by an INSERT.
+    pub fn has_nested_changes(&self) -> bool {
+        (0..self.t.len()).any(|i| nested_change(&self.t, i) && !self.stored(i))
     }
 
     /// Statements the server refuses inside a transaction (BACKUP, RESTORE,
@@ -211,14 +237,64 @@ impl<'a> ScriptRun<'a> {
                 match words[0] {
                     "BACKUP" | "RESTORE" | "RECONFIGURE" => dialect == Dialect::MsSql,
                     "CREATE" | "ALTER" | "DROP" if second == "DATABASE" => dialect != Dialect::MySql,
-                    "CREATE" | "DROP" if second == "FULLTEXT" => dialect == Dialect::MsSql,
+                    "CREATE" | "ALTER" | "DROP" if second == "FULLTEXT" => dialect == Dialect::MsSql,
                     "ALTER" if second == "SYSTEM" => dialect == Dialect::Postgres,
                     "CREATE" | "DROP" if second == "TABLESPACE" => dialect == Dialect::Postgres,
-                    "VACUUM" => dialect == Dialect::Postgres,
+                    // maintenance: VACUUM never runs in a transaction block, CLUSTER and
+                    // REINDEX not in all forms, and none needs one
+                    "VACUUM" | "CLUSTER" | "REINDEX" => dialect == Dialect::Postgres,
                     _ => dialect == Dialect::Postgres && words.contains(&"CONCURRENTLY"),
                 }
             })
             .collect()
+    }
+
+    /// PostgreSQL DO blocks of the script, and procedures it calls, that
+    /// commit or roll back by themselves: PostgreSQL refuses to run them
+    /// inside a transaction block ("invalid transaction termination"), so
+    /// Sqlotus must not open one around the script. `definitions`: the
+    /// database's stored routines, to look into the procedures called.
+    pub fn commits_by_itself(&self, definitions: &[ObjectDefinition]) -> Vec<String> {
+        if self.dialect != Dialect::Postgres {
+            return Vec::new();
+        }
+        let t = &self.t;
+        let mut out = Vec::new();
+        for (i, tok) in t.iter().enumerate() {
+            if self.stored(i) || self.starts.binary_search(&i).is_err() {
+                continue;
+            }
+            match word(Some(tok)).as_str() {
+                // DO [LANGUAGE x] 'body' (or DO 'body' LANGUAGE x)
+                "DO" => {
+                    let body = t[i + 1..].iter().take(3).find(|x| x.kind == TokenKind::String);
+                    if body.is_some_and(|b| body_controls_transactions(b.text)) {
+                        out.push("a DO block".to_string());
+                    }
+                }
+                // CALL [schema.]name(...)
+                "CALL" => {
+                    let parts: Vec<String> = t[i + 1..]
+                        .iter()
+                        .take_while(|x| x.is_name() || x.kind == TokenKind::Dot)
+                        .filter(|x| x.is_name())
+                        .map(|x| x.ident_value())
+                        .collect();
+                    let Some(name) = parts.last() else { continue };
+                    let schema = (parts.len() > 1).then(|| &parts[parts.len() - 2]);
+                    let called = definitions.iter().find(|d| {
+                        d.kind == ObjectKind::Procedure
+                            && d.name.eq_ignore_ascii_case(name)
+                            && schema.is_none_or(|s| d.schema.eq_ignore_ascii_case(s))
+                    });
+                    if let Some(d) = called.filter(|d| definition_controls_transactions(&d.definition)) {
+                        out.push(format!("{}.{}", d.schema, d.name));
+                    }
+                }
+                _ => {}
+            }
+        }
+        out
     }
 
     /// Whether the script changes rows and nothing else (see
@@ -256,17 +332,15 @@ impl<'a> ScriptRun<'a> {
             if self.stored(i) {
                 continue;
             }
-            let target = t[i + 1..]
-                .iter()
-                .take_while(|x| x.is_name() || x.kind == TokenKind::Dot || x.upper() == "FROM" || x.upper() == "TOP")
-                .filter(|x| x.is_name() && x.upper() != "FROM")
-                .map(|x| x.text)
-                .collect::<Vec<_>>()
-                .join(".");
+            let target = changed_table(&t[i + 1..]);
             out.push(format!(
-                "{} {} has no WHERE clause and will affect every row.",
+                "{} {}has no WHERE clause and will affect every row.",
                 t[i].upper(),
-                target
+                if target.is_empty() {
+                    String::new()
+                } else {
+                    format!("{target} ")
+                }
             ));
         }
         for (i, tok) in t.iter().enumerate() {
@@ -282,7 +356,12 @@ impl<'a> ScriptRun<'a> {
             if u == "TRUNCATE" && !call && (next == "TABLE" || next_is_name) {
                 out.push("TRUNCATE TABLE removes every row.".into());
             }
-            if u == "DROP" && matches!(next.as_str(), "TABLE" | "DATABASE" | "SCHEMA") && prev != "IF" {
+            if u == "DROP"
+                && matches!(next.as_str(), "TABLE" | "DATABASE" | "SCHEMA")
+                && prev != "IF"
+                // a temp table of the session (`DROP TABLE #t`) is the script's own
+                && !session_local(&u, &t[i + 1..], dialect)
+            {
                 out.push(format!("DROP {next} permanently removes the object and its data."));
             }
             // ALTER TABLE ... DROP COLUMN c, or MySQL's ALTER TABLE ... DROP c
@@ -326,6 +405,35 @@ impl<'a> ScriptRun<'a> {
         }
         out
     }
+}
+
+/// Whether a PostgreSQL routine body (a quoted or dollar-quoted string)
+/// commits or rolls back.
+fn body_controls_transactions(quoted: &str) -> bool {
+    let inner = if let Some(after) = quoted.strip_prefix('$') {
+        // $tag$ body $tag$
+        let Some(close) = after.find('$') else { return false };
+        let tag = &quoted[..close + 2];
+        match quoted.strip_suffix(tag) {
+            Some(body) if body.len() >= tag.len() => body[tag.len()..].to_string(),
+            _ => return false,
+        }
+    } else if let Some(body) = quoted.strip_prefix('\'').and_then(|q| q.strip_suffix('\'')) {
+        body.replace("''", "'")
+    } else {
+        return false;
+    };
+    tokenize(&inner, Dialect::Postgres)
+        .iter()
+        .any(|t| t.kind == TokenKind::Word && matches!(t.upper().as_str(), "COMMIT" | "ROLLBACK"))
+}
+
+/// Whether the stored definition of a PostgreSQL procedure commits or rolls
+/// back in its body.
+fn definition_controls_transactions(definition: &str) -> bool {
+    tokenize(definition, Dialect::Postgres)
+        .iter()
+        .any(|t| t.kind == TokenKind::String && body_controls_transactions(t.text))
 }
 
 /// Significant tokens of `sql`; for MySQL also the code inside `/*!50003
@@ -373,8 +481,9 @@ pub(crate) fn unfiltered_modifications(t: &[Token<'_>]) -> Vec<usize> {
             prev.as_str(),
             "ON" | "OF" | "AFTER" | "BEFORE" | "OR" | "FOR" | "INSTEAD" | "GRANT" | "DENY" | "REVOKE" | "THEN" | "KEY"
         ) || prev_kind == Some(TokenKind::Comma)
-            || prev_kind == Some(TokenKind::LParen)
+            || (prev_kind == Some(TokenKind::LParen) && !nested_change(t, i))
             || t.get(i + 1).is_some_and(|n| n.kind == TokenKind::LParen)
+            || word(t.get(i + 1)) == "STATISTICS"
         {
             continue;
         }
@@ -422,6 +531,73 @@ pub(crate) fn unfiltered_modifications(t: &[Token<'_>]) -> Vec<usize> {
         }
     }
     found
+}
+
+/// Whether the INSERT, UPDATE, DELETE or MERGE at `i`, right after a `(`, is
+/// a statement of its own nested in another: a PostgreSQL CTE that changes
+/// rows (`WITH d AS [MATERIALIZED] (DELETE ...)`) or a T-SQL change whose
+/// OUTPUT an INSERT reads (`INSERT ... SELECT ... FROM (DELETE ... OUTPUT ...)`).
+fn nested_change(t: &[Token<'_>], i: usize) -> bool {
+    i >= 2
+        && t[i - 1].kind == TokenKind::LParen
+        && matches!(word(t.get(i - 2)).as_str(), "AS" | "MATERIALIZED" | "FROM")
+        && matches!(word(t.get(i)).as_str(), "INSERT" | "UPDATE" | "DELETE" | "MERGE")
+}
+
+/// Where the T-SQL batch `batch` names a procedure first, which then runs
+/// without EXEC: the byte offset of the name. Text put in front of such a
+/// batch must add an EXEC, or the server no longer reads a call.
+pub fn bare_call_start(batch: &str) -> Option<usize> {
+    let t = significant_tokens(batch, Dialect::MsSql);
+    (!t.is_empty() && bare_call(&t, 0)).then(|| t[0].start)
+}
+
+/// Whether the batch starting at `i` names a procedure first, which T-SQL
+/// runs without EXEC (`dbo.ArchiveOrders @Days = 30`, `sp_rename 'a', 'b'`).
+pub(crate) fn bare_call(t: &[Token<'_>], i: usize) -> bool {
+    // statements that start with a word the keyword list does not reserve
+    const STATEMENTS: &[&str] = &[
+        "THROW",
+        "ENABLE",
+        "DISABLE",
+        "SEND",
+        "RECEIVE",
+        "GET",
+        "MOVE",
+        "REVERT",
+        "GO",
+        "MERGE",
+        "WITH",
+        "CHECKPOINT",
+        "DBCC",
+        "SHUTDOWN",
+        "RECONFIGURE",
+        "SAVE",
+        "LOAD",
+        "SETUSER",
+        "READTEXT",
+        "UPDATETEXT",
+        "WRITETEXT",
+        "RENAME",
+        "COPY",
+    ];
+    let first = &t[i];
+    let named = match first.kind {
+        TokenKind::QuotedIdent => true,
+        // a temporary procedure (`#p 1`) too
+        TokenKind::Word => {
+            let u = first.upper();
+            !keywords::is_reserved(&u, Dialect::MsSql)
+                && !STATEMENT_KEYWORDS.contains(&u.as_str())
+                && !STATEMENTS.contains(&u.as_str())
+        }
+        _ => false,
+    };
+    // `name:` is a label, `name(` or `name =` no call; `p -1` passes a number
+    named
+        && !t.get(i + 1).is_some_and(|n| {
+            n.kind == TokenKind::LParen || (n.kind == TokenKind::Operator && !matches!(n.text, "-" | "+"))
+        })
 }
 
 /// Whether a change only touches the session's own objects: T-SQL temp
@@ -532,6 +708,12 @@ fn other_change(t: &[Token<'_>], i: usize, stmt_begin: usize, at_start: bool, di
         Dialect::Postgres => match u.as_str() {
             "DO" if at_start => Some("DO block".into()),
             "COPY" if at_start && in_stmt("FROM") => Some(format!("COPY {}", target())),
+            // the server runs a program, or writes a file of its own
+            "COPY" if at_start && in_stmt("TO") && !in_stmt("STDOUT") => Some(if in_stmt("PROGRAM") {
+                "COPY TO PROGRAM".into()
+            } else {
+                "COPY TO a server file".into()
+            }),
             "REFRESH" if at_start && next == "MATERIALIZED" => Some(format!(
                 "REFRESH MATERIALIZED {}",
                 statement_target(&t[(i + 2).min(t.len())..])
@@ -618,6 +800,32 @@ fn statement_target(rest: &[Token<'_>]) -> String {
     }
     words.push(name);
     words.join(" ").trim().to_string()
+}
+
+/// The table an UPDATE or DELETE changes, from the tokens after the keyword:
+/// `dbo.Orders` of `TOP (10) FROM dbo.Orders`; empty when none is named.
+fn changed_table(rest: &[Token<'_>]) -> String {
+    let mut k = 0;
+    while let Some(x) = rest.get(k) {
+        match word(Some(x)).as_str() {
+            "FROM" | "ONLY" => k += 1,
+            "TOP" if rest.get(k + 1).is_some_and(|n| n.kind == TokenKind::LParen) => {
+                k = matching_paren(rest, k + 1).map_or(rest.len(), |close| close + 1);
+            }
+            _ => break,
+        }
+    }
+    let mut name = String::new();
+    for x in &rest[k.min(rest.len())..] {
+        if x.kind == TokenKind::Dot && !name.is_empty() && !name.ends_with('.') {
+            name.push('.');
+        } else if x.is_name() && (name.is_empty() || name.ends_with('.')) {
+            name.push_str(x.text);
+        } else {
+            break;
+        }
+    }
+    name
 }
 
 /// Whether the statement these tokens belong to is an ALTER TABLE.
@@ -733,6 +941,114 @@ SHUTDOWN WITH NOWAIT")
     }
 
     #[test]
+    fn procedures_named_first_in_a_batch_run_without_exec() {
+        let ms = Dialect::MsSql;
+        let c = |s: &str| calls(s, ms);
+        assert_eq!(c("dbo.ArchiveOrders @Days = 30"), vec!["EXEC dbo.ArchiveOrders"]);
+        assert_eq!(
+            c("/* first */ -- the call\n[dbo].[Archive] 30, 'x'"),
+            vec!["EXEC [dbo].[Archive]"]
+        );
+        assert_eq!(c("SELECT 1\nGO 2\nxp_cmdshell 'dir'"), vec!["EXEC xp_cmdshell"]);
+        assert_eq!(c("#plus_one -1; SELECT 1"), vec!["EXEC #plus_one"]);
+        assert_eq!(
+            c("CREATE PROCEDURE p AS SELECT 1\nGO\np"),
+            vec!["EXEC p"],
+            "the call after the definition"
+        );
+        // renaming changes the loaded objects
+        assert!(ScriptRun::new("sp_rename 'dbo.A', 'B'", ms).changes_schema());
+        // only first in a batch, and only a name
+        for not_a_call in [
+            "SELECT 1; dbo.p",
+            "THROW 50000, 'x', 1",
+            "DBCC CHECKIDENT ('t', RESEED, 0)",
+            "CHECKPOINT",
+            "lbl: SELECT 1",
+            "WITH x AS (SELECT 1) SELECT * FROM x",
+            "ENABLE TRIGGER ALL ON DATABASE",
+            "MERGE t USING s ON 1 = 0 WHEN NOT MATCHED THEN INSERT VALUES (1);",
+            "WAITFOR DELAY '00:00:01'",
+            "(SELECT 1)",
+        ] {
+            assert!(c(not_a_call).is_empty(), "{not_a_call}: {:?}", c(not_a_call));
+        }
+        // other servers need CALL
+        assert!(calls("archive_orders(30)", Dialect::MySql).is_empty());
+        // what Sqlotus puts in front of such a batch must add an EXEC
+        assert_eq!(bare_call_start("\n -- x\n dbo.p 1"), Some(8));
+        assert_eq!(bare_call_start("EXEC dbo.p 1"), None);
+    }
+
+    #[test]
+    fn changes_nested_in_other_statements() {
+        let (ms, pg) = (Dialect::MsSql, Dialect::Postgres);
+        // PostgreSQL CTEs that change rows: the outer SELECT reports no count
+        let cte = "WITH gone AS (DELETE FROM orders RETURNING *) SELECT count(*) FROM gone";
+        assert_eq!(changes(cte, pg), vec!["DELETE FROM orders"]);
+        assert_eq!(
+            warnings(cte, pg),
+            vec!["DELETE orders has no WHERE clause and will affect every row."]
+        );
+        assert!(ScriptRun::new(cte, pg).has_nested_changes());
+        assert!(rows_only(cte, pg));
+        let filtered = "WITH a AS (SELECT 1), u AS MATERIALIZED (UPDATE orders SET total = 0 WHERE id = 1 RETURNING id) \
+                        SELECT * FROM u";
+        assert_eq!(changes(filtered, pg), vec!["UPDATE orders"]);
+        assert!(warnings(filtered, pg).is_empty());
+        assert_eq!(
+            changes(
+                "WITH i AS (INSERT INTO log VALUES (1) RETURNING id) SELECT id FROM i",
+                pg
+            ),
+            vec!["INSERT INTO log"]
+        );
+        // T-SQL: an INSERT reading the OUTPUT of a DELETE
+        let moved = "INSERT INTO dbo.Archive SELECT * FROM (DELETE FROM dbo.Orders OUTPUT deleted.*) AS d;";
+        assert_eq!(
+            changes(moved, ms),
+            vec!["INSERT INTO dbo.Archive", "DELETE FROM dbo.Orders"]
+        );
+        // statements in parentheses that are no changes of their own
+        for plain in [
+            "UPDATE orders SET total = (SELECT 1) WHERE id = 1",
+            "CREATE VIEW v AS (SELECT 1)",
+            "SELECT * FROM (SELECT 1) AS x",
+        ] {
+            assert!(!ScriptRun::new(plain, pg).has_nested_changes(), "{plain}");
+        }
+        assert!(!ScriptRun::new("DELETE FROM orders WHERE id = 1", pg).has_nested_changes());
+    }
+
+    #[test]
+    fn warnings_name_the_table() {
+        let ms = Dialect::MsSql;
+        let w = |s: &str| warnings(s, ms);
+        assert_eq!(
+            w("UPDATE dbo.t SET a = 1"),
+            vec!["UPDATE dbo.t has no WHERE clause and will affect every row."]
+        );
+        assert_eq!(
+            w("UPDATE [x].[t] SET a = 1"),
+            vec!["UPDATE [x].[t] has no WHERE clause and will affect every row."]
+        );
+        assert_eq!(
+            w("DELETE TOP (10) FROM dbo.t"),
+            vec!["DELETE dbo.t has no WHERE clause and will affect every row."]
+        );
+        assert_eq!(
+            warnings("UPDATE ONLY orders SET a = 1", Dialect::Postgres),
+            vec!["UPDATE orders has no WHERE clause and will affect every row."]
+        );
+        // statistics are no rows; temp tables are the script's own
+        assert!(w("UPDATE STATISTICS dbo.t").is_empty());
+        assert!(!ScriptRun::new("UPDATE STATISTICS dbo.t", ms).fits_in_transaction());
+        assert!(w("IF OBJECT_ID('tempdb..#t') IS NOT NULL DROP TABLE #t").is_empty());
+        assert!(w("DROP TABLE IF EXISTS #a, #b").is_empty());
+        assert_eq!(w("DROP TABLE #a, dbo.b").len(), 1);
+    }
+
+    #[test]
     fn changes_without_the_usual_keywords() {
         let m = |s: &str, d: Dialect| changes(s, d);
         let (ms, pg, my) = (Dialect::MsSql, Dialect::Postgres, Dialect::MySql);
@@ -745,6 +1061,15 @@ SHUTDOWN WITH NOWAIT")
         assert!(m("INSERT INTO t VALUES (1) ON CONFLICT DO NOTHING", pg).len() == 1);
         assert_eq!(m("COPY orders FROM STDIN", pg), vec!["COPY orders"]);
         assert!(m("COPY (SELECT * FROM orders) TO STDOUT", pg).is_empty());
+        // ... COPY TO runs a program, or writes a file, on the server
+        assert_eq!(
+            m("COPY orders TO PROGRAM 'gzip > /tmp/o.gz'", pg),
+            vec!["COPY TO PROGRAM"]
+        );
+        assert_eq!(
+            m("COPY (SELECT * FROM orders) TO '/tmp/o.csv' WITH (FORMAT csv)", pg),
+            vec!["COPY TO a server file"]
+        );
         assert_eq!(
             m("REFRESH MATERIALIZED VIEW mv_totals", pg),
             vec!["REFRESH MATERIALIZED VIEW mv_totals"]
@@ -898,6 +1223,47 @@ SHUTDOWN WITH NOWAIT")
     }
 
     #[test]
+    fn postgres_procedures_that_commit_by_themselves() {
+        let def = |name: &str, body: &str| ObjectDefinition {
+            schema: "public".into(),
+            name: name.into(),
+            kind: ObjectKind::Procedure,
+            definition: format!(
+                "CREATE OR REPLACE PROCEDURE public.{name}()\n LANGUAGE plpgsql\nAS $procedure${body}$procedure$\n"
+            ),
+        };
+        let defs = vec![
+            def("batch_load", "BEGIN INSERT INTO t VALUES (1); COMMIT; END"),
+            def(
+                "plain",
+                "BEGIN INSERT INTO t VALUES (1); -- commit later\n RAISE NOTICE 'commit'; END",
+            ),
+            def(
+                "undo",
+                "BEGIN UPDATE t SET a = 1; EXCEPTION WHEN others THEN ROLLBACK; END",
+            ),
+        ];
+        let c = |s: &str| ScriptRun::new(s, Dialect::Postgres).commits_by_itself(&defs);
+        assert_eq!(c("CALL batch_load()"), vec!["public.batch_load"]);
+        assert_eq!(c("call public.BATCH_LOAD(); CALL plain();"), vec!["public.batch_load"]);
+        assert!(c("CALL plain()").is_empty());
+        assert_eq!(c("CALL undo()"), vec!["public.undo"]);
+        // the same name in another schema is another procedure
+        assert!(c("CALL other.batch_load()").is_empty());
+        assert_eq!(c("DO $$ BEGIN UPDATE t SET a = 1; COMMIT; END $$;"), vec!["a DO block"]);
+        assert_eq!(c("DO LANGUAGE plpgsql 'BEGIN ROLLBACK; END'"), vec!["a DO block"]);
+        assert!(c("DO $$ BEGIN RAISE NOTICE 'commit'; END $$").is_empty());
+        // a procedure the script creates is stored, not run
+        assert!(c("CREATE PROCEDURE x() LANGUAGE plpgsql AS $$ BEGIN COMMIT; END $$").is_empty());
+        // other servers nest a procedure's transaction in the caller's
+        assert!(
+            ScriptRun::new("CALL batch_load()", Dialect::MySql)
+                .commits_by_itself(&defs)
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn statements_that_cannot_run_in_a_transaction() {
         let refuses = |s: &str, d: Dialect| ScriptRun::new(s, d).refuses_transaction();
         let (ms, pg, my) = (Dialect::MsSql, Dialect::Postgres, Dialect::MySql);
@@ -918,6 +1284,14 @@ SHUTDOWN WITH NOWAIT")
         assert_eq!(refuses("ALTER DATABASE Shop SET RECOVERY FULL", ms).len(), 1);
         assert_eq!(refuses("CREATE DATABASE Scratch", pg).len(), 1);
         assert_eq!(refuses("VACUUM orders", pg), vec!["VACUUM"]);
+        assert_eq!(
+            refuses("CLUSTER; REINDEX DATABASE shop", pg),
+            vec!["CLUSTER", "REINDEX"]
+        );
+        assert_eq!(
+            refuses("ALTER FULLTEXT INDEX ON dbo.Docs START FULL POPULATION", ms).len(),
+            1
+        );
         assert_eq!(refuses("CREATE INDEX CONCURRENTLY ix ON orders (total)", pg).len(), 1);
         // ordinary changes run in a transaction; MySQL commits DDL itself
         assert!(refuses("UPDATE t SET a = 1; CREATE TABLE u (a int)", ms).is_empty());

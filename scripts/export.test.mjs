@@ -141,6 +141,10 @@ test("fixed-width text table", () => {
   assert.equal(textWidth("中文"), 4);
   const long = toText(rs([["v", "text"]]), [["x".repeat(50)]], 10).split("\n");
   assert.equal(long[2], " xxxxxxxxx…");
+  // a cut through a wide character keeps the columns in line
+  const wide = toText(rs([["v", "text"], ["n", "int"]]), [["中".repeat(10), "1"], ["b", "2"]], 10).split("\n");
+  assert.deepEqual(wide.slice(2, 4), [" 中中中中… | 1", " b         | 2"]);
+  assert.equal(new Set(wide.slice(0, 4).map(textWidth)).size, 2); // the rule line is one wider
   assert.equal(toText(rs([["v", "text"]]), []).split("\n").pop(), "(0 rows)");
   assert.equal(toText(rs([["v", "text"]]), [["a"]]).split("\n").pop(), "(1 row)");
 });

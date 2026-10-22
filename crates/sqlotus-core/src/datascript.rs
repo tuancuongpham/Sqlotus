@@ -13,6 +13,7 @@ use crate::safety::ScriptRun;
 use crate::script::object_name;
 use crate::sqltype::SqlType;
 use crate::statements::split_statements;
+use crate::text::one_line;
 
 /// Rows per INSERT: SQL Server takes at most 1,000 rows in one VALUES list.
 const ROWS_PER_INSERT: usize = 1000;
@@ -111,7 +112,8 @@ pub fn data_script(table: &DbObject, dialect: Dialect, rows: &[Vec<Option<String
     let target = object_name(table, dialect, true);
     let mut problems = Vec::new();
     let mut out = format!(
-        "-- Data of {target}: {} row(s){}, scripted by Sqlotus.\n",
+        "-- Data of {}: {} row(s){}, scripted by Sqlotus.\n",
+        one_line(&target),
         rows.len(),
         if truncated {
             format!(" (the first {max_rows}; the table has more)")
@@ -128,7 +130,7 @@ pub fn data_script(table: &DbObject, dialect: Dialect, rows: &[Vec<Option<String
     if !left_out.is_empty() {
         out.push_str(&format!(
             "-- Not written (the server sets them): {}\n",
-            left_out.join(", ")
+            one_line(&left_out.join(", "))
         ));
     }
     if rows.is_empty() {
@@ -202,7 +204,7 @@ pub fn data_script(table: &DbObject, dialect: Dialect, rows: &[Vec<Option<String
         }
     }
     if !problems.is_empty() {
-        let notes: String = problems.iter().map(|p| format!("-- ⚠ {p}\n")).collect();
+        let notes: String = problems.iter().map(|p| format!("-- ⚠ {}\n", one_line(p))).collect();
         out.insert_str(out.find('\n').map_or(0, |i| i + 1), &notes);
     }
     DataScript {

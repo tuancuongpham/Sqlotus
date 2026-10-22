@@ -1,5 +1,65 @@
 # Changelog
 
+## Unreleased
+
+- **Execute the statement at the cursor** (Shift+F5, or F5 with that option) ran only a part of a statement that a
+  blank line split: `WITH x AS (…)`, a blank line, `DELETE FROM x` ran the DELETE alone — with a CTE named like its
+  table, on every row of the table. The body of an IF, WHILE or ELSE ran without its condition the same way, and a
+  SELECT without its INSERT or UNION. Such statements now run whole, and Insert semicolons no longer cuts them in two
+  with a `;`.
+- **A procedure named first in a batch** (`dbo.ArchiveOrders 30`, `sp_rename …`, which SQL Server runs without EXEC)
+  was not seen as a call: manual commit did not keep what it changed, the production confirmation and Ask before
+  committing what procedures changed did not ask, and `sp_rename` did not reload the objects. With values for
+  variables, or the rows counted for Ask before committing large changes, it failed with a syntax error, and its
+  parameter names were asked for as variables.
+- **PostgreSQL CTEs that change rows** (`WITH d AS (DELETE … RETURNING *) SELECT …`) passed as a query: no warning
+  for a DELETE without WHERE, no production confirmation, no manual commit, and Ask before committing large changes
+  committed them unasked (PostgreSQL reports no row count for them). `COPY … TO PROGRAM` and `COPY … TO` a file of
+  the server count as changes too.
+- **PostgreSQL: switching database** in a tab rolled back its open transaction without a word (PostgreSQL switches by
+  reconnecting), while the tab still showed the transaction open; connecting the tab to another server did the same
+  on every server. Both now ask to commit or roll back first, as closing the tab does.
+- **Run on multiple databases** can be cancelled: the query running is cancelled and the databases after it are not
+  started. With manual commit on, it refuses procedure calls as it refuses changes.
+- **Warnings**: `DROP TABLE #t` (the script's own temp table, also after `IF OBJECT_ID(…)`) no longer asks to confirm
+  that its data is lost, `UPDATE STATISTICS` no longer reads as an UPDATE without WHERE, and the warning names the
+  table (`UPDATE dbo.Orders`, not `UPDATE dbo.Orders.SET.Status`).
+- **Activity monitor**: ending or cancelling a PostgreSQL session that had already ended said it was done.
+- **Options**: a negative or fractional number typed into a number field (Max rows -1, a limit of 1.5) made saving
+  fail, so the dialog would not close and said nothing; numbers are now saved whole and within their range. Test
+  data and Data as INSERT take whole numbers too.
+- **Generated scripts keep names and values in their quotes.** An object named with a line break (possible in SQL
+  Server and PostgreSQL) broke out of the comments of a schema sync, test data, Data as INSERT and backup script,
+  so text in its name could run as a statement; names and values in such comments now stay on one line. A value
+  that is not a number, or not a bit string, is written inside quotes instead of as it is (a `--` could start a
+  comment).
+- **SQLCMD variables** could hide a change from the checks made before a run: `$(Cmd)` holding a DROP passed a
+  read-only connection, the production confirmation and the warnings. The checks now read the script with its
+  variables replaced, as the server gets it.
+- **PostgreSQL procedures that commit by themselves** (and DO blocks that do) failed with "invalid transaction
+  termination" on manual-commit connections — production ones by default — and with Ask before committing what
+  procedures changed, since 0.2.8 runs procedure calls in a transaction there. Sqlotus now reads the procedure and
+  runs such a call without a transaction, saying so; when it cannot know (a procedure created in the same run), it
+  explains the failure and rolls the run back.
+- **A long line of `:name` parameters** (as applications log their SQL) made every keystroke slow: half a megabyte
+  took 10 s to read, since 0.2.8 looked for SQLCMD commands. Many `:setvar` lines and unclosed `$(` slowed down the
+  same way.
+- **Opening a script and running it** (Select top 100, the row a foreign key references) ran only its first
+  statement when F5 runs the statement at the cursor.
+- **Run on multiple databases** and the estimated plan keep the SQLCMD variables above a selection, and a
+  multi-database run that changes objects reloads them.
+- **Manual commit**: when the script ends the transaction itself (MySQL DDL, a procedure that commits), the
+  notification no longer says the changes wait for a commit. CLUSTER, REINDEX (PostgreSQL) and ALTER FULLTEXT (SQL
+  Server) run without a transaction, like BACKUP and RESTORE.
+- **Results as text** were cut on the right when they held wide characters (Chinese, Japanese, emoji), and a result
+  of 100,000 rows takes half the time to show as text. The menu of a result row stays inside the window, and
+  copying a value from it, or from Record, warns when the value was cut, as the other copies do.
+- **Backup dialog**: a database name with `:` or `/` made the suggested backup file name invalid, and typing the
+  name of the database to restore into could leave its files placed under a name typed a moment earlier.
+- **Data as INSERT** scripts at most 100,000 rows, and refuses a script too large to open in a tab (over 50 MB).
+- Old query history is deleted in the background at start, a few hundred versions at a time, so a large history
+  delays neither the window nor anything else (with a year of history to delete, the settings came 9 s late).
+
 ## 0.2.8
 
 - **Objects reload by themselves** after a script creates, alters, drops or renames something (also `sp_rename` and

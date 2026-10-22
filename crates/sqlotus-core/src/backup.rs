@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::Dialect;
+use crate::text::one_line;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -72,7 +73,7 @@ pub fn backup_script(o: &BackupOptions) -> Result<String, String> {
         "-- {what} of {}, scripted by Sqlotus. Review it, then run it (F5).\n\
          -- SQL Server writes the file itself: the path is on the server, and its service account needs access to the folder.\n\
          BACKUP {target} {}\nTO DISK = {}\nWITH {};\nGO\n",
-        name(db),
+        one_line(&name(db)),
         name(db),
         text(path),
         with.join(", ")
@@ -88,7 +89,7 @@ pub fn backup_script(o: &BackupOptions) -> Result<String, String> {
             out.push_str(&format!(
                 "-- RESTORE VERIFYONLY checks the first backup of a file; this one was added after others.\n\
                  -- RESTORE HEADERONLY FROM DISK = {} lists them with their positions (FILE = n).\n",
-                text(path)
+                one_line(&text(path))
             ));
         }
     }
@@ -167,14 +168,14 @@ pub fn restore_script(o: &RestoreOptions) -> Result<String, String> {
         "-- Restore {} from {} (backup {file} of the file), scripted by Sqlotus.\n\
          -- Review it, then run it (F5). It runs from master: a database cannot be restored while it is in use.\n\
          USE master;\nGO\n",
-        name(db),
-        text(path)
+        one_line(&name(db)),
+        one_line(&text(path))
     );
     if o.close_connections {
         out.push_str(&format!(
             "-- disconnect other users of {} (their open transactions roll back)\n\
              IF DB_ID({}) IS NOT NULL\n    ALTER DATABASE {} SET SINGLE_USER WITH ROLLBACK IMMEDIATE;\nGO\n",
-            name(db),
+            one_line(&name(db)),
             text(db),
             name(db)
         ));

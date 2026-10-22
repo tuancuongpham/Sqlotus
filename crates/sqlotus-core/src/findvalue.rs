@@ -9,6 +9,7 @@ use crate::Dialect;
 use crate::catalog::{Catalog, ObjectKind};
 use crate::script::object_name;
 use crate::sqltype::SqlType;
+use crate::text::one_line;
 
 /// Columns per SELECT: very long UNION ALL chains strain the server.
 const COLUMNS_PER_QUERY: usize = 100;
@@ -86,12 +87,12 @@ pub fn find_value_script(catalog: &Catalog, dialect: Dialect, opts: &FindValueOp
     let mut out = format!(
         "-- Rows {how} {} in {} text column(s) of {table_count} table(s){}, scripted by Sqlotus.\n\
          -- It only reads: review it, then run it (F5). Each column is read in full, which takes a while on big tables.\n",
-        literal(&opts.value, dialect),
+        one_line(&literal(&opts.value, dialect)),
         parts.len(),
         if catalog.database.is_empty() {
             String::new()
         } else {
-            format!(" in {}", catalog.database)
+            format!(" in {}", one_line(&catalog.database))
         },
     );
     for chunk in parts.chunks(COLUMNS_PER_QUERY) {

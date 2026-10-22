@@ -1533,11 +1533,7 @@ VALUES
         );
         let r = run("INSERT INTO Ord|");
         assert!(
-            r.items[0].insert_text.starts_with(
-                "dbo.Orders
-(
-"
-            ),
+            r.items[0].insert_text.starts_with("dbo.Orders\n(\n"),
             "{}",
             r.items[0].insert_text
         );

@@ -61,8 +61,15 @@ pub fn run() {
             if let Ok(mut n) = state.startup_notice.lock() {
                 *n = notice;
             }
-            // query history kept for a limited time (Options → Editor)
-            let _ = commands::prune_history(&state);
+            // query history kept for a limited time (Options → Editor), pruned
+            // in the background: a large history must not hold up the window
+            let days = state.settings().editor.history_days;
+            if days > 0 {
+                let store = state.store.clone();
+                std::thread::spawn(move || {
+                    let _ = store.prune_history(days);
+                });
+            }
             app.manage(state);
             app.manage(compare::CompareStore::default());
             app.manage(source_control::SourceControlStore::default());

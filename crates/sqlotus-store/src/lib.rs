@@ -497,16 +497,31 @@ impl Store {
 
     /// Delete history not touched for `days` days, except the latest
     /// version of each tab that is still open. Returns how many versions
-    /// were deleted.
+    /// were deleted. A few hundred at a time: deleting a year of history
+    /// takes seconds, and other calls wait for the store meanwhile (the
+    /// first window read its settings 9 s late).
     pub fn prune_history(&self, days: u32) -> Result<usize> {
+        const STEP: i64 = 500;
         let cutoff = now_ms() - i64::from(days) * 24 * 60 * 60 * 1000;
-        self.with(|db| {
-            Ok(db.execute(
-                "DELETE FROM history WHERE updated_at < ?1
-                 AND NOT (closed = 0 AND id = (SELECT MAX(id) FROM history h WHERE h.tab_id = history.tab_id))",
-                [cutoff],
-            )?)
-        })
+        let mut deleted = 0;
+        loop {
+            let n = self.with(|db| {
+                Ok(db.execute(
+                    "DELETE FROM history WHERE id IN (
+                         SELECT id FROM history WHERE updated_at < ?1
+                         AND NOT (closed = 0 AND id = (SELECT MAX(id) FROM history h WHERE h.tab_id = history.tab_id))
+                         LIMIT ?2)",
+                    params![cutoff, STEP],
+                )?)
+            })?;
+            deleted += n;
+            if (n as i64) < STEP {
+                return Ok(deleted);
+            }
+            // let calls that wait for the store go first (the lock is not fair:
+            // giving up the time slice alone lets this thread take it again)
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
     }
 
     // -- catalog cache ----------------------------------------------------
@@ -680,6 +695,33 @@ mod tests {
         assert!(s.search_history("closed_tab", 10).unwrap().is_empty());
         assert!(s.search_history("first_version", 10).unwrap().is_empty());
         assert_eq!(s.prune_history(30).unwrap(), 0);
+    }
+
+    /// A backlog larger than one step of the pruning goes in several, and
+    /// the open tab still keeps its latest version.
+    #[test]
+    fn a_large_history_is_pruned_in_steps() {
+        let s = Store::open_in_memory().unwrap();
+        let long_ago = now_ms() - 40 * 24 * 60 * 60 * 1000;
+        s.with(|db| {
+            for i in 0..1234 {
+                db.execute(
+                    "INSERT INTO history (tab_id, title, dialect, text, kind, created_at, updated_at) \
+                     VALUES (?1, 'q', 'mssql', ?2, 'execute', ?3, ?3)",
+                    params![
+                        if i % 2 == 0 { "open" } else { "other" },
+                        format!("SELECT {i}"),
+                        long_ago
+                    ],
+                )?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        // the latest version of each tab, both open, stays
+        assert_eq!(s.prune_history(30).unwrap(), 1232);
+        let left: Vec<String> = s.search_history("", 10).unwrap().into_iter().map(|h| h.text).collect();
+        assert_eq!(left, vec!["SELECT 1233", "SELECT 1232"]);
     }
 
     #[test]

@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::Dialect;
 use crate::catalog::ObjectKind;
+use crate::text::one_line;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -1503,8 +1504,8 @@ impl<'a> SyncPlanner<'a> {
         if c.identity != o.identity || computed_changed {
             self.p.alter_tables.push(format!(
                 "-- {}.{}: {} differs; recreate the column by hand (Sqlotus does not rebuild columns).",
-                t.name,
-                c.name,
+                one_line(&t.name),
+                one_line(&c.name),
                 if computed_changed {
                     "the computed expression"
                 } else {
@@ -1700,7 +1701,7 @@ impl<'a> SyncPlanner<'a> {
         if !warnings.is_empty() {
             script.push_str("--\n-- WARNINGS:\n");
             for w in &warnings {
-                script.push_str(&format!("--   * {w}\n"));
+                script.push_str(&format!("--   * {}\n", one_line(w)));
             }
         }
         let mut section = |title: &str, items: &[String], script: &mut String| {

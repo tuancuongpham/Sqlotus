@@ -109,7 +109,9 @@ pub fn analysis_rules() -> Vec<Rule> {
 
 #[tauri::command]
 pub async fn execution_warnings(text: String, dialect: Dialect) -> CmdResult<Vec<String>> {
-    no_panic("execution warnings", || ScriptRun::new(&text, dialect).warnings())
+    no_panic("execution warnings", || {
+        ScriptRun::new(&sqlotus_core::sqlcmd::as_run(&text, dialect), dialect).warnings()
+    })
 }
 
 #[derive(Serialize)]

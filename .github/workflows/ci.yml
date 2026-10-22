@@ -23,6 +23,8 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 22
+          # the runner image may hold an older 22.x; take the latest security release
+          check-latest: true
           cache: npm
 
       - uses: dtolnay/rust-toolchain@stable

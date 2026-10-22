@@ -220,9 +220,40 @@ const STATEMENT_STARTS: &[&str] = &[
     "SET", "IF", "TRUNCATE", "USE", "PRINT", "BEGIN", "CALL", "SHOW", "EXPLAIN",
 ];
 
+/// Words after which a statement keyword goes on with the statement: `AS`
+/// (CREATE VIEW v AS, CREATE TABLE t AS), `FOR` (DECLARE c CURSOR FOR),
+/// `THEN` (MERGE ... WHEN MATCHED THEN), `DO` (CREATE EVENT, ON CONFLICT DO),
+/// set operators (SELECT ... UNION SELECT ...; also UNION ALL / DISTINCT).
+const CONTINUED_AFTER: &[&str] = &[
+    "AS",
+    "FOR",
+    "THEN",
+    "ELSE",
+    "DO",
+    "INSTEAD",
+    "ALSO",
+    "UNION",
+    "EXCEPT",
+    "INTERSECT",
+    "MINUS",
+];
+
+/// Statements that are not whole until one more statement keyword: a CTE
+/// before its main statement, IF and WHILE before their body, INSERT before
+/// its rows (VALUES, SELECT, EXEC), EXPLAIN before what it explains.
+const NEED_MORE: &[&str] = &["WITH", "IF", "WHILE", "INSERT", "REPLACE", "EXPLAIN"];
+
+/// Whether `word` is one of `words` (upper case), in any case.
+fn one_of(word: &str, words: &[&str]) -> bool {
+    words.iter().any(|w| word.eq_ignore_ascii_case(w))
+}
+
 /// Split into statements: on `;`, on `GO` lines, and where a blank line is
 /// followed by a statement keyword outside parentheses (T-SQL scripts often
-/// omit semicolons). Comments alone are not a statement.
+/// omit semicolons) — unless the statement before is not whole yet: `WITH x
+/// AS (...)` and its DELETE, `IF ...` and its body, `INSERT INTO t (...)` and
+/// its SELECT, `UNION ALL` and the next SELECT are one statement. Comments
+/// alone are not a statement.
 pub fn split_statements(src: &str, dialect: Dialect) -> Vec<Span> {
     let mut spans = all_statements(src, dialect);
     spans.retain(|s| has_code(s.text(src), dialect));
@@ -258,6 +289,15 @@ fn split_range(src: &str, tokens: &[Token<'_>], gos: &[usize], from: usize, to: 
     let mut start = from;
     let mut depth = 0i32;
     let mut skip_until = 0usize;
+    // the statement read so far: whether it has code, its first word, whether
+    // it still needs a statement keyword to be whole, CASE ... END nesting
+    // (whose ELSE is no IF's), and the two words just before (empty after
+    // anything else)
+    let mut code = false;
+    let mut first = "";
+    let mut needs = false;
+    let mut cases = 0u32;
+    let (mut prev, mut prev2) = ("", "");
     for (i, t) in tokens.iter().enumerate() {
         if t.start < from || t.start < skip_until {
             continue;
@@ -274,6 +314,8 @@ fn split_range(src: &str, tokens: &[Token<'_>], gos: &[usize], from: usize, to: 
                 }
                 start = t.end();
                 depth = 0;
+                (code, first, needs, cases, prev, prev2) = (false, "", false, 0, "", "");
+                continue;
             }
             TokenKind::Word if gos.contains(&i) => {
                 if let Some(s) = trim_span(src, start, t.start) {
@@ -283,18 +325,53 @@ fn split_range(src: &str, tokens: &[Token<'_>], gos: &[usize], from: usize, to: 
                 start = line_end;
                 skip_until = line_end;
                 depth = 0;
+                (code, first, needs, cases, prev, prev2) = (false, "", false, 0, "", "");
+                continue;
             }
-            TokenKind::Word if depth == 0 && i > 0 => {
-                let blank_before =
-                    tokens[i - 1].kind == TokenKind::Whitespace && tokens[i - 1].text.matches('\n').count() >= 2;
-                if blank_before && STATEMENT_STARTS.iter().any(|k| t.text.eq_ignore_ascii_case(k)) {
+            TokenKind::Word if depth == 0 => {
+                let word = t.text;
+                let statement = one_of(word, STATEMENT_STARTS);
+                let blank_before = i > 0
+                    && tokens[i - 1].kind == TokenKind::Whitespace
+                    && tokens[i - 1].text.matches('\n').count() >= 2;
+                let goes_on = needs
+                    || one_of(prev, CONTINUED_AFTER)
+                    || (one_of(prev, &["ALL", "DISTINCT"])
+                        && one_of(prev2, &["UNION", "EXCEPT", "INTERSECT", "MINUS"]));
+                if blank_before && statement && code && !goes_on {
                     if let Some(s) = trim_span(src, start, t.start) {
                         spans.push(s);
                     }
                     start = t.start;
+                    (first, cases) = ("", 0);
+                }
+                // UPDATE(col) and REPLACE(...) are functions
+                let call = one_of(word, &["UPDATE", "REPLACE"])
+                    && tokens[i + 1..]
+                        .iter()
+                        .find(|n| !n.is_trivia())
+                        .is_some_and(|n| n.kind == TokenKind::LParen);
+                if first.is_empty() {
+                    first = word;
+                    needs = one_of(word, NEED_MORE);
+                } else if needs && (statement || word.eq_ignore_ascii_case("VALUES")) && !call {
+                    // the main statement of a CTE, the body of IF, the rows of INSERT
+                    needs = one_of(word, NEED_MORE);
+                } else if word.eq_ignore_ascii_case("ELSE") && cases == 0 {
+                    needs = true;
+                }
+                if word.eq_ignore_ascii_case("CASE") && !prev.eq_ignore_ascii_case("END") {
+                    cases += 1;
+                } else if word.eq_ignore_ascii_case("END") && cases > 0 {
+                    cases -= 1;
                 }
             }
             _ => {}
+        }
+        if !t.is_trivia() {
+            code = true;
+            prev2 = prev;
+            prev = if t.kind == TokenKind::Word { t.text } else { "" };
         }
     }
     if let Some(s) = trim_span(src, start.min(to), to) {
@@ -742,6 +819,54 @@ mod tests {
 
     fn sig(src: &str, d: Dialect) -> Vec<Token<'_>> {
         tokenize(src, d).into_iter().filter(|t| !t.is_trivia()).collect()
+    }
+
+    #[test]
+    fn blank_lines_inside_a_statement_do_not_cut_it() {
+        let ms = Dialect::MsSql;
+        let run = |src: &str, needle: &str, d: Dialect| {
+            let at = src.find(needle).unwrap() + 1;
+            executable_statement_at(src, d, at).unwrap().text(src).to_string()
+        };
+        // the DELETE alone would empty dbo.Orders, not the rows the CTE picks
+        let cte =
+            "WITH Orders AS (\n    SELECT * FROM dbo.Orders WHERE Year < 2020\n)\n\nDELETE FROM Orders\n\nSELECT 1";
+        for d in [ms, Dialect::Postgres, Dialect::MySql] {
+            assert_eq!(
+                run(cte, "DELETE", d),
+                "WITH Orders AS (\n    SELECT * FROM dbo.Orders WHERE Year < 2020\n)\n\nDELETE FROM Orders",
+                "{d:?}"
+            );
+            assert_eq!(run(cte, "SELECT 1", d), "SELECT 1");
+        }
+        // ... nor would a body without its IF, WHILE or ELSE
+        let guarded = "IF EXISTS (SELECT 1 FROM dbo.Flags)\n\n    UPDATE dbo.Orders SET a = 1\n\nELSE\n\n    DELETE FROM dbo.Orders\n\nPRINT 'done'";
+        let whole = "IF EXISTS (SELECT 1 FROM dbo.Flags)\n\n    UPDATE dbo.Orders SET a = 1\n\nELSE\n\n    DELETE FROM dbo.Orders";
+        assert_eq!(run(guarded, "UPDATE", ms), whole);
+        assert_eq!(run(guarded, "DELETE", ms), whole);
+        assert_eq!(run(guarded, "PRINT", ms), "PRINT 'done'");
+        let looped = "WHILE @@ROWCOUNT > 0\n\n    DELETE TOP (100) FROM dbo.Logs";
+        assert_eq!(run(looped, "DELETE", ms), looped);
+        let block = "IF @x = 1\n\nBEGIN\n    DELETE FROM dbo.Orders WHERE Id = 1;\nEND";
+        assert_eq!(run(block, "DELETE", ms), block);
+        // INSERT and its rows, set operators, CREATE ... AS, a cursor's query
+        let insert = "INSERT INTO dbo.Archive (Id)\n\nSELECT Id FROM dbo.Orders";
+        assert_eq!(run(insert, "SELECT", ms), insert);
+        let union = "SELECT 1\n\nUNION ALL\n\nSELECT 2";
+        assert_eq!(run(union, "SELECT 2", ms), union);
+        let ctas = "CREATE TABLE archive AS\n\nSELECT * FROM orders";
+        assert_eq!(run(ctas, "SELECT", Dialect::Postgres), ctas);
+        let cursor = "DECLARE c CURSOR FOR\n\nSELECT Id FROM dbo.Orders";
+        assert_eq!(run(cursor, "SELECT", ms), cursor);
+        // whole statements still split at a blank line, a CASE's ELSE included
+        let two = "SELECT CASE WHEN 1 = 1 THEN 'a' ELSE 'b' END\n\nSELECT 2\n\nINSERT INTO t VALUES (1)\n\nSELECT 3";
+        assert_eq!(split_statements(two, ms).len(), 4);
+        assert_eq!(split_statements("(SELECT 1)\n\nSELECT 2", ms).len(), 2);
+        // ALL ends this statement: only after UNION does it go on
+        assert_eq!(
+            split_statements("UPDATE STATISTICS dbo.t WITH FULLSCAN, ALL\n\nSELECT 1", ms).len(),
+            2
+        );
     }
 
     #[test]

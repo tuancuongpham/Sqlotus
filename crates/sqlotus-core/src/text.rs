@@ -1,4 +1,11 @@
-//! Changing a text in one pass.
+//! Changing a text in one pass, and text made safe for a `--` comment.
+
+/// `text` for a `--` comment of a generated script: a line break would end
+/// the comment and make the rest SQL (an object named `x⏎DROP TABLE t; --`
+/// would run its DROP), so line breaks become spaces.
+pub(crate) fn one_line(text: &str) -> String {
+    text.replace(['\r', '\n', '\u{0B}', '\u{0C}', '\u{85}', '\u{2028}', '\u{2029}'], " ")
+}
 
 /// `src` with the byte ranges `(start, end, replacement)` of `edits`
 /// replaced. Edits are taken in order of position, and one that overlaps

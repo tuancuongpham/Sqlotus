@@ -580,6 +580,52 @@ async fn mssql_changes_are_counted_despite_nocount() {
     assert_eq!(rows[0][0].as_deref(), Some("512"), "NOCOUNT is still on in the session");
 }
 
+/// A procedure named first in a batch runs without EXEC. What Sqlotus puts
+/// in front of the batch, values for its variables or the row count, must
+/// keep it a call (it read as a syntax error).
+#[tokio::test]
+async fn mssql_procedure_named_first_in_a_batch() {
+    let Some(e) = env("SQLOTUS_TEST_MSSQL") else {
+        return;
+    };
+    let mut c = connect(&e).await;
+    let l = Limits::default();
+    let made = c
+        .execute("CREATE PROCEDURE #plus_one @a int AS SELECT @a + 1 AS v", &l)
+        .await;
+    assert!(!made.failed, "{made:?}");
+    let value = |out: &BatchOutput| {
+        out.result_sets
+            .last()
+            .and_then(|rs| rs.rows.first())
+            .and_then(|r| r[0].clone())
+    };
+    // after another statement, the server reads the name as no call
+    assert!(c.execute("SET NOCOUNT OFF; #plus_one 1", &l).await.failed);
+    // @a is the procedure's parameter: only @x needs a value
+    let script = "#plus_one @a = @x";
+    assert_eq!(
+        sqlotus_core::variables::undeclared_variables(script, sqlotus_core::Dialect::MsSql),
+        vec!["@x"]
+    );
+    for counted in [false, true] {
+        let options = sqlotus_db::ScriptOptions {
+            variables: vec![sqlotus_core::variables::VariableValue {
+                name: "@x".into(),
+                data_type: "int".into(),
+                value: Some("41".into()),
+            }],
+            counted,
+        };
+        let out = sqlotus_db::execute_script_with(&mut c, script, &l, &options).await;
+        assert!(errors(&out).is_empty(), "counted {counted}: {:?}", errors(&out));
+        assert_eq!(value(&out[0].output).as_deref(), Some("42"));
+    }
+    let counted = c.execute_counted("-- the first line\n#plus_one 1", &l).await;
+    assert_eq!(first_error(&counted), "");
+    assert_eq!(value(&counted).as_deref(), Some("2"));
+}
+
 /// A port typed into the host field (`host:port`, `[::1]:port`) connects
 /// like the Port field; it used to be looked up as a server name.
 async fn port_in_host_field(var: &str) {

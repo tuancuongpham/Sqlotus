@@ -13,6 +13,29 @@ interface Props {
   onSaved: (s: Settings) => void;
 }
 
+/** A whole number within `min..=max` (`fallback` for no number). */
+const whole = (v: number | undefined, min: number, max: number, fallback: number) =>
+  v != null && Number.isFinite(v) ? Math.min(max, Math.max(min, Math.floor(v))) : fallback;
+
+/**
+ * The settings as they are saved: numbers whole and in range. A typed -1 or
+ * 1.5 failed the save, and the dialog would not close.
+ */
+function sanitized(s: Settings): Settings {
+  return {
+    ...s,
+    format: { ...s.format, indentSize: whole(s.format.indentSize, 1, 8, 4) },
+    editor: {
+      ...s.editor,
+      fontSize: whole(s.editor.fontSize, 9, 28, 14),
+      autosaveSeconds: whole(s.editor.autosaveSeconds, 5, 600, 15),
+      maxRows: whole(s.editor.maxRows, 100, 100_000_000, 100_000),
+      historyDays: whole(s.editor.historyDays, 0, 36_500, 0),
+    },
+    safety: s.safety && { ...s.safety, confirmRowsOver: whole(s.safety.confirmRowsOver, 0, Number.MAX_SAFE_INTEGER, 1000) },
+  };
+}
+
 export function SettingsDialog({ settings, dialect, onClose, onSaved }: Props) {
   const [s, setS] = useState<Settings>(settings);
   const [page, setPage] = useState<"format" | "editor" | "analysis" | "safety" | "snippets">("format");
@@ -35,8 +58,12 @@ export function SettingsDialog({ settings, dialect, onClose, onSaved }: Props) {
   // live preview: settings must be saved for the backend formatter to use them
   useEffect(() => {
     const t = setTimeout(async () => {
-      await api.saveSettings(s);
-      setPreview(await api.formatSql(SAMPLE, dialect));
+      try {
+        await api.saveSettings(sanitized(s));
+        setPreview(await api.formatSql(SAMPLE, dialect));
+      } catch {
+        // shown when the dialog closes
+      }
     }, 150);
     return () => clearTimeout(t);
   }, [s, dialect]);
@@ -57,8 +84,14 @@ export function SettingsDialog({ settings, dialect, onClose, onSaved }: Props) {
   const setSf = <K extends keyof Settings["safety"]>(k: K, v: Settings["safety"][K]) => setS({ ...s, safety: { ...sf, [k]: v } });
 
   const close = async () => {
-    await api.saveSettings(s);
-    onSaved(s);
+    const clean = sanitized(s);
+    try {
+      await api.saveSettings(clean);
+    } catch (err) {
+      toast.error("Could not save the settings", errorText(err));
+      return;
+    }
+    onSaved(clean);
     onClose();
   };
 

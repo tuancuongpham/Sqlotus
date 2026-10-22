@@ -25,8 +25,12 @@ fn counted_batch(sql: &str) -> String {
     let tokens = tokenize(sql, Dialect::MsSql);
     let words: Vec<_> = tokens.iter().filter(|t| !t.is_trivia()).collect();
     let is = |t: &sqlotus_core::Token<'_>, w: &str| t.kind == TokenKind::Word && t.text.eq_ignore_ascii_case(w);
-    // on the first line, so error line numbers stay those of the script
+    // on the first line, so error line numbers stay those of the script; a
+    // procedure named first runs without EXEC only while it is first
     let mut out = String::from("SET NOCOUNT OFF; ");
+    if sqlotus_core::safety::bare_call_start(sql).is_some() {
+        out.push_str("EXEC ");
+    }
     let mut at = 0;
     for w in words.windows(3) {
         if is(w[0], "SET") && is(w[1], "NOCOUNT") && is(w[2], "ON") {

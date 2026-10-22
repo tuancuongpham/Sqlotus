@@ -9,6 +9,7 @@ use crate::Dialect;
 use crate::catalog::{Column, DbObject, Param};
 use crate::lexer::{TokenKind, tokenize};
 use crate::snippet::escape_snippet;
+use crate::text::one_line;
 
 /// `schema.name` quoted for the dialect.
 pub fn object_name(o: &DbObject, dialect: Dialect, with_schema: bool) -> String {
@@ -21,7 +22,7 @@ pub fn object_name(o: &DbObject, dialect: Dialect, with_schema: bool) -> String 
 
 /// Type text for a comment: `decimal(5,2)` -> `decimal(5, 2)`.
 fn type_comment(ty: &str) -> String {
-    ty.replace(", ", ",").replace(',', ", ")
+    one_line(&ty.replace(", ", ",").replace(',', ", "))
 }
 
 struct Values {
@@ -89,7 +90,7 @@ pub fn insert_tail(o: &DbObject, name: &str, dialect: Dialect, indent: usize, sn
             pad.clone()
         };
         let sep = if i + 1 < cols.len() { "," } else { " " };
-        let comment = v.lit(&format!("-- {} - {}", c.name, type_comment(&c.data_type)));
+        let comment = v.lit(&format!("-- {} - {}", one_line(&c.name), type_comment(&c.data_type)));
         let val = v.value("NULL");
         s.push_str(&format!("{lead}{val}{sep} {comment}\n"));
     }

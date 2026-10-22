@@ -288,9 +288,16 @@ impl Lexer<'_> {
 
     /// Whether only whitespace precedes the current position on its line.
     fn at_line_start(&self) -> bool {
-        let before = &self.src[..self.pos];
-        let line = before.rfind(['\n', '\r']).map_or(0, |i| i + 1);
-        before[line..].trim().is_empty()
+        // back over spaces only: scanning to the line start would make a long
+        // line of `:name` parameters quadratic
+        for b in self.src[..self.pos].bytes().rev() {
+            match b {
+                b'\n' | b'\r' => return true,
+                b' ' | b'\t' => {}
+                _ => return false,
+            }
+        }
+        true
     }
 
     /// The rest of a T-SQL word: identifier characters and SQLCMD `$(name)`
@@ -446,9 +453,11 @@ fn is_ident_char_or_at(c: char) -> bool {
 /// Length of a SQLCMD variable, `$(name)`, at the start of `s`.
 pub(crate) fn sqlcmd_variable_len(s: &str) -> Option<usize> {
     let name = s.strip_prefix("$(")?;
-    let len = name.find(')')?;
-    let valid = len > 0 && name[..len].chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-');
-    valid.then_some(len + 3)
+    // the name, then `)` right after it: no search for a `)` further on
+    let len = name
+        .find(|c: char| !(c.is_alphanumeric() || c == '_' || c == '-'))
+        .unwrap_or(name.len());
+    (len > 0 && name[len..].starts_with(')')).then_some(len + 3)
 }
 
 #[cfg(test)]

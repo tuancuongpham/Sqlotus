@@ -118,8 +118,8 @@ Bấm vào từng nhóm để xem chi tiết.
   bật, script có gọi procedure (`EXEC`, `CALL`) sẽ chạy trong transaction và bạn chọn Commit hay Roll back. Procedure
   không thay đổi gì thì được commit luôn, không hỏi.
 - **Môi trường kết nối** Development/Test/Staging/Production: Production có tab đỏ, nhãn PROD, manual commit và hỏi
-  lại (ghi rõ server) trước mọi câu lệnh thay đổi dữ liệu hoặc schema và trước mọi lời gọi procedure (`EXEC` / `CALL`) —
-  cả khi chạy trên nhiều database và khi lưu dữ liệu sửa trên lưới.
+  lại (ghi rõ server) trước mọi câu lệnh thay đổi dữ liệu hoặc schema và trước mọi lời gọi procedure (`EXEC` / `CALL`,
+  hoặc tên procedure đứng đầu batch) — cả khi chạy trên nhiều database và khi lưu dữ liệu sửa trên lưới.
 - **Biến chưa khai báo**: chạy `… WHERE Id = @Id` mà chưa `DECLARE` sẽ hỏi giá trị (và kiểu), tự khai báo, nhớ giá trị.
 - **Find invalid objects**: view/proc/function/trigger tham chiếu tới bảng/cột không còn tồn tại.
 - **Problems** (tab cạnh Results): mọi lỗi của tab kèm quy tắc và vị trí; bấm để nhảy tới, nhóm theo quy tắc hoặc mức độ,
@@ -209,12 +209,14 @@ Giữ schema của một database trong một thư mục — thường là repos
 <summary><b>Chạy query và kết quả</b></summary>
 
 - F5 / Ctrl+E chạy vùng chọn hoặc cả tab, Shift+F5 chạy câu lệnh tại con trỏ (F5 cũng vậy nếu bật Options → Editor →
-  "Execute runs the statement at the cursor"); tách batch `GO` / `GO n`; script MySQL có dòng `DELIMITER` (file dump,
-  procedure, trigger) chạy giống công cụ dòng lệnh mysql; huỷ query; nhiều result set.
+  "Execute runs the statement at the cursor"): câu lệnh luôn chạy trọn vẹn, cùng CTE của nó, câu IF hay WHILE chứa nó
+  và routine mà nó thuộc về; tách batch `GO` / `GO n`; script MySQL có dòng `DELIMITER` (file dump, procedure,
+  trigger) chạy giống công cụ dòng lệnh mysql; huỷ query; nhiều result set.
 - **Biến SQLCMD** (SQL Server): `:setvar Schema "dbo"` khai báo biến, `$(Schema)` được thay bằng giá trị ở mọi chỗ phía
   dưới; `:on error exit` dừng ở batch lỗi đầu tiên. Chạy vùng chọn hoặc câu lệnh tại con trỏ vẫn giữ các biến khai báo
   phía trên. Các lệnh SQLCMD khác bị từ chối chứ không gửi tới server.
-- **Chạy trên nhiều database** (Ctrl+Shift+F5): mỗi dòng có cột `Database`, gộp lại nếu cùng cấu trúc.
+- **Chạy trên nhiều database** (Ctrl+Shift+F5): mỗi dòng có cột `Database`, gộp lại nếu cùng cấu trúc; Cancel dừng ở
+  database đang chạy.
 - **Lưới kết quả ảo hoá**: sắp xếp, lọc, copy kèm header, **copy dạng INSERT / CSV / IN list / Markdown / JSON /
   HTML**, lưu CSV. Shift+click chọn vùng trong một cột để xem Count / Sum / Avg / Min / Max.
 - **Grid hoặc Text**: xem các dòng dưới dạng bảng chữ cố định độ rộng như công cụ dòng lệnh (lựa chọn được giữ cho các

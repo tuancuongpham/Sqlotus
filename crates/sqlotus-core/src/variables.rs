@@ -46,15 +46,21 @@ fn statement_keyword(t: &[Token<'_>], i: usize) -> String {
     first
 }
 
-/// `EXEC dbo.p @Param = 1`: the parameter name of the called procedure, not
-/// a variable of the script.
-fn is_named_argument(t: &[Token<'_>], i: usize) -> bool {
+/// `EXEC dbo.p @Param = 1`, or `dbo.p @Param = 1` first in a batch (run
+/// without EXEC, `bare_call`): the parameter name of the called procedure,
+/// not a variable of the script.
+fn is_named_argument(t: &[Token<'_>], i: usize, bare_call: bool) -> bool {
+    let keyword = statement_keyword(t, i);
     t.get(i + 1).is_some_and(|n| n.text == "=")
         && !matches!(
             word(i.checked_sub(1).and_then(|p| t.get(p))).as_str(),
             "EXEC" | "EXECUTE"
         )
-        && matches!(statement_keyword(t, i).as_str(), "EXEC" | "EXECUTE")
+        && (matches!(keyword.as_str(), "EXEC" | "EXECUTE")
+            // still in the call that starts the batch
+            || (bare_call
+                && !STATEMENT_KEYWORDS.contains(&keyword.as_str())
+                && !t[..i].iter().any(|x| x.kind == TokenKind::Semicolon)))
 }
 
 fn mssql_undeclared(t: &[Token<'_>], out: &mut Vec<String>, seen: &mut HashSet<String>) {
@@ -63,6 +69,7 @@ fn mssql_undeclared(t: &[Token<'_>], out: &mut Vec<String>, seen: &mut HashSet<S
     if defines_module(t) {
         return;
     }
+    let bare_call = !t.is_empty() && crate::safety::bare_call(t, 0);
     let mut declared = HashSet::new();
     for (i, x) in t.iter().enumerate() {
         if x.kind != TokenKind::Variable || x.text.starts_with("@@") {
@@ -79,7 +86,7 @@ fn mssql_undeclared(t: &[Token<'_>], out: &mut Vec<String>, seen: &mut HashSet<S
         );
         if declares {
             declared.insert(key);
-        } else if !declared.contains(&key) && !table && !is_named_argument(t, i) && seen.insert(key) {
+        } else if !declared.contains(&key) && !table && !is_named_argument(t, i, bare_call) && seen.insert(key) {
             out.push(x.text.to_string());
         }
     }
@@ -187,7 +194,8 @@ pub fn prelude(batch: &str, dialect: Dialect, vars: &[VariableValue]) -> String 
                 .iter()
                 .map(|v| v.to_lowercase())
                 .collect();
-            vars.iter()
+            let mut declarations: String = vars
+                .iter()
                 .filter(|v| used.contains(&v.name.to_lowercase()) && missing.contains(&v.name.to_lowercase()))
                 .map(|v| {
                     let ty = if v.data_type.trim().is_empty() {
@@ -201,7 +209,12 @@ pub fn prelude(batch: &str, dialect: Dialect, vars: &[VariableValue]) -> String 
                         literal(v.value.as_deref(), ty, dialect)
                     )
                 })
-                .collect()
+                .collect();
+            // a procedure named first runs without EXEC only while it is first
+            if !declarations.is_empty() && crate::safety::bare_call_start(batch).is_some() {
+                declarations.push_str("EXEC ");
+            }
+            declarations
         }
     }
 }
@@ -209,6 +222,24 @@ pub fn prelude(batch: &str, dialect: Dialect, vars: &[VariableValue]) -> String 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A procedure named first in a batch runs without EXEC: its parameter
+    /// names are not variables, and declarations in front keep it a call.
+    #[test]
+    fn procedure_named_first_in_a_batch() {
+        let ms = Dialect::MsSql;
+        let sql = "dbo.GetOrders @CustomerId = @x, @Top = 5";
+        assert_eq!(undeclared_variables(sql, ms), vec!["@x"]);
+        let x = VariableValue {
+            name: "@x".into(),
+            data_type: "int".into(),
+            value: Some("7".into()),
+        };
+        assert_eq!(prelude(sql, ms, std::slice::from_ref(&x)), "DECLARE @x int = 7; EXEC ");
+        // a statement after the call names variables again
+        assert_eq!(undeclared_variables("dbo.p @a = 1; SELECT @b = 2", ms), vec!["@b"]);
+        assert_eq!(prelude("SELECT @x", ms, &[x]), "DECLARE @x int = 7; ");
+    }
 
     #[test]
     fn finds_undeclared_tsql_variables() {

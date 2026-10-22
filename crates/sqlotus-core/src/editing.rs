@@ -324,6 +324,38 @@ fn comparable(t: &str) -> bool {
         )
 }
 
+/// Whether `s` is a number literal: `[+-]digits[.digits][e[+-]digits]` (a
+/// `--` would start a comment, an `e` alone would name a column).
+fn is_numeric_literal(s: &str) -> bool {
+    let b = s.as_bytes();
+    let mut i = usize::from(matches!(b.first(), Some(b'+' | b'-')));
+    let digits = |i: &mut usize| {
+        let start = *i;
+        while b.get(*i).is_some_and(u8::is_ascii_digit) {
+            *i += 1;
+        }
+        *i - start
+    };
+    let mut mantissa = digits(&mut i);
+    if b.get(i) == Some(&b'.') {
+        i += 1;
+        mantissa += digits(&mut i);
+    }
+    if mantissa == 0 {
+        return false;
+    }
+    if matches!(b.get(i), Some(b'e' | b'E')) {
+        i += 1;
+        if matches!(b.get(i), Some(b'+' | b'-')) {
+            i += 1;
+        }
+        if digits(&mut i) == 0 {
+            return false;
+        }
+    }
+    i == b.len()
+}
+
 /// `v` as a SQL literal for column `col`; values that do not fit it are
 /// described in `problems`.
 pub(crate) fn literal(v: &Option<String>, col: &EditColumn, dialect: Dialect, problems: &mut Vec<String>) -> String {
@@ -343,20 +375,20 @@ pub(crate) fn literal(v: &Option<String>, col: &EditColumn, dialect: Dialect, pr
     }
     if ty.is_number() {
         let s = v.trim();
-        // a plain number only: `NaN` or `inf` would reach the server as SQL text
-        let plain = s
-            .chars()
-            .all(|c| c.is_ascii_digit() || matches!(c, '-' | '+' | '.' | 'e' | 'E'));
-        if !plain || !s.parse::<f64>().is_ok_and(f64::is_finite) {
-            problems.push(format!("{name}: '{v}' is not a number."));
+        // a number as SQL reads one; anything else (`NaN`, `--`, `1; DROP …`)
+        // stays inside quotes, never SQL text of its own
+        if is_numeric_literal(s) && s.parse::<f64>().is_ok_and(f64::is_finite) {
+            return s.to_string();
         }
-        return s.to_string();
+        problems.push(format!("{name}: '{v}' is not a number."));
+        return dialect.string_literal(s);
     }
     // PostgreSQL bit(n) / varbit are bit strings
     if dialect == Dialect::Postgres && matches!(b, "bit" | "varbit" | "bit varying") {
         let s = v.trim();
         if !s.chars().all(|c| c == '0' || c == '1') {
             problems.push(format!("{name}: bits are written as 0 and 1, e.g. 1010."));
+            return dialect.string_literal(s);
         }
         return format!("B'{s}'");
     }
@@ -367,12 +399,14 @@ pub(crate) fn literal(v: &Option<String>, col: &EditColumn, dialect: Dialect, pr
         if let Some(h) = lower.strip_prefix("0x") {
             if h.is_empty() || !h.chars().all(|c| c.is_ascii_hexdigit()) {
                 problems.push(format!("{name}: '{v}' is not a bit value."));
+                return dialect.string_literal(s);
             }
             return format!("X'{h}'");
         }
         if let Some(bits) = lower.strip_prefix("b'").and_then(|r| r.strip_suffix('\'')) {
             if !bits.chars().all(|c| c == '0' || c == '1') {
                 problems.push(format!("{name}: '{v}' is not a bit value."));
+                return dialect.string_literal(s);
             }
             return format!("b'{bits}'");
         }

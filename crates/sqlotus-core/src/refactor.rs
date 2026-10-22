@@ -364,6 +364,18 @@ mod tests {
             insert_semicolons("SELECT 1\n\nSELECT 2 -- two\nGO\nUPDATE t SET a = 1;", Dialect::MsSql),
             "SELECT 1;\n\nSELECT 2; -- two\nGO\nUPDATE t SET a = 1;"
         );
+        // a `;` after the CTE would leave `DELETE FROM x` on its own: every row of a table x
+        assert_eq!(
+            insert_semicolons("WITH x AS (SELECT 1 AS a)\n\nDELETE FROM x", Dialect::MsSql),
+            "WITH x AS (SELECT 1 AS a)\n\nDELETE FROM x;"
+        );
+        assert_eq!(
+            insert_semicolons(
+                "IF @a = 1\n\n    DELETE FROM t\n\nSELECT 1\n\nUNION ALL\n\nSELECT 2",
+                Dialect::MsSql
+            ),
+            "IF @a = 1\n\n    DELETE FROM t;\n\nSELECT 1\n\nUNION ALL\n\nSELECT 2;"
+        );
     }
 
     #[test]

@@ -244,7 +244,11 @@ pub async fn change_database(state: State<'_, AppState>, tab_id: String, databas
     ensure_connected(&session, &mut guard).await?;
     let conn = guard.as_mut().expect("connected");
     if conn.dialect() == Dialect::Postgres {
-        // Postgres cannot switch databases on a live connection
+        // Postgres cannot switch databases on a live connection, and a new
+        // one would roll back the open transaction without a word
+        if conn.open_transactions().await.unwrap_or(0) > 0 {
+            return Err("This tab has an open transaction: commit or roll back before switching database (PostgreSQL switches by reconnecting, which would roll it back).".into());
+        }
         let mut config = session.config.clone();
         config.database = Some(database.clone());
         let new = Connection::open(&config, session.password.as_deref())
@@ -313,6 +317,22 @@ enum Wrapped {
     Guard,
 }
 
+/// PostgreSQL's answer to a COMMIT or ROLLBACK inside a transaction block.
+const INVALID_TERMINATION: &str = "invalid transaction termination";
+
+const COMMITS_INSIDE: &str = "A procedure or DO block of the script commits by itself, which PostgreSQL does not allow inside the \
+     transaction Sqlotus opened (manual commit, or Options → Safety → Ask before committing what procedures changed), \
+     so nothing was saved. Once Sqlotus knows the procedure (created in a run of its own, or Reload objects), \
+     it runs it without a transaction.";
+
+/// Whether a run failed because something committed inside a transaction block.
+fn commits_inside(batches: &[sqlotus_db::ScriptBatch]) -> bool {
+    batches
+        .iter()
+        .flat_map(|b| &b.output.messages)
+        .any(|m| m.text.contains(INVALID_TERMINATION))
+}
+
 fn has_word(sql: &str, dialect: Dialect, word: &str) -> bool {
     sqlotus_core::tokenize(sql, dialect)
         .iter()
@@ -330,7 +350,9 @@ pub async fn execute(
 ) -> CmdResult<ExecuteResult> {
     let session = state.session(&tab_id).ok_or("tab is not connected")?;
     let dialect = session.config.dialect;
-    let run = ScriptRun::new(&sql, dialect);
+    // the checks read what the server runs: `$(Cmd)` cannot hide a DROP
+    let as_run = sqlotus_core::sqlcmd::as_run(&sql, dialect);
+    let run = ScriptRun::new(&as_run, dialect);
     let changes = run.changes();
     if session.config.read_only && !changes.is_empty() {
         return Err(format!(
@@ -351,29 +373,57 @@ pub async fn execute(
     let schema_changed = run.changes_schema();
     // BACKUP, RESTORE, CREATE DATABASE ... are refused inside a transaction
     let refused = run.refuses_transaction();
-    let unwrapped_note = (session.config.manual_commit && !refused.is_empty()).then(|| {
-        format!(
+    // PostgreSQL procedures and DO blocks that commit by themselves cannot
+    // run inside a transaction block either
+    let commits = if dialect == Dialect::Postgres {
+        let db = session.database.lock().map(|d| d.clone()).unwrap_or_default();
+        state
+            .cached_catalog(&session.config.id, &db)
+            .map(|snap| run.commits_by_itself(&snap.definitions))
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let would_wrap = session.config.manual_commit || settings.safety.confirm_procedure_calls;
+    let unwrapped_note = if session.config.manual_commit && !refused.is_empty() {
+        Some(format!(
             "Manual commit is on, but {} cannot run inside a transaction, so the script ran without one.",
             refused[0]
-        )
-    });
+        ))
+    } else if would_wrap && !commits.is_empty() {
+        Some(format!(
+            "{} commits by itself, which PostgreSQL does not allow inside a transaction: the script ran without one, \
+             and what it committed is saved.",
+            commits[0]
+        ))
+    } else {
+        None
+    };
     // procedures change rows too: manual commit keeps their changes as well
-    let manual =
-        session.config.manual_commit && !(changes.is_empty() && calls.is_empty()) && !tx_control && refused.is_empty();
+    let manual = session.config.manual_commit
+        && !(changes.is_empty() && calls.is_empty())
+        && !tx_control
+        && refused.is_empty()
+        && commits.is_empty();
     let guard_rows = !manual && row_limit > 0 && rows_only;
     // what procedures change cannot be counted: ask before committing it
-    let guard_calls =
-        !manual && settings.safety.confirm_procedure_calls && !calls.is_empty() && run.fits_in_transaction();
+    let guard_calls = !manual
+        && settings.safety.confirm_procedure_calls
+        && !calls.is_empty()
+        && run.fits_in_transaction()
+        && commits.is_empty();
     let guard_wanted = guard_rows || guard_calls;
     let options = ScriptOptions {
         variables: variables.unwrap_or_default(),
         // SQL Server reports changed rows only through sp_executesql, whose
         // scope would undo a USE statement
-        counted: rows_only && !has_word(&sql, dialect, "USE"),
+        counted: rows_only && !has_word(&as_run, dialect, "USE"),
     };
-    // SQL Server reports no counts under SET NOCOUNT ON; an unknown count
-    // must never be taken as "few rows"
-    let count_reliable = dialect != Dialect::MsSql || (options.counted && !has_word(&sql, dialect, "NOCOUNT"));
+    // SQL Server reports no counts under SET NOCOUNT ON, and no server counts
+    // the rows of a change nested in another (a CTE that deletes); an unknown
+    // count must never be taken as "few rows"
+    let count_reliable = !run.has_nested_changes()
+        && (dialect != Dialect::MsSql || (options.counted && !has_word(&as_run, dialect, "NOCOUNT")));
     let task_session = session.clone();
     let script = sql.clone();
     let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
@@ -421,7 +471,11 @@ pub async fn execute(
             Wrapped::Guard if open > 0 && failed && dialect == Dialect::Postgres => {
                 let _ = conn.execute("ROLLBACK", &limits).await;
                 open = conn.open_transactions().await.unwrap_or(0);
-                notice = Some("The script failed, so PostgreSQL rolled back all of its changes (a failed transaction cannot be committed).".into());
+                notice = Some(if commits_inside(&batches) {
+                    COMMITS_INSIDE.into()
+                } else {
+                    "The script failed, so PostgreSQL rolled back all of its changes (a failed transaction cannot be committed).".into()
+                });
             }
             Wrapped::Guard if open > 0 => {
                 let over = guard_rows && count_reliable && rows > row_limit;
@@ -456,8 +510,21 @@ pub async fn execute(
                     open = conn.open_transactions().await.unwrap_or(0);
                 }
             }
-            // a transaction that wrote nothing (a procedure that only reads) has nothing to keep
-            Wrapped::Manual if open > 0 && !failed && conn.transaction_wrote().await == Some(false) => {
+            // the transaction Sqlotus opened made the run fail, and PostgreSQL
+            // cannot commit a failed one: nothing is left to keep
+            Wrapped::Manual if failed && commits_inside(&batches) => {
+                let _ = conn.execute("ROLLBACK", &limits).await;
+                open = conn.open_transactions().await.unwrap_or(0);
+                notice = Some(COMMITS_INSIDE.into());
+            }
+            // the script ended the transaction itself: a COMMIT inside a
+            // procedure, or a statement the server commits (MySQL DDL)
+            Wrapped::Manual if open == 0 && !failed => {
+                notice = Some("The script ended the transaction Sqlotus opened for manual commit (a procedure that commits, or a statement the server commits by itself): its changes are saved.".into());
+            }
+            // a transaction that wrote nothing (a procedure that only reads) has
+            // nothing to keep; rows the server reported mean it wrote
+            Wrapped::Manual if open > 0 && !failed && rows == 0 && conn.transaction_wrote().await == Some(false) => {
                 let _ = conn.execute("COMMIT", &limits).await;
                 open = conn.open_transactions().await.unwrap_or(0);
             }
@@ -554,7 +621,7 @@ pub async fn explain(state: State<'_, AppState>, tab_id: String, sql: String) ->
 #[tauri::command(async)]
 pub fn undeclared_variables(text: String, dialect: Dialect) -> CmdResult<Vec<String>> {
     no_panic("variables", || {
-        sqlotus_core::variables::undeclared_variables(&text, dialect)
+        sqlotus_core::variables::undeclared_variables(&sqlotus_core::sqlcmd::as_run(&text, dialect), dialect)
     })
 }
 

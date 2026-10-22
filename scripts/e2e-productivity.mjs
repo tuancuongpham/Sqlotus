@@ -234,6 +234,10 @@ await step("right-click: the rows that reference this one", async () => {
     cell.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: r.x + 5, clientY: r.y + 5 }));
   })()`);
   const items = await t.until(() => evaluate(`document.querySelector(".grid-menu") ? [...document.querySelectorAll(".grid-menu button")].map((b) => b.textContent) : null`), 3000);
+  await sleep(200);
+  // the results are at the bottom of the window: the menu still fits in it
+  const inView = await evaluate(`(() => { const r = document.querySelector(".grid-menu").getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight && r.right <= innerWidth; })()`);
+  check("the row menu fits in the window", inView);
   await t.clearToasts();
   await t.clickButton(".grid-menu", "← Rows of dbo.OrderItems");
   const opened = await t.until(async () => ((await t.activeTitle()).startsWith("OrderItems by OrderId (1)") ? true : null), 10000);
@@ -450,10 +454,121 @@ await step("history kept for N days", async () => {
   check("history kept for N days", kept === 3650 && restored === (original.editor.historyDays ?? 0), `${kept} → ${restored}`);
 });
 
+// -- SQLCMD variables cannot hide a change from the checks before a run -------------------
+await step("SQLCMD variables are checked as run", async () => {
+  await back();
+  await t.paste(':setvar Cmd "DELETE FROM dbo.Orders"\n$(Cmd)');
+  await t.clearToasts();
+  await press("F5");
+  const warned = await t.until(() => evaluate(`document.querySelector(".confirm-modal")?.innerText ?? null`), 5000);
+  await t.clickButton(".confirm-modal", "Cancel");
+  const cancelled = await t.waitToast("Execution cancelled", 5000);
+  check("SQLCMD variables are checked as run", /DELETE dbo\.Orders has no WHERE clause/.test(warned ?? "") && !!cancelled, JSON.stringify(warned));
+});
+
+// -- PostgreSQL procedures that commit by themselves, on a manual-commit connection -------
+await step("PostgreSQL procedures that commit run under manual commit", async () => {
+  const pg = (await invoke("list_connections")).find((c) => c.id === "e2e-pg");
+  if (!pg) throw new Error("the E2E PostgreSQL connection is missing (run e2e-db first)");
+  const { hasPassword, ...config } = pg;
+  await invoke("save_connection", { config: { ...config, id: "e2e-pg-manual", name: "E2E PG Manual", manualCommit: true }, password: t.password, forgetPassword: false });
+  // the procedure, made on the usual connection (it commits each statement)
+  await t.connectNewTab("E2E PostgreSQL");
+  await t.paste(
+    "CREATE TABLE IF NOT EXISTS e2e_commit_log (a int);\nCREATE OR REPLACE PROCEDURE e2e_commit() LANGUAGE plpgsql AS $$ BEGIN INSERT INTO e2e_commit_log VALUES (1); COMMIT; END $$;",
+  );
+  await t.runSql(null);
+  const plainTab = await t.activeTitle();
+  await t.connectNewTab("E2E PG Manual");
+  const toast = await t.runSql("CALL e2e_commit()");
+  const notice = await t.waitToast("commits by itself", 5000);
+  const open = await evaluate(`!!document.querySelector(".tab.active .tab-badge.tx")`);
+  // created and called in one run: Sqlotus cannot know yet, and says why it failed
+  await t.paste("CREATE OR REPLACE PROCEDURE e2e_commit2() LANGUAGE plpgsql AS $$ BEGIN COMMIT; END $$;\nCALL e2e_commit2();");
+  await t.runSql(null);
+  const explained = await t.waitToast("does not allow inside the", 5000);
+  const openAfter = await evaluate(`!!document.querySelector(".tab.active .tab-badge.tx")`);
+  check(
+    "PostgreSQL procedures that commit run under manual commit",
+    /Query finished/.test(toast ?? "") && !!notice && !open && !!explained && !openAfter,
+    `${toast} | ${notice} | open ${open} | ${explained} | open ${openAfter}`,
+  );
+  await press("Control+W");
+  await sleep(300);
+  await t.selectTab(plainTab);
+  await t.runSql("DROP PROCEDURE IF EXISTS e2e_commit(); DROP PROCEDURE IF EXISTS e2e_commit2(); DROP TABLE IF EXISTS e2e_commit_log;");
+  await press("Control+W");
+  await sleep(300);
+  await invoke("delete_connection", { id: "e2e-pg-manual" });
+  await back();
+});
+
+// -- the statement at the cursor keeps its CTE ----------------------------------------------
+await step("the statement at the cursor keeps its CTE", async () => {
+  await back();
+  await t.runSql("DROP TABLE IF EXISTS dbo.E2E_Cte; CREATE TABLE dbo.E2E_Cte (Id int PRIMARY KEY, Yr int); INSERT dbo.E2E_Cte VALUES (1, 2019), (2, 2019), (3, 2024);");
+  // the CTE has the table's name: the DELETE alone would empty the table
+  await t.paste("WITH E2E_Cte AS (\n    SELECT * FROM dbo.E2E_Cte WHERE Yr < 2020\n)\n\nDELETE FROM E2E_Cte");
+  await t.cursorToLine(5);
+  const toast = await t.runSql(null, { statement: true });
+  const left = (await t.runSql("SELECT COUNT(*) FROM dbo.E2E_Cte"), (await t.gridRows())[0]?.[0]);
+  check("the statement at the cursor keeps its CTE", left === "1", `${left} row(s) left · ${toast}`);
+});
+
+// -- a procedure named first in a batch runs without EXEC, also with variable values --------
+await step("a procedure named first in a batch", async () => {
+  await back();
+  await t.runSql("CREATE OR ALTER PROCEDURE dbo.E2E_Echo @Value int AS SELECT @Value + 1 AS v");
+  await t.paste("dbo.E2E_Echo @Value = @x");
+  await t.clearToasts();
+  await press("F5");
+  const asked = await t.until(() => evaluate(`document.querySelector(".variables-modal")?.innerText ?? null`), 5000);
+  await setField(".variable-value", "41");
+  await t.clickButton(".variables-modal .modal-actions", "Run");
+  const toast = await t.waitToast("Query finished", 10000);
+  const rows = await t.gridRows();
+  // @Value names the procedure's parameter: only @x is asked for
+  check(
+    "a procedure named first in a batch",
+    !!asked && asked.includes("@x") && !asked.includes("@Value") && rows[0]?.[0] === "42",
+    `${JSON.stringify(asked)} ${JSON.stringify(rows)} ${toast}`,
+  );
+});
+
+// -- PostgreSQL: switching database with an open transaction asks first --------------------
+await step("PostgreSQL database switch with an open transaction", async () => {
+  await t.connectNewTab("E2E PostgreSQL");
+  const pgTab = await t.activeTitle();
+  const from = await evaluate(`document.querySelector(".toolbar select[title=Database]")?.value`);
+  const other = await evaluate(`[...document.querySelectorAll(".toolbar select[title=Database] option")].map((o) => o.value).find((v) => v && v !== ${JSON.stringify(from)})`);
+  await t.runSql("BEGIN; CREATE TEMP TABLE e2e_tx (a int);");
+  const open = await t.until(() => evaluate(`!!document.querySelector(".tab.active .tab-badge.tx")`), 5000);
+  const ask = () => t.until(() => evaluate(`document.querySelector(".confirm-modal")?.innerText ?? null`), 5000);
+  await setField(".toolbar select[title=Database]", other);
+  const asked = await ask();
+  await t.clickButton(".confirm-modal", "Cancel");
+  await sleep(300);
+  const kept = (await evaluate(`document.querySelector(".toolbar select[title=Database]")?.value`)) === from && (await evaluate(`!!document.querySelector(".tab.active .tab-badge.tx")`));
+  await setField(".toolbar select[title=Database]", other);
+  await ask();
+  await t.clickButton(".confirm-modal", "Roll back and switch");
+  const switched = await t.waitToast(`Switched to database ${other}`, 10000);
+  const closed = !(await evaluate(`!!document.querySelector(".tab.active .tab-badge.tx")`));
+  check(
+    "PostgreSQL database switch with an open transaction",
+    !!open && /open transaction/.test(asked ?? "") && kept && !!switched && closed,
+    `${from} → ${other} | open ${open} | ${JSON.stringify(asked)} | kept ${kept} | ${switched} | closed ${closed}`,
+  );
+  await t.selectTab(pgTab);
+  await press("Control+W");
+  await sleep(300);
+  await back();
+});
+
 // -- clean up --------------------------------------------------------------------------------
 await back();
 await t.runSql(
-  "DROP PROCEDURE IF EXISTS dbo.E2E_Touch; DROP PROCEDURE IF EXISTS dbo.E2E_Read; DROP TABLE IF EXISTS dbo.E2E_Find; DROP TABLE IF EXISTS dbo.E2E_AutoRefresh; DROP TABLE IF EXISTS dbo.E2E_InTx;",
+  "DROP PROCEDURE IF EXISTS dbo.E2E_Touch; DROP PROCEDURE IF EXISTS dbo.E2E_Read; DROP PROCEDURE IF EXISTS dbo.E2E_Echo; DROP TABLE IF EXISTS dbo.E2E_Find; DROP TABLE IF EXISTS dbo.E2E_AutoRefresh; DROP TABLE IF EXISTS dbo.E2E_InTx; DROP TABLE IF EXISTS dbo.E2E_Cte;",
 );
 await t.until(async () => !(await catalogNames()).includes("E2E_Find"), 15000);
 const now = await invoke("get_settings");

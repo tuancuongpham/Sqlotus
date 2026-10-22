@@ -223,7 +223,8 @@ pub async fn object_references(
 #[tauri::command(async)]
 pub fn modifying_statements(text: String, dialect: Dialect) -> CmdResult<Vec<String>> {
     no_panic("analysis", || {
-        let run = ScriptRun::new(&text, dialect);
+        let as_run = sqlotus_core::sqlcmd::as_run(&text, dialect);
+        let run = ScriptRun::new(&as_run, dialect);
         let mut out = run.changes();
         out.extend(run.calls());
         out
@@ -409,7 +410,7 @@ pub async fn table_data_script(
         .ok_or_else(|| format!("{schema}.{name} is not a table in the loaded objects (reload objects if it is new)."))?
         .clone();
     let options = DataScriptOptions {
-        max_rows: options.max_rows.clamp(1, 1_000_000),
+        max_rows: options.max_rows.clamp(1, MAX_SCRIPTED_ROWS),
         ..options
     };
     let sql = no_panic("data script", || datascript::data_query(&table, dialect, &options))??;
@@ -417,10 +418,25 @@ pub async fn table_data_script(
     let rows = conn.query_strings(&sql).await.map_err(crate::commands::err);
     conn.close().await;
     let rows = rows?;
-    no_panic("data script", || {
+    let script = no_panic("data script", || {
         datascript::data_script(&table, dialect, &rows, options.max_rows)
-    })
+    })?;
+    // the script opens in an editor tab, which cannot hold just any size
+    if script.script.len() > MAX_SCRIPT_BYTES {
+        return Err(format!(
+            "The script would be {} MB, too big to open in a tab: script fewer rows, or only the rows you need with a condition.",
+            script.script.len() / (1024 * 1024)
+        ));
+    }
+    Ok(script)
 }
+
+/// At most this many rows are scripted at once.
+const MAX_SCRIPTED_ROWS: usize = 100_000;
+
+/// Scripts larger than this do not open in a tab (binary and long text
+/// columns make even few rows large).
+const MAX_SCRIPT_BYTES: usize = 50 * 1024 * 1024;
 
 /// The script that finds a value in every text column (to review and run).
 #[tauri::command]

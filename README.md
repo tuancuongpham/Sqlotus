@@ -229,13 +229,14 @@ Keep a database's schema in a folder — usually a git repository shared with yo
 <summary><b>Running queries</b></summary>
 
 - F5 / Ctrl+E runs the selection or the tab, Shift+F5 the statement at the cursor (or F5 too, with Options →
-  Editor → "Execute runs the statement at the cursor"); `GO` / `GO n` batches; MySQL scripts with `DELIMITER` lines
-  (dumps, procedures, triggers) run as the mysql client runs them; cancel; multiple result sets.
+  Editor → "Execute runs the statement at the cursor"): a statement runs whole, with its CTEs, the IF or WHILE it
+  belongs to, and the routine it is part of; `GO` / `GO n` batches; MySQL scripts with `DELIMITER` lines (dumps,
+  procedures, triggers) run as the mysql client runs them; cancel; multiple result sets.
 - **SQLCMD variables** (SQL Server): `:setvar Schema "dbo"` defines a variable that `$(Schema)` stands for anywhere
   below it, and `:on error exit` stops at the first batch that fails. A selection or the statement at the cursor
   keeps the variables defined above it. Other SQLCMD commands are refused instead of being sent to the server.
 - **Run on multiple databases** (Ctrl+Shift+F5): every row gets a `Database` column; results with the same
-  shape are combined.
+  shape are combined; Cancel stops at the database running.
 - Virtualized result grid: sort by column, filter, copy (with headers), **copy as INSERT statements / CSV /
   IN (…) list**, save as CSV. Shift+click a range in a column to see Count / Sum / Avg / Min / Max.
 - **Grid or Text**: the rows as a fixed-width text table, as a terminal client prints them (the choice stays for
@@ -264,7 +265,8 @@ Keep a database's schema in a folder — usually a git repository shared with yo
   cancel a query or kill a session after confirming. SQL Server, PostgreSQL and MySQL.
 - **Environments**: mark connections Development / Test / Staging / Production. Production gets a red tab, a PROD
   badge, manual commit, and a confirmation naming the server before every statement that changes data or schema
-  and before every procedure call (`EXEC` / `CALL`) — also on multiple databases and when saving edited rows.
+  and before every procedure call (`EXEC` / `CALL`, or a procedure named first in a batch) — also on multiple
+  databases and when saving edited rows.
 - **Folders** for connections (a customer, a project): connections of a folder are listed together, folders fold,
   and a filter finds a connection by name, server, database or folder.
 - Per-connection tab colours. Passwords are stored in the Windows Credential Manager.

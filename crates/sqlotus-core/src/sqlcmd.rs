@@ -5,6 +5,7 @@
 //! to the server; other commands (`:r`, `:connect`, ...) are refused rather
 //! than sent. SQL Server only: there a command line starts with `:`.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ops::Range;
 
@@ -36,7 +37,6 @@ impl Sqlcmd {
         if commands.is_empty() {
             return Ok(None);
         }
-        let mut text = src.to_string();
         let mut vars: HashMap<String, String> = HashMap::new();
         let mut uses = Vec::new();
         let mut stop_on_error = false;
@@ -47,7 +47,7 @@ impl Sqlcmd {
             if command.is_empty() {
                 break;
             }
-            let line = line_of(src, command.start);
+            let line = LineOf(src, command.start);
             let body = &src[command.start + 1..command.end];
             let (name, rest) = split_word(body);
             match name.to_ascii_lowercase().as_str() {
@@ -84,9 +84,14 @@ impl Sqlcmd {
                     ));
                 }
             }
-            text.replace_range(command.clone(), &" ".repeat(command.len()));
             at = command.end;
         }
+        // command lines become spaces: the same length, still valid UTF-8
+        let mut bytes = src.as_bytes().to_vec();
+        for command in &commands {
+            bytes[command.clone()].fill(b' ');
+        }
+        let text = String::from_utf8(bytes).expect("whole characters were replaced");
         Ok(Some(Sqlcmd {
             text,
             uses,
@@ -110,6 +115,21 @@ impl Sqlcmd {
         }
         out.push_str(&self.text[at..span.end]);
         out
+    }
+}
+
+/// The text the server receives for `sql`: with SQLCMD command lines
+/// blanked and `$(name)` replaced by its value (T-SQL scripts that use
+/// commands); `sql` itself otherwise, and when a command cannot be honoured
+/// (then nothing runs). The checks made before a run read this text, so a
+/// `$(Cmd)` cannot hide a DROP from a read-only or production connection.
+pub fn as_run(sql: &str, dialect: Dialect) -> Cow<'_, str> {
+    if dialect != Dialect::MsSql {
+        return Cow::Borrowed(sql);
+    }
+    match Sqlcmd::parse(sql) {
+        Ok(Some(cmd)) => Cow::Owned(cmd.expand(0..cmd.text.len())),
+        _ => Cow::Borrowed(sql),
     }
 }
 
@@ -206,6 +226,16 @@ fn line_of(src: &str, offset: usize) -> usize {
     src[..offset].matches('\n').count() + 1
 }
 
+/// The line of an offset, counted only when an error names it (counting it
+/// for every command made long scripts quadratic).
+struct LineOf<'a>(&'a str, usize);
+
+impl std::fmt::Display for LineOf<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", line_of(self.0, self.1))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,6 +282,24 @@ mod tests {
         );
         let removed = Sqlcmd::parse(":setvar x 1\nSELECT $(x)\nGO\n:setvar x\nSELECT $(x)").unwrap_err();
         assert!(removed.starts_with("Line 5: $(x) has no value"), "{removed}");
+    }
+
+    #[test]
+    fn the_checks_read_what_the_server_runs() {
+        let src = ":setvar Cmd \"DROP TABLE dbo.Orders\"\nSELECT 1;\n$(Cmd)";
+        assert_eq!(
+            as_run(src, Dialect::MsSql).trim_start(),
+            "SELECT 1;\nDROP TABLE dbo.Orders"
+        );
+        let run = crate::safety::ScriptRun::new(&as_run(src, Dialect::MsSql), Dialect::MsSql).changes();
+        assert_eq!(run, vec!["DROP TABLE dbo.Orders"]);
+        // without commands, on other servers, and when a command cannot run: as written
+        assert_eq!(as_run("SELECT '$(x)'", Dialect::MsSql), "SELECT '$(x)'");
+        assert_eq!(as_run(":setvar x 1", Dialect::Postgres), ":setvar x 1");
+        assert_eq!(
+            as_run(":r x.sql\nDELETE FROM t", Dialect::MsSql),
+            ":r x.sql\nDELETE FROM t"
+        );
     }
 
     #[test]

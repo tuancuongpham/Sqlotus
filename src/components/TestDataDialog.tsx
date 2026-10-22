@@ -128,7 +128,7 @@ export function TestDataDialog({
               min={1}
               max={100000}
               value={options.rows}
-              onChange={(e) => setOptions((o) => ({ ...o, rows: Math.max(1, Math.min(100000, Number(e.target.value) || 1)) }))}
+              onChange={(e) => setOptions((o) => ({ ...o, rows: Math.max(1, Math.min(100000, Math.floor(Number(e.target.value)) || 1)) }))}
             />
           </label>
           <label>
@@ -145,12 +145,12 @@ export function TestDataDialog({
               min={0}
               max={100}
               value={options.nullPercent}
-              onChange={(e) => setOptions((o) => ({ ...o, nullPercent: Math.max(0, Math.min(100, Number(e.target.value) || 0)) }))}
+              onChange={(e) => setOptions((o) => ({ ...o, nullPercent: Math.max(0, Math.min(100, Math.floor(Number(e.target.value)) || 0)) }))}
             />
           </label>
           <label title="The same seed always produces the same rows">
             Seed
-            <input type="number" value={options.seed} onChange={(e) => setOptions((o) => ({ ...o, seed: Number(e.target.value) || 0 }))} />
+            <input type="number" value={options.seed} onChange={(e) => setOptions((o) => ({ ...o, seed: Math.abs(Math.floor(Number(e.target.value))) || 0 }))} />
           </label>
           <button onClick={() => setOptions((o) => ({ ...o, seed: Math.floor(Math.random() * 1e6) }))}>New values</button>
         </div>

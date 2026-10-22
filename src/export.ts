@@ -136,10 +136,19 @@ const MARK = /\p{M}/u;
 
 const charWidth = (ch: string) => (MARK.test(ch) ? 0 : isWide(ch.codePointAt(0)!) ? 2 : 1);
 
+const PRINTABLE_ASCII = /^[\x20-\x7e]*$/;
+
 /** Width of text in a fixed-width font: combining marks take no room, wide characters two. */
 export function textWidth(s: string): number {
+  // most values: one test instead of one per character (100,000 rows took a second)
+  if (PRINTABLE_ASCII.test(s)) return s.length;
+  if (MARK.test(s)) {
+    let w = 0;
+    for (const ch of s) w += charWidth(ch);
+    return w;
+  }
   let w = 0;
-  for (const ch of s) w += charWidth(ch);
+  for (const ch of s) w += isWide(ch.codePointAt(0)!) ? 2 : 1;
   return w;
 }
 
@@ -162,20 +171,28 @@ function fitWidth(s: string, width: number): string {
  * `maxWidth` cut with `…`, and the row count at the end.
  */
 export function toText(rs: ResultSet, rows: Rows, maxWidth = 200): string {
-  const cell = (v: string | null) => {
+  // each value's text and width, worked out once (100,000 rows add up)
+  const cell = (v: string | null): [string, number] => {
     const flat = v == null ? "NULL" : v.replace(/\r\n|[\r\n\t]/g, " ");
-    return textWidth(flat) > maxWidth ? `${fitWidth(flat, maxWidth - 1)}…` : flat;
+    const w = textWidth(flat);
+    if (w <= maxWidth) return [flat, w];
+    // a wide character that does not fit leaves one column short
+    const cut = fitWidth(flat, maxWidth - 1);
+    return [`${cut}…`, textWidth(cut) + 1];
   };
   const heads = rs.columns.map((c) => cell(c.name));
   const cells = rows.map((r) => r.map(cell));
-  const widths = heads.map(textWidth);
-  for (const r of cells) r.forEach((v, j) => (widths[j] = Math.max(widths[j], textWidth(v))));
+  const widths = heads.map(([, w]) => w);
+  for (const r of cells) {
+    for (let j = 0; j < r.length; j++) if (r[j][1] > widths[j]) widths[j] = r[j][1];
+  }
   const numeric = rs.columns.map((c) => NUMERIC.test(c.typeName));
-  const pad = (v: string, j: number, right: boolean) => {
-    const gap = " ".repeat(widths[j] - textWidth(v));
+  const pad = ([v, w]: [string, number], j: number, right: boolean) => {
+    const gap = " ".repeat(widths[j] - w);
     return right ? gap + v : v + gap;
   };
-  const line = (r: string[], header: boolean) => ` ${r.map((v, j) => pad(v, j, !header && numeric[j])).join(" | ")}`.trimEnd();
+  const line = (r: [string, number][], header: boolean) =>
+    ` ${r.map((v, j) => pad(v, j, !header && numeric[j])).join(" | ")}`.trimEnd();
   const out = [line(heads, true), widths.map((w) => "-".repeat(w + 2)).join("+"), ...cells.map((r) => line(r, false))];
   out.push(`(${rows.length.toLocaleString("en-US")} row${rows.length === 1 ? "" : "s"})`);
   return out.join("\n");

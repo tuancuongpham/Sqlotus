@@ -229,9 +229,17 @@ pub async fn kill_session(
         monitors.insert(key.clone(), c);
     }
     let conn = monitors.get_mut(&key).expect("inserted");
-    conn.query_strings(&sql)
+    let rows = conn
+        .query_strings(&sql)
         .await
         .map_err(|e| format!("{sql} failed: {e}"))?;
+    // PostgreSQL answers false, with no error, for a session that has ended
+    let answer = rows.first().and_then(|r| r.first()).cloned().flatten();
+    if dialect == Dialect::Postgres && answer.as_deref().is_some_and(|a| matches!(a, "f" | "false")) {
+        return Err(format!(
+            "Session {id} was not found: it has ended already, or it is no client session."
+        ));
+    }
     Ok(if whole_session || dialect == Dialect::MsSql {
         format!("Session {id} was ended; its open transaction (if any) is rolled back.")
     } else {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { api, errorText } from "../api";
 import { sqlLiteral, toCsv, toHtml, toInsert, toJson, toMarkdown, toText, toTsv } from "../export";
@@ -163,6 +163,16 @@ export function ResultGrid({
       window.removeEventListener("mousedown", close, true);
       window.removeEventListener("blur", close);
     };
+  }, [menu]);
+
+  // the results sit at the bottom of the window: keep the whole menu in view
+  useLayoutEffect(() => {
+    const el = menuRef.current;
+    if (!el || !menu) return;
+    const box = el.getBoundingClientRect();
+    const x = Math.max(4, Math.min(menu.x, window.innerWidth - box.width - 4));
+    const y = Math.max(4, Math.min(menu.y, window.innerHeight - box.height - 4));
+    if (x !== menu.x || y !== menu.y) setMenu({ ...menu, x, y });
   }, [menu]);
 
   // -- editing ---------------------------------------------------------------
@@ -414,9 +424,13 @@ export function ResultGrid({
     }
   };
 
+  /** Copy one value; a value cut for display says so, as the other copies do. */
   const copyText = (text: string, what: string) =>
     void navigator.clipboard.writeText(text).then(
-      () => toast.success(what),
+      () => {
+        toast.success(what);
+        if (clipped > 0 && text.length >= 65_535 && text.endsWith("…")) warnCut();
+      },
       (e) => toast.error("Copy failed", String(e)),
     );
 
@@ -1045,7 +1059,9 @@ function TextRows({
   onKeyDown: (e: React.KeyboardEvent) => void;
 }) {
   const lines = useMemo(() => text.split("\n"), [text]);
-  const widest = useMemo(() => lines.reduce((w, l) => Math.max(w, l.length), 0), [lines]);
+  // the line under the header is as wide as the table shows (wide characters
+  // take two columns, so the length of the other lines can fall short)
+  const widest = Math.max(lines[1]?.length ?? 0, lines[lines.length - 1]?.length ?? 0);
   const first = Math.max(0, Math.floor(top / LINE_H) - OVERSCAN);
   const last = Math.min(lines.length, Math.ceil((top + Math.max(height, 300)) / LINE_H) + OVERSCAN);
   return (

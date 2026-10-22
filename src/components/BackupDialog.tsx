@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, errorText } from "../api";
 import { toast } from "../notify";
 import type { BackupContents, BackupInfo, BackupOptions, RestoreOptions } from "../types";
@@ -16,10 +16,13 @@ function inFolder(dir: string, file: string): string {
   return /[\\/]$/.test(dir) ? `${dir}${file}` : `${dir}${sep}${file}`;
 }
 
+/** A database name made fit for a file name (`Sales:2024` → `Sales_2024`). */
+const fileSafe = (name: string) => name.replace(/[\\/:*?"<>|]/g, "_");
+
 const KIND_FILE: Record<BackupOptions["kind"], (db: string) => string> = {
-  full: (db) => `${db}_${stamp()}.bak`,
-  differential: (db) => `${db}_diff_${stamp()}.bak`,
-  log: (db) => `${db}_log_${stamp()}.trn`,
+  full: (db) => `${fileSafe(db)}_${stamp()}.bak`,
+  differential: (db) => `${fileSafe(db)}_diff_${stamp()}.bak`,
+  log: (db) => `${fileSafe(db)}_log_${stamp()}.trn`,
 };
 
 /**
@@ -64,6 +67,8 @@ export function BackupDialog({
   });
   const [contents, setContents] = useState<BackupContents | null>(null);
   const [reading, setReading] = useState(false);
+  // the places of the files follow the name typed last, whatever order the answers come in
+  const movesAsked = useRef(0);
 
   useEffect(() => {
     api
@@ -71,7 +76,7 @@ export function BackupDialog({
       .then((i) => {
         setInfo(i);
         setB((o) => ({ ...o, path: inFolder(i.backupDir || i.dataDir, KIND_FILE.full(database)) }));
-        setR((o) => ({ ...o, path: inFolder(i.backupDir || i.dataDir, `${database}.bak`) }));
+        setR((o) => ({ ...o, path: inFolder(i.backupDir || i.dataDir, `${fileSafe(database)}.bak`) }));
       })
       .catch((e) => setError(errorText(e)));
   }, [connectionId, database]);
@@ -99,11 +104,12 @@ export function BackupDialog({
   const readFile = async (fileNumber = r.fileNumber, target = r.database) => {
     setReading(true);
     setError("");
+    const asked = ++movesAsked.current;
     try {
       const c = await api.backupContents(connectionId, database, r.path, fileNumber);
       setContents(c);
       const moves = await api.restoreMoves(c.files, target, info?.dataDir ?? "", info?.logDir ?? "");
-      setR((o) => ({ ...o, fileNumber, database: target, moves }));
+      if (asked === movesAsked.current) setR((o) => ({ ...o, fileNumber, database: target, moves }));
     } catch (e) {
       setContents(null);
       setError(errorText(e));
@@ -114,10 +120,10 @@ export function BackupDialog({
 
   const setTarget = async (target: string) => {
     setR((o) => ({ ...o, database: target }));
-    if (contents) {
-      const moves = await api.restoreMoves(contents.files, target, info?.dataDir ?? "", info?.logDir ?? "").catch(() => r.moves);
-      setR((o) => ({ ...o, moves }));
-    }
+    if (!contents) return;
+    const asked = ++movesAsked.current;
+    const moves = await api.restoreMoves(contents.files, target, info?.dataDir ?? "", info?.logDir ?? "").catch(() => null);
+    if (moves && asked === movesAsked.current) setR((o) => ({ ...o, moves }));
   };
 
   const openRestore = async () => {

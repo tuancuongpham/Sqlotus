@@ -69,6 +69,17 @@ const REFACTOR_DONE: Record<RefactorAction, string> = {
 let untitled = 0;
 const nextTitle = () => `SQLQuery${++untitled}.sql`;
 
+/**
+ * The selection, or the whole tab when nothing is selected. On SQL Server a
+ * selection keeps the SQLCMD lines above it, so `$(name)` has its value.
+ */
+function selectionOrTab(dialect: Dialect, ed: monaco.editor.IStandaloneCodeEditor, model: monaco.editor.ITextModel): string {
+  const sel = ed.getSelection();
+  if (!sel || sel.isEmpty()) return model.getValue();
+  const part = model.getValueInRange(sel);
+  return dialect === "mssql" ? withSqlcmdContext(model.getValue(), model.getOffsetAt(sel.getStartPosition()), part) : part;
+}
+
 /** One database of one saved connection (catalogs are per database). */
 const catalogKey = (t: Pick<Tab, "connectionId" | "database">) => `${t.connectionId}\u0001${(t.database ?? "").toLowerCase()}`;
 
@@ -214,31 +225,41 @@ export default function App() {
       );
   }, []);
 
+  /**
+   * Before a tab's connection goes away (closing the tab, connecting it
+   * elsewhere, a PostgreSQL database switch, which reconnects): commit or roll
+   * back its open transaction, as the user chooses. False when they cancel or
+   * it fails, and nothing should happen.
+   */
+  const settleTransaction = async (tab: Tab | undefined, what: string, verb: string): Promise<boolean> => {
+    if (!tab?.connected || (tab.openTransactions ?? 0) === 0) return true;
+    const answer = await askChoice(
+      "Open transaction",
+      `${tab.title} has an open transaction. ${what} without COMMIT rolls back its uncommitted changes.`,
+      [
+        { label: `Commit and ${verb}`, value: "COMMIT", kind: "primary" },
+        { label: `Roll back and ${verb}`, value: "ROLLBACK", kind: "danger" },
+        { label: "Cancel", value: "" },
+      ],
+    );
+    if (!answer) {
+      toast.info("Nothing was done", "The transaction is still open.");
+      return false;
+    }
+    try {
+      const r = await api.execute(tab.id, answer);
+      patchTab(tab.id, { openTransactions: r.openTransactions ?? 0 });
+      toast.success(answer === "COMMIT" ? "Transaction committed" : "Transaction rolled back");
+      return true;
+    } catch (e) {
+      toast.error(`${answer} failed`, errorText(e));
+      return false;
+    }
+  };
+
   const closeTab = useCallback(
     async (id: string) => {
-      const closing = tabsRef.current.find((t) => t.id === id);
-      if (closing?.connected && (closing.openTransactions ?? 0) > 0) {
-        const answer = await askChoice(
-          "Open transaction",
-          `${closing.title} has an open transaction. Closing the tab without COMMIT rolls back its uncommitted changes.`,
-          [
-            { label: "Commit and close", value: "COMMIT", kind: "primary" },
-            { label: "Roll back and close", value: "ROLLBACK", kind: "danger" },
-            { label: "Cancel", value: "" },
-          ],
-        );
-        if (!answer) {
-          toast.info("Tab kept open", "The transaction is still open.");
-          return;
-        }
-        try {
-          await api.execute(id, answer);
-          toast.success(answer === "COMMIT" ? "Transaction committed" : "Transaction rolled back");
-        } catch (e) {
-          toast.error(`${answer} failed — the tab stays open`, errorText(e));
-          return;
-        }
-      }
+      if (!(await settleTransaction(tabsRef.current.find((t) => t.id === id), "Closing the tab", "close"))) return;
       // the last version is stored before the tab is marked closed (Ctrl+Shift+T reopens it)
       // (the text is read now, before the editor document goes away below)
       const recorded = recordHistory(id, "autosave");
@@ -359,6 +380,8 @@ export default function App() {
 
   const changeDatabase = async (db: string) => {
     if (!activeTab) return;
+    // PostgreSQL switches database by reconnecting, which ends the transaction
+    if (activeTab.dialect === "postgres" && !(await settleTransaction(activeTab, "Switching database", "switch"))) return;
     try {
       const d = await api.changeDatabase(activeTab.id, db);
       patchTab(activeTab.id, { database: d });
@@ -455,8 +478,9 @@ ${r.notice}` : failure.text);
     }
   };
 
+  /** auto (F5): the selection, else the statement at the cursor (an option) or the tab; statement (Shift+F5); script: the whole tab. */
   const execute = useCallback(
-    async (mode: "auto" | "statement") => {
+    async (mode: "auto" | "statement" | "script") => {
       const id = activeRef.current;
       const tab = tabsRef.current.find((t) => t.id === id);
       const ed = editor.current;
@@ -475,10 +499,9 @@ ${r.notice}` : failure.text);
       const sel = ed.getSelection();
       const selected = !!sel && !sel.isEmpty();
       // F5 runs the statement at the cursor when that option is on and nothing is selected
-      const statement = mode === "statement" || (!selected && !!settingsRef.current?.editor.f5RunsStatement);
-      if (mode === "auto" && sel && selected) {
-        sql = model.getValueInRange(sel);
-        if (tab.dialect === "mssql") sql = withSqlcmdContext(model.getValue(), model.getOffsetAt(sel.getStartPosition()), sql);
+      const statement = mode === "statement" || (mode === "auto" && !selected && !!settingsRef.current?.editor.f5RunsStatement);
+      if (mode === "auto" && selected) {
+        sql = selectionOrTab(tab.dialect, ed, model);
       } else if (statement) {
         const pos = ed.getPosition();
         const text = model.getValue();
@@ -593,8 +616,7 @@ ${r.notice}` : failure.text);
       setDialog("connect");
       return;
     }
-    const sel = ed.getSelection();
-    const sql = sel && !sel.isEmpty() ? model.getValueInRange(sel) : model.getValue();
+    const sql = selectionOrTab(tab.dialect, ed, model);
     if (!sql.trim()) {
       toast.info("Nothing to explain", "The editor is empty.");
       return;
@@ -621,8 +643,7 @@ ${r.notice}` : failure.text);
       const ed = editor.current;
       const model = documents.get(id);
       if (!tab || !ed || !model || !tab.connected || tab.running) return;
-      const sel = ed.getSelection();
-      const sql = sel && !sel.isEmpty() ? model.getValueInRange(sel) : model.getValue();
+      const sql = selectionOrTab(tab.dialect, ed, model);
       if (!sql.trim()) return;
       const warnings = await api.executionWarnings(sql, tab.dialect).catch(() => [] as string[]);
       if (warnings.length > 0) {
@@ -644,14 +665,20 @@ ${r.notice}` : failure.text);
           throw e;
         });
         patchTab(id, { running: false, result, executedAt: Date.now() });
-        setStatus(`Ran on ${databases.length} database(s)`);
+        setStatus(result.cancelled ? "Multi-database run cancelled" : `Ran on ${databases.length} database(s)`);
+        // objects the script changed are stale in every database it ran on
+        if (result.schemaChanged) {
+          for (const database of databases) staleCatalogs.current.add(catalogKey({ connectionId: tab.connectionId, database }));
+          if (staleCatalogs.current.delete(catalogKey(tab))) reloadAfterSchemaChange(tab);
+        }
         const failed = result.batches.some((b) => b.output.failed);
-        update(progress, failed ? "warning" : "success", `Ran on ${databases.length} database(s)`, failed ? "Some databases reported errors — see Messages." : databases.join(", "));
+        if (result.cancelled) update(progress, "info", "Multi-database run cancelled", "The databases after the one running were not started.");
+        else update(progress, failed ? "warning" : "success", `Ran on ${databases.length} database(s)`, failed ? "Some databases reported errors — see Messages." : databases.join(", "));
       } catch {
         patchTab(id, { running: false });
       }
     },
-    [patchTab, recordHistory],
+    [patchTab, recordHistory, reloadAfterSchemaChange],
   );
 
   const cancel = useCallback(() => {
@@ -706,7 +733,8 @@ ${r.notice}` : failure.text);
         try {
           await connectTab(tab.id, conn, null, database);
           // execute reads tab state from the last render; wait for it
-          if (run && (await waitForTab(tab.id, (t) => t.connected))) await actions.current.execute("auto");
+          // the whole new tab, whatever F5 runs
+          if (run && (await waitForTab(tab.id, (t) => t.connected))) await actions.current.execute("script");
         } catch {
           // reported in the status bar
         }
@@ -1385,6 +1413,8 @@ ${r.notice}` : failure.text);
             setConnections(conns);
             connectionsRef.current = conns;
             setDialog(null);
+            const active = tabsRef.current.find((t) => t.id === activeRef.current);
+            if (!(await settleTransaction(active, "Connecting the tab elsewhere", "connect"))) return;
             const id = activeRef.current || createTab().id;
             // failures are reported in the status bar by connectTab
             connectTab(id, c, pw, undefined, true).catch(() => undefined);

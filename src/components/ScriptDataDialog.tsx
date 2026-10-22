@@ -61,14 +61,14 @@ export function ScriptDataDialog({
         </div>
         <div className="settings-form">
           <label>
-            At most (rows)
+            At most (rows, up to 100,000)
             <input
               className="data-rows"
               type="number"
               min={1}
-              max={1000000}
+              max={100000}
               value={maxRows}
-              onChange={(e) => setMaxRows(Math.max(1, Math.min(1_000_000, Number(e.target.value) || 1)))}
+              onChange={(e) => setMaxRows(Math.max(1, Math.min(100_000, Math.floor(Number(e.target.value)) || 1)))}
             />
           </label>
           <label>

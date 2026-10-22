@@ -233,15 +233,7 @@ fn schema_sync_scales_linearly() {
             }
         }
     }
-    assert!(
-        slow.is_empty(),
-        "grows faster than the schema:
-{}",
-        slow.join(
-            "
-"
-        )
-    );
+    assert!(slow.is_empty(), "grows faster than the schema:\n{}", slow.join("\n"));
 }
 
 /// `n` tables of 20 columns, each with two foreign keys to earlier tables.
@@ -315,13 +307,83 @@ fn completion_scales_with_the_catalog() {
             slow.push(format!("{src:?}: {a:?} -> {b:?} (x{ratio:.1})"));
         }
     }
-    assert!(
-        slow.is_empty(),
-        "grows faster than the catalog:
-{}",
-        slow.join(
-            "
-"
-        )
-    );
+    assert!(slow.is_empty(), "grows faster than the catalog:\n{}", slow.join("\n"));
+}
+
+/// One-line scripts (minified, or pasted from an application's log) are
+/// lexed on every keystroke: a line of `:name` parameters once took 10 s at
+/// half a megabyte, as each `:` looked back to the start of its line for a
+/// SQLCMD command. SQLCMD scripts and the scripts made from table data must
+/// grow no faster than their input either.
+#[test]
+fn long_lines_and_new_scripts_scale_linearly() {
+    use sqlotus_core::datascript::data_script;
+    use sqlotus_core::sqlcmd::Sqlcmd;
+    let d = Dialect::MsSql;
+    let params = |n: usize| format!("INSERT INTO t VALUES {}", "(:id, :name), ".repeat(n));
+    let open_vars = |n: usize| format!("SELECT {}", "a$(b ".repeat(n));
+    let sqlcmd = |n: usize| {
+        let mut s = String::new();
+        for i in 0..n {
+            s.push_str(&format!(
+                ":setvar V{i} \"value {i}\"\nSELECT $(V{i}), N'$(V{i})' FROM dbo.T_$(V{i});\nGO\n"
+            ));
+        }
+        s
+    };
+    let table = &catalog().objects[0];
+    let rows = |n: usize| -> Vec<Vec<Option<String>>> {
+        (0..n)
+            .map(|i| {
+                vec![
+                    Some(i.to_string()),
+                    Some((i % 7).to_string()),
+                    Some(format!("{i}.50")),
+                    Some(format!("note '{i}'")),
+                ]
+            })
+            .collect()
+    };
+    let cases: Vec<(&str, Feature)> = vec![
+        (
+            "tokenize :name parameters",
+            feature(|s| sqlotus_core::tokenize(s, d).len()),
+        ),
+        (
+            "analysis of :name parameters",
+            feature(|s| analysis::diagnostics(s, d, None)),
+        ),
+    ];
+    let mut slow = Vec::new();
+    for (name, f) in &cases {
+        let (a, b) = (params(5_000), params(20_000));
+        let (ta, tb) = (best_of_three(&|| f(&a)), best_of_three(&|| f(&b)));
+        if tb >= Duration::from_millis(20) && tb.as_secs_f64() / ta.as_secs_f64().max(1e-6) > 10.0 {
+            slow.push(format!("{name}: {ta:?} -> {tb:?}"));
+        }
+    }
+    let ratio = |small: &dyn Fn(), large: &dyn Fn()| {
+        let (ta, tb) = (best_of_three(small), best_of_three(large));
+        (tb >= Duration::from_millis(20) && tb.as_secs_f64() / ta.as_secs_f64().max(1e-6) > 10.0)
+            .then(|| format!("{ta:?} -> {tb:?}"))
+    };
+    let (a, b) = (open_vars(20_000), open_vars(80_000));
+    if let Some(r) = ratio(&|| drop(black_box(sqlotus_core::tokenize(&a, d))), &|| {
+        drop(black_box(sqlotus_core::tokenize(&b, d)))
+    }) {
+        slow.push(format!("tokenize unclosed $(: {r}"));
+    }
+    let (a, b) = (sqlcmd(500), sqlcmd(2_000));
+    if let Some(r) = ratio(&|| drop(black_box(Sqlcmd::parse(&a))), &|| {
+        drop(black_box(Sqlcmd::parse(&b)))
+    }) {
+        slow.push(format!("SQLCMD variables: {r}"));
+    }
+    let (a, b) = (rows(5_000), rows(20_000));
+    if let Some(r) = ratio(&|| drop(black_box(data_script(table, d, &a, usize::MAX - 1))), &|| {
+        drop(black_box(data_script(table, d, &b, usize::MAX - 1)))
+    }) {
+        slow.push(format!("data as INSERT: {r}"));
+    }
+    assert!(slow.is_empty(), "grows faster than the input:\n{}", slow.join("\n"));
 }
