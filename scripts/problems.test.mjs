@@ -3,7 +3,7 @@
 //   npm test
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { groupProblems, ignoreOnLineEdit, nonOverlappingFixes, problemsMarkdown } from "../src/problems.ts";
+import { groupProblems, nonOverlappingFixes, problemsMarkdown } from "../src/problems.ts";
 
 const p = (line, column, severity, code, message, fix) => ({ start: line * 100 + column, end: line * 100 + column + 1, line, column, severity, code, message, fix });
 
@@ -34,19 +34,6 @@ test("grouping and filtering", () => {
 test("Markdown export", () => {
   const md = problemsMarkdown([p(1, 2, "warning", "SQ001", "a | b\nc")], "My|Query");
   assert.equal(md, "**My\\|Query** — 1 problem(s)\n\n| Line | Severity | Rule | Problem |\n| ---: | --- | --- | --- |\n| 1:2 | warning | SQ001 | a \\| b c |");
-});
-
-test("ignore on this line", () => {
-  assert.deepEqual(ignoreOnLineEdit("SELECT * FROM t", "SQ002"), { column: 16, text: " -- sqlotus-disable-line SQ002" });
-  // trailing spaces are not kept before the comment
-  assert.deepEqual(ignoreOnLineEdit("SELECT * FROM t   ", "SQ002"), { column: 16, text: " -- sqlotus-disable-line SQ002" });
-  // a comment already there gets the code
-  const line = "DELETE FROM t -- sqlotus-disable-line SQ002";
-  assert.deepEqual(ignoreOnLineEdit(line, "SQ001"), { column: line.indexOf("sqlotus-disable-line") + 21, text: " SQ001" });
-  // nothing to do: the code is there, or every rule is already off
-  assert.equal(ignoreOnLineEdit(line, "sq002"), null);
-  assert.equal(ignoreOnLineEdit("DELETE FROM t -- sqlotus-disable-line", "SQ001"), null);
-  assert.deepEqual(ignoreOnLineEdit("", "SQ001"), { column: 1, text: "-- sqlotus-disable-line SQ001" });
 });
 
 test("fix all skips overlapping fixes", () => {

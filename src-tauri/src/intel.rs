@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use sqlotus_core::analysis::{self, ObjectAt, Severity, SignatureInfo};
+use sqlotus_core::analysis::{self, Fix, ObjectAt, Severity, SignatureInfo};
 use sqlotus_core::catalog::DbObject;
 use sqlotus_core::format::KeywordCase;
 use sqlotus_core::lint::{self, RULES, Rule};
@@ -54,6 +54,9 @@ pub struct DiagnosticDto {
     message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     fix: Option<FixDto>,
+    /// "Ignore on this line": the comment that switches the rule off there.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ignore: Option<FixDto>,
 }
 
 #[derive(Serialize)]
@@ -71,23 +74,28 @@ pub struct FixDto {
 pub async fn diagnostics(state: State<'_, AppState>, args: EditorArgs) -> CmdResult<Vec<DiagnosticDto>> {
     let snap = args.catalog(&state);
     let options = state.settings().analysis;
-    let found = no_panic("code analysis", || {
-        lint::lint(&args.text, args.dialect, snap.as_ref().map(|s| &s.catalog), &options)
+    let (found, ignore) = no_panic("code analysis", || {
+        let found = lint::lint(&args.text, args.dialect, snap.as_ref().map(|s| &s.catalog), &options);
+        let ignore = lint::ignore_edits(&args.text, args.dialect, &found);
+        (found, ignore)
     })?;
+    let dto = |f: Fix| FixDto {
+        title: f.title,
+        start: args.u16(f.start),
+        end: args.u16(f.end),
+        text: f.text,
+    };
     Ok(found
         .into_iter()
-        .map(|d| DiagnosticDto {
+        .zip(ignore)
+        .map(|(d, ignore)| DiagnosticDto {
             start: args.u16(d.start),
             end: args.u16(d.end),
             severity: d.severity,
             code: d.code,
             message: d.message,
-            fix: d.fix.map(|f| FixDto {
-                title: f.title,
-                start: args.u16(f.start),
-                end: args.u16(f.end),
-                text: f.text,
-            }),
+            fix: d.fix.map(dto),
+            ignore: ignore.map(dto),
         })
         .collect())
 }

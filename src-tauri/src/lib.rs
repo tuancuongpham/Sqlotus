@@ -134,6 +134,7 @@ pub fn run() {
             source_control::sc_unlink,
             source_control::sc_status,
             source_control::sc_commit,
+            source_control::sc_commit_files,
             source_control::sc_get_latest_script,
             source_control::sc_git,
             commands::take_startup_notice,

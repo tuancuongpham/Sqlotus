@@ -1,5 +1,5 @@
-// The Problems list: grouping, Markdown export, "ignore on this line" and
-// fix-all over code-analysis diagnostics. Pure functions, tested by
+// The Problems list: grouping, Markdown export and fix-all over
+// code-analysis diagnostics. Pure functions, tested by
 // scripts/problems.test.mjs.
 import type { Diagnostic } from "./types";
 
@@ -35,25 +35,6 @@ export function problemsMarkdown(list: Problem[], file: string): string {
     .sort((a, b) => a.line - b.line || a.column - b.column)
     .map((p) => `| ${p.line}:${p.column} | ${p.severity} | ${p.code} | ${esc(p.message)} |`);
   return [`**${esc(file)}** — ${list.length} problem(s)`, "", "| Line | Severity | Rule | Problem |", "| ---: | --- | --- | --- |", ...rows].join("\n");
-}
-
-/**
- * The edit that switches `code` off on a line: a trailing
- * `-- sqlotus-disable-line CODE` comment, or the code added to the one
- * already there. Returns the 1-based column to insert at and the text.
- */
-export function ignoreOnLineEdit(lineText: string, code: string): { column: number; text: string } | null {
-  const directive = "sqlotus-disable-line";
-  const at = lineText.indexOf(directive);
-  if (at >= 0) {
-    const after = lineText.slice(at + directive.length);
-    const codes = after.split(/[\s,]+/).filter(Boolean);
-    if (codes.length === 0) return null; // already every rule
-    if (codes.some((c) => c.toUpperCase() === code.toUpperCase())) return null;
-    return { column: at + directive.length + 1, text: ` ${code}` };
-  }
-  const trimmed = lineText.replace(/\s+$/, "");
-  return { column: trimmed.length + 1, text: `${trimmed.length ? " " : ""}-- ${directive} ${code}` };
 }
 
 /** The fixes of `list` that do not overlap, in text order (UTF-16 offsets). */

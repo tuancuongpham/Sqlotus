@@ -59,7 +59,7 @@ export function ResultGrid({
   label?: string;
   edit?: EditContext;
 }) {
-  const [dialog, setDialog] = useState<"chart" | "compare" | "script" | null>(null);
+  const [dialog, setDialog] = useState<"chart" | "compare" | "script" | "production" | null>(null);
   const [edit, setEdit] = useState<EditState | null>(null);
   const [cellEdit, setCellEdit] = useState<{ row: Row; col: number; value: string } | null>(null);
   const [preview, setPreview] = useState<{ statements: string[]; problems: string[] } | null>(null);
@@ -104,7 +104,24 @@ export function ResultGrid({
       edit.inserted.filter((r) => !edit.deleted.has(r)).length
     : 0;
 
+  // values cut for display: say so wherever they would be used as if whole
+  const clipped = rs.clipped ?? 0;
+  const warnCut = () => {
+    if (clipped > 0)
+      toast.warning(
+        `${clipped.toLocaleString()} value(s) in this result are cut`,
+        "Values longer than 65,535 characters are shown cut, and copies and exports hold the cut text. Query the full value on its own (or a part of it with SUBSTRING) when you need it.",
+      );
+  };
+
   const startEditing = async () => {
+    if (clipped > 0) {
+      toast.warning(
+        "Rows of this result cannot be edited",
+        `${clipped.toLocaleString()} value(s) are longer than 65,535 characters and shown cut: saving could store the cut text. Select only the columns you want to change.`,
+      );
+      return;
+    }
     if (!editContext) {
       toast.info("Run the query in a connected tab to edit its rows");
       return;
@@ -225,7 +242,7 @@ export function ResultGrid({
     }
   };
 
-  const saveEdits = async () => {
+  const saveEdits = async (confirmed = false) => {
     if (!edit || !editContext) return;
     commitCell();
     const edits = buildEdits();
@@ -233,6 +250,17 @@ export function ResultGrid({
       toast.info("Nothing to save");
       return;
     }
+    // production: show the statements and ask, naming the server
+    if (editContext.production && !confirmed) {
+      try {
+        setPreview(await api.editPreview(edit.source, edits, dialect));
+        setDialog("production");
+      } catch (e) {
+        toast.error("Could not build the statements", errorText(e));
+      }
+      return;
+    }
+    setDialog(null);
     setSaving(true);
     try {
       const r = await api.applyEdits(editContext.tabId, edit.source, edits);
@@ -266,6 +294,7 @@ export function ResultGrid({
       await api.saveTextFile(path, toCsv(rs, targetRows()));
       setNote(`Saved ${targetRows().length} rows`);
       toast.success(`Saved ${targetRows().length} rows as CSV`, path);
+      warnCut();
     } catch (e) {
       setNote(errorText(e));
       toast.error("Could not save the CSV file", errorText(e));
@@ -282,6 +311,7 @@ export function ResultGrid({
     try {
       const file = await api.exportXlsx(path, rs.columns, targetRows(), open);
       update(id, "success", open ? `Opened ${n.toLocaleString()} row(s) in Excel` : `Saved ${n.toLocaleString()} row(s) as Excel`, file);
+      warnCut();
     } catch (e) {
       update(id, "error", "Could not export to Excel", errorText(e));
     }
@@ -346,7 +376,10 @@ export function ResultGrid({
     }
     const what = range ? `${range[1] - range[0] + 1} cell(s)` : selRows.size > 0 ? `${selRows.size} row(s)` : selected ? "1 cell" : `${rows.length} row(s)`;
     void navigator.clipboard.writeText(text).then(
-      () => toast.success(`Copied ${what}`, headers ? "With column headers" : undefined),
+      () => {
+        toast.success(`Copied ${what}`, headers ? "With column headers" : undefined);
+        warnCut();
+      },
       (e) => toast.error("Copy failed", String(e)),
     );
   };
@@ -369,7 +402,10 @@ export function ResultGrid({
       { insert: "as INSERT statements", csv: "as CSV", in: "as an IN (…) list", markdown: "as a Markdown table", json: "as JSON", html: "as an HTML table" }[format] ?? "";
     if (text)
       void navigator.clipboard.writeText(text).then(
-        () => toast.success(`Copied ${format === "in" ? "column values" : `${targetRows().length} row(s)`} ${label}`),
+        () => {
+          toast.success(`Copied ${format === "in" ? "column values" : `${targetRows().length} row(s)`} ${label}`);
+          warnCut();
+        },
         (e) => toast.error("Copy failed", String(e)),
       );
   };
@@ -455,7 +491,14 @@ export function ResultGrid({
       <div className="grid-toolbar">
         <span>
           {rows.length === rs.rows.length ? rows.length.toLocaleString() : `${rows.length.toLocaleString()} of ${rs.rows.length.toLocaleString()}`} rows
-          {rs.truncated ? " (truncated)" : ""} · {rs.columns.length} columns {note && <small>· {note}</small>}
+          {rs.truncated ? " (truncated)" : ""} · {rs.columns.length} columns
+          {clipped > 0 && (
+            <span className="grid-clipped" title="Values longer than 65,535 characters are shown cut; copies, exports and editing would use the cut text">
+              {" "}
+              · ⚠ {clipped.toLocaleString()} value(s) cut
+            </span>
+          )}{" "}
+          {note && <small>· {note}</small>}
           {aggregates && (
             <b className="grid-aggregates" title="Selected range (Shift+click to extend)">
               {" "}
@@ -549,6 +592,27 @@ export function ResultGrid({
       {dialog === "chart" && <ChartDialog rs={rs} onClose={() => setDialog(null)} />}
       {dialog === "compare" && pinned && (
         <CompareDialog before={pinned.rs} beforeLabel={pinned.label} after={rs} onClose={() => setDialog(null)} />
+      )}
+      {dialog === "production" && preview && editContext?.production && (
+        <div className="modal-backdrop" onMouseDown={() => setDialog(null)}>
+          <div className="modal edit-script-modal" onMouseDown={(e) => e.stopPropagation()}>
+            <div className="modal-title">Change PRODUCTION?</div>
+            <div className="confirm-body">
+              {editContext.production.name} ({editContext.production.host} / {editContext.database}) is a production connection. Save runs
+              these {preview.statements.length} statement(s) on it:
+            </div>
+            <pre className="edit-script">{preview.statements.join("\n")}</pre>
+            <div className="modal-actions">
+              <span className="spacer" />
+              <button className="danger" onClick={() => void saveEdits(true)}>
+                Save on production
+              </button>
+              <button className="primary" onClick={() => setDialog(null)}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
       )}
       {dialog === "script" && preview && (
         <div className="modal-backdrop" onMouseDown={() => setDialog(null)}>

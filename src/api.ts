@@ -128,6 +128,8 @@ export const api = {
   scUnlink: (connectionId: string, database: string) => invoke<void>("sc_unlink", { connectionId, database }),
   scStatus: (connectionId: string, database: string) => invoke<ScStatus>("sc_status", { connectionId, database }),
   scCommit: (id: string, keys: string[], message: string) => invoke<ScCommitResult>("sc_commit", { id, keys, message }),
+  scCommitFiles: (connectionId: string, database: string, message: string) =>
+    invoke<ScCommitResult>("sc_commit_files", { connectionId, database, message }),
   scGetLatestScript: (id: string, keys: string[]) => invoke<{ script: string; warnings: string[]; statements: number }>("sc_get_latest_script", { id, keys }),
   scGit: (connectionId: string, database: string, action: "pull" | "push" | "log") => invoke<string>("sc_git", { connectionId, database, action }),
   executeMulti: (tabId: string, sql: string, databases: string[]) =>

@@ -112,7 +112,8 @@ Bấm vào từng nhóm để xem chi tiết.
   giới hạn (mặc định 1.000, Options → Safety) hoặc lỗi giữa chừng thì hỏi Commit hay Roll back; ít hơn thì tự commit
   và báo số dòng. **Manual commit** theo từng kết nối: thay đổi nằm trong transaction tới khi bấm Commit.
 - **Môi trường kết nối** Development/Test/Staging/Production: Production có tab đỏ, nhãn PROD, manual commit và hỏi
-  lại (ghi rõ server) trước mọi câu lệnh thay đổi dữ liệu hoặc schema và trước mọi lời gọi procedure (`EXEC` / `CALL`).
+  lại (ghi rõ server) trước mọi câu lệnh thay đổi dữ liệu hoặc schema và trước mọi lời gọi procedure (`EXEC` / `CALL`) —
+  cả khi chạy trên nhiều database và khi lưu dữ liệu sửa trên lưới.
 - **Biến chưa khai báo**: chạy `… WHERE Id = @Id` mà chưa `DECLARE` sẽ hỏi giá trị (và kiểu), tự khai báo, nhớ giá trị.
 - **Find invalid objects**: view/proc/function/trigger tham chiếu tới bảng/cột không còn tồn tại.
 - **Problems** (tab cạnh Results): mọi lỗi của tab kèm quy tắc và vị trí; bấm để nhảy tới, nhóm theo quy tắc hoặc mức độ,
@@ -120,7 +121,7 @@ Bấm vào từng nhóm để xem chi tiết.
   khai báo biến không dùng — Fix all hoàn tác được bằng một lần Undo.
 - **Quy tắc**: tắt trong Options → Analysis, hoặc tắt cho một chỗ bằng comment: `-- sqlotus-disable-line SQ002`,
   `-- sqlotus-disable-next-line SQ001`, hoặc `-- sqlotus-disable SQ005` … `-- sqlotus-enable` bao quanh một đoạn. Bóng đèn
-  (Ctrl+.) chèn comment này giúp bạn.
+  (Ctrl+.) chèn comment này giúp bạn (chèn lên dòng trên nếu dòng kết thúc giữa một chuỗi).
 
 </details>
 
@@ -181,8 +182,9 @@ Giữ schema của một database trong một thư mục — thường là repos
 - **Commit** ghi các object đã chọn vào thư mục và chạy `git commit` chỉ cho thư mục đó. **Get latest** sinh script cho các
   thay đổi đã chọn, đặt giữa `Scripts/pre-deploy.sql` và `Scripts/post-deploy.sql` (chuyển dữ liệu, đổi tên), rồi mở ra tab
   đã kết nối tới database — không bao giờ tự chạy.
-- **Pull**, **Push** và **History** chạy git trong thư mục. Chỉ liên kết được với thư mục trống hoặc đã có schema của
-  Sqlotus, nên commit không bao giờ kéo theo file khác; file bị sửa tay sẽ được báo.
+- **Pull**, **Push** và **History** chạy git trong thư mục; lần Push đầu của một nhánh mới sẽ đẩy nhánh lên `origin`. Chỉ
+  liên kết được với thư mục trống hoặc đã có schema của Sqlotus, nên commit không bao giờ kéo theo file khác; file bị sửa
+  tay và file git chưa commit sẽ được báo.
 - Dùng giống nhau cho SQL Server, PostgreSQL và MySQL.
 
 </details>
@@ -195,13 +197,16 @@ Giữ schema của một database trong một thư mục — thường là repos
 - **Chạy trên nhiều database** (Ctrl+Shift+F5): mỗi dòng có cột `Database`, gộp lại nếu cùng cấu trúc.
 - **Lưới kết quả ảo hoá**: sắp xếp, lọc, copy kèm header, **copy dạng INSERT / CSV / IN list / Markdown / JSON /
   HTML**, lưu CSV. Shift+click chọn vùng trong một cột để xem Count / Sum / Avg / Min / Max.
+- Giá trị dài hơn 65.535 ký tự được hiển thị bị cắt: lưới báo số giá trị bị cắt, copy và xuất file sẽ cảnh báo vì chứa phần
+  đã cắt, và kết quả đó không sửa được trên lưới. Cần đủ giá trị thì query riêng giá trị đó.
 - **Excel**: mở kết quả bằng Excel hoặc lưu .xlsx (số vẫn là số, có header và filter).
 - **Biểu đồ** cột, đường, tròn; copy thành ảnh.
 - **So sánh kết quả**: ghim một kết quả, chạy lại rồi so sánh — dòng thêm, bớt, thay đổi theo cột khoá bạn chọn.
 - **Kế hoạch thực thi ước tính** (Ctrl+L): dạng cây, % chi phí từng bước, cảnh báo scan cả bảng, key lookup, chuyển
   kiểu ngầm, thiếu điều kiện join, gợi ý index còn thiếu kèm câu CREATE INDEX; không chạy query.
 - **Sửa dữ liệu trên lưới** (✎ Edit với kết quả từ một bảng có khoá chính): sửa ô, thêm/xoá dòng, xem trước câu
-  lệnh; Save chạy trong một transaction, nếu dòng đã bị người khác sửa trong lúc đó thì không lưu gì.
+  lệnh; Save chạy trong một transaction, nếu dòng đã bị người khác sửa trong lúc đó thì không lưu gì. Với kết nối
+  production, Save hiện các câu lệnh và hỏi trước.
 - **Activity**: các phiên, câu đang chạy, đang chờ gì, transaction mở, chuỗi blocking (ai chặn ai); huỷ query hoặc
   kill phiên sau khi xác nhận.
 - Màu tab theo kết nối. Mật khẩu lưu trong Windows Credential Manager.
@@ -253,6 +258,9 @@ sqlotus-lint --dialect mssql --fail-on warning sql/
 | `--fail-on error\|warning\|info\|never` | trả mã 1 khi có lỗi từ mức này trở lên (mặc định `warning`) |
 | `--fix` | áp dụng các sửa nhanh an toàn ngay trong file, rồi báo phần còn lại |
 | `--list-rules` | danh sách quy tắc và yêu cầu của từng quy tắc |
+
+File được đọc dưới dạng UTF-8 hoặc UTF-16 có BOM, và `--fix` ghi lại đúng dạng đó; file mã hoá khác vẫn được kiểm tra
+nhưng không bao giờ bị ghi đè. Không đi theo liên kết (link) tới thư mục.
 
 Một bước GitHub Actions, với thư mục schema do Source control commit:
 

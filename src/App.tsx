@@ -129,6 +129,26 @@ export default function App() {
         },
       }),
     );
+  /**
+   * Production connections confirm every change and procedure call, naming
+   * the server and the database(s). Fails closed: a script that cannot be
+   * analysed counts as a change.
+   */
+  const confirmProduction = async (tab: Tab, sql: string, where: string): Promise<boolean> => {
+    const tabConn = connectionsRef.current.find((c) => c.id === tab.connectionId);
+    if (tabConn?.environment !== "prod") return true;
+    const changes = await api.modifyingStatements(sql, tab.dialect).catch(() => ["(the script could not be analysed)"]);
+    if (changes.length === 0) return true;
+    const answer = await askChoice(
+      "Change PRODUCTION?",
+      `${tabConn.name} (${tabConn.host} / ${where}) is a production connection. This script changes it: ${changes.slice(0, 5).join(", ")}${changes.length > 5 ? ", …" : ""}.`,
+      [
+        { label: "Run on production", value: "run", kind: "danger" },
+        { label: "Cancel", value: "" },
+      ],
+    );
+    return answer === "run";
+  };
   const [cursor, setCursor] = useState({ line: 1, col: 1 });
 
   const editorEl = useRef<HTMLDivElement>(null);
@@ -486,23 +506,9 @@ ${r.notice}` : failure.text);
         }
       }
       // production: confirm every change, naming the server and database
-      const tabConn = connectionsRef.current.find((c) => c.id === tab.connectionId);
-      if (tabConn?.environment === "prod") {
-        const changes = await api.modifyingStatements(sql, tab.dialect).catch(() => [] as string[]);
-        if (changes.length > 0) {
-          const answer = await askChoice(
-            "Change PRODUCTION?",
-            `${tabConn.name} (${tabConn.host} / ${tab.database}) is a production connection. This script changes it: ${changes.slice(0, 5).join(", ")}${changes.length > 5 ? ", …" : ""}.`,
-            [
-              { label: "Run on production", value: "run", kind: "danger" },
-              { label: "Cancel", value: "" },
-            ],
-          );
-          if (answer !== "run") {
-            toast.info("Execution cancelled", "Nothing was run.");
-            return;
-          }
-        }
+      if (!(await confirmProduction(tab, sql, tab.database ?? ""))) {
+        toast.info("Execution cancelled", "Nothing was run.");
+        return;
       }
       // values for variables the script uses without declaring them
       let values: VariableValue[] | null = null;
@@ -613,6 +619,12 @@ ${r.notice}` : failure.text);
         const ok = await new Promise<boolean>((resolve) => setConfirmState({ messages: msgs, resolve }));
         setConfirmState(null);
         if (!ok) return;
+      }
+      // a production connection confirms here too: the run reaches every chosen database
+      const where = databases.length > 3 ? `${databases.slice(0, 3).join(", ")} and ${databases.length - 3} more` : databases.join(", ");
+      if (!(await confirmProduction(tab, sql, where))) {
+        toast.info("Execution cancelled", "Nothing was run.");
+        return;
       }
       recordHistory(id, "execute");
       patchTab(id, { running: true });
@@ -1190,6 +1202,7 @@ ${r.notice}` : failure.text);
                           dialect: activeTab.dialect,
                           sql: activeTab.lastSql,
                           readOnly: !!conn.readOnly,
+                          production: conn.environment === "prod" ? { name: conn.name, host: conn.host } : undefined,
                           onSaved: () => void refreshResult(activeTab.id),
                         }
                       : undefined
@@ -1221,11 +1234,15 @@ ${r.notice}` : failure.text);
                           ed.focus();
                         }}
                         onFix={(p) => {
-                          if (editor.current) applyFixes(editor.current, [p]);
+                          if (!editor.current) return;
+                          const n = applyFixes(editor.current, (d) => d.code === p.code && d.start === p.start && d.end === p.end);
+                          if (n === null) toast.info("The text changed", "It is being checked again: use Fix in a moment.");
+                          else if (n === 0) toast.info("Nothing to fix there any more");
                         }}
                         onFixAll={() => {
-                          const n = editor.current ? applyFixes(editor.current, problems) : 0;
-                          toast.success(`${n} problem(s) fixed`, "One undo step (Ctrl+Z) brings them back.");
+                          const n = editor.current ? applyFixes(editor.current) : 0;
+                          if (n === null) toast.info("The text changed", "It is being checked again: use Fix all in a moment.");
+                          else toast.success(`${n} problem(s) fixed`, "One undo step (Ctrl+Z) brings them back.");
                         }}
                         onCopy={() => {
                           void navigator.clipboard.writeText(problemsMarkdown(problems, activeTab?.title ?? "Query"));

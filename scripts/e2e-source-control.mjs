@@ -296,6 +296,19 @@ try {
   check("changed on both sides is a conflict", both.some((i) => i.includes("Items") && i.includes("Changed on both sides")), both.join(" | "));
   const note = await text(".source-control-modal .sc-note");
   check("hand-edited file reported", note.includes("dbo.vItems.sql") && note.includes("do not match"), note);
+  const pending = await text(".source-control-modal .sc-pending");
+  check("files git has not committed are listed", pending.includes("Views/dbo.vItems.sql") && pending.includes("not committed"), pending);
+  await fill(".sc-commit textarea", "Hand edit of vItems");
+  await sleep(100);
+  await clearToasts();
+  await clickButton(".sc-pending", "Commit these files");
+  const committedFiles = await until(async () => {
+    const t = await toastText();
+    return t.includes("Committed") || t.includes("Could not commit") ? t : null;
+  }, 15000);
+  check("Commit these files", !!committedFiles && committedFiles.includes("Committed"), committedFiles ?? "");
+  const nothingPending = await until(async () => ((await text(".source-control-modal")).includes("not committed in git yet") ? null : true), 10000);
+  check("nothing left uncommitted", !!nothingPending, await text(".source-control-modal .sc-pending"));
   await fill(".sc-commit textarea", "would commit");
   await sleep(100);
   const commitDisabled = await evaluate(`[...document.querySelectorAll(".sc-commit button")].find((b) => b.textContent.startsWith("Commit")).disabled`);

@@ -121,10 +121,13 @@ fn file_name(schema: &str, name: &str) -> String {
     while clean.ends_with(['.', ' ']) {
         clean.pop();
     }
+    // device names, also before an extension (`nul.backup.sql`)
     const RESERVED: &[&str] = &[
-        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "LPT1", "LPT2", "LPT3",
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1",
+        "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
     ];
-    if clean.is_empty() || RESERVED.iter().any(|r| r.eq_ignore_ascii_case(&clean)) {
+    let first = clean.split('.').next().unwrap_or_default().trim_end();
+    if clean.is_empty() || RESERVED.iter().any(|r| r.eq_ignore_ascii_case(first)) {
         clean.insert(0, '_');
     }
     format!("{clean}.sql")
@@ -479,6 +482,11 @@ mod tests {
         assert!(files[0].1.starts_with("CREATE TABLE dbo.Orders (") && files[0].1.ends_with(");\n"));
         assert_eq!(files[3].1, "CREATE VIEW dbo.vTotals AS SELECT 1\n");
         assert_eq!(file_name("", "CON"), "_CON.sql");
+        assert_eq!(file_name("", "nul.backup"), "_nul.backup.sql");
+        assert_eq!(file_name("", "com7"), "_com7.sql");
+        assert_eq!(file_name("lpt9", "Orders"), "_lpt9.Orders.sql");
+        assert_eq!(file_name("dbo", "CON"), "dbo.CON.sql");
+        assert_eq!(file_name("", "CONSOLE"), "CONSOLE.sql");
         assert_eq!(file_name("dbo", "x. "), "dbo.x.sql");
     }
 

@@ -8,7 +8,7 @@ use postgres_native_tls::MakeTlsConnector;
 use tokio_postgres::config::SslMode;
 use tokio_postgres::{AsyncMessage, CancelToken, Client, SimpleQueryMessage};
 
-use crate::{BatchOutput, ConnectionConfig, DbError, Limits, Result, ResultColumn, ResultSet, clip};
+use crate::{BatchOutput, ConnectionConfig, DbError, Limits, Result, ResultColumn, ResultSet};
 
 pub struct PgConn {
     client: Client,
@@ -123,6 +123,7 @@ impl PgConn {
                         columns,
                         rows: Vec::new(),
                         truncated: false,
+                        clipped: 0,
                     });
                 }
                 SimpleQueryMessage::Row(row) => {
@@ -137,15 +138,15 @@ impl PgConn {
                             .collect(),
                         rows: Vec::new(),
                         truncated: false,
+                        clipped: 0,
                     });
                     if rs.rows.len() >= limits.max_rows {
                         rs.truncated = true;
                         continue;
                     }
-                    rs.rows.push(
-                        (0..row.len())
-                            .map(|i| row.get(i).map(|s| clip(s.to_string(), limits.max_cell_chars)))
-                            .collect(),
+                    rs.push_cells(
+                        (0..row.len()).map(|i| row.get(i).map(str::to_string)),
+                        limits.max_cell_chars,
                     );
                 }
                 SimpleQueryMessage::CommandComplete(n) => match current.take() {

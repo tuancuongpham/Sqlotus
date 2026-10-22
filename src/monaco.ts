@@ -9,7 +9,7 @@ import "monaco-editor/languages/definitions/pgsql/register";
 import "monaco-editor/languages/definitions/mysql/register";
 import EditorWorker from "monaco-editor/editor/editor.worker?worker";
 import { api } from "./api";
-import { ignoreOnLineEdit, nonOverlappingFixes } from "./problems";
+import { nonOverlappingFixes } from "./problems";
 import type { CompletionItem, CompletionKind, Diagnostic, Dialect, EditorArgs } from "./types";
 
 self.MonacoEnvironment = { getWorker: () => new EditorWorker() };
@@ -37,18 +37,37 @@ export function unbindModelContext(model: monaco.editor.ITextModel) {
   found.delete(model.uri.toString());
 }
 
-/** The latest analysis of each model (with quick fixes), for Problems and code actions. */
-const found = new Map<string, Diagnostic[]>();
+/** The latest analysis of each model (with quick fixes) and the text version it saw. */
+const found = new Map<string, { version: number; list: Diagnostic[] }>();
 
+/** The latest analysis, for the Problems list (positions may lag behind typing). */
 export function diagnosticsOf(model: monaco.editor.ITextModel): Diagnostic[] {
-  return found.get(model.uri.toString()) ?? [];
+  return found.get(model.uri.toString())?.list ?? [];
 }
 
-/** Apply every quick fix that does not overlap another, as one undo step. */
-export function applyFixes(editor: monaco.editor.IStandaloneCodeEditor, list: Diagnostic[]): number {
+/** The analysis of the text as it is now; null after an edit until the next one (its offsets are out of date). */
+function currentDiagnostics(model: monaco.editor.ITextModel): Diagnostic[] | null {
+  const f = found.get(model.uri.toString());
+  return f && f.version === model.getVersionId() ? f.list : null;
+}
+
+/**
+ * Apply the quick fixes of the problems `pick` chooses (all by default)
+ * that do not overlap another, as one undo step. Null when the text changed
+ * since the analysis: it runs again, and the fixes wait for it.
+ */
+export function applyFixes(
+  editor: monaco.editor.IStandaloneCodeEditor,
+  pick: (d: Diagnostic) => boolean = () => true,
+): number | null {
   const model = editor.getModel();
   if (!model) return 0;
-  const fixes = nonOverlappingFixes(list);
+  const list = currentDiagnostics(model);
+  if (!list) {
+    void updateDiagnostics(model);
+    return null;
+  }
+  const fixes = nonOverlappingFixes(list.filter(pick));
   if (fixes.length === 0) return 0;
   const range = (start: number, end: number) => monaco.Range.fromPositions(model.getPositionAt(start), model.getPositionAt(end));
   editor.pushUndoStop();
@@ -89,7 +108,7 @@ export async function updateDiagnostics(model: monaco.editor.ITextModel) {
   try {
     const list = await api.diagnostics(editorArgs(model));
     if (model.isDisposed() || model.getVersionId() !== version) return;
-    found.set(model.uri.toString(), list);
+    found.set(model.uri.toString(), { version, list });
     monaco.editor.setModelMarkers(
       model,
       "sqlotus",
@@ -202,50 +221,26 @@ export function registerProviders() {
     monaco.languages.registerCodeActionProvider(lang, {
       provideCodeActions(model, _range, context) {
         const actions: monaco.languages.CodeAction[] = [];
-        const list = diagnosticsOf(model);
+        // after an edit, markers and offsets are out of date until the next analysis
+        const list = currentDiagnostics(model);
+        if (!list) return { actions, dispose: () => undefined };
+        const edit = (f: NonNullable<Diagnostic["fix"]>): monaco.languages.WorkspaceEdit => ({
+          edits: [
+            {
+              resource: model.uri,
+              versionId: model.getVersionId(),
+              textEdit: { range: monaco.Range.fromPositions(model.getPositionAt(f.start), model.getPositionAt(f.end)), text: f.text },
+            },
+          ],
+        });
         for (const marker of context.markers) {
           if (marker.source !== "Sqlotus") continue;
           const code = String(typeof marker.code === "object" ? marker.code.value : (marker.code ?? ""));
           const start = model.getOffsetAt({ lineNumber: marker.startLineNumber, column: marker.startColumn });
           const d = list.find((x) => x.code === code && x.start === start);
-          if (d?.fix) {
-            const f = d.fix;
-            actions.push({
-              title: f.title,
-              kind: "quickfix",
-              isPreferred: true,
-              diagnostics: [marker],
-              edit: {
-                edits: [
-                  {
-                    resource: model.uri,
-                    versionId: model.getVersionId(),
-                    textEdit: { range: monaco.Range.fromPositions(model.getPositionAt(f.start), model.getPositionAt(f.end)), text: f.text },
-                  },
-                ],
-              },
-            });
-          }
-          const ignore = ignoreOnLineEdit(model.getLineContent(marker.startLineNumber), code);
-          if (ignore) {
-            actions.push({
-              title: `Ignore ${code} on this line`,
-              kind: "quickfix",
-              diagnostics: [marker],
-              edit: {
-                edits: [
-                  {
-                    resource: model.uri,
-                    versionId: model.getVersionId(),
-                    textEdit: {
-                      range: new monaco.Range(marker.startLineNumber, ignore.column, marker.startLineNumber, ignore.column),
-                      text: ignore.text,
-                    },
-                  },
-                ],
-              },
-            });
-          }
+          if (d?.fix) actions.push({ title: d.fix.title, kind: "quickfix", isPreferred: true, diagnostics: [marker], edit: edit(d.fix) });
+          // the comment is placed by the analysis, never inside a string
+          if (d?.ignore) actions.push({ title: d.ignore.title, kind: "quickfix", diagnostics: [marker], edit: edit(d.ignore) });
         }
         return { actions, dispose: () => undefined };
       },

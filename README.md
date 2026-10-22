@@ -132,7 +132,8 @@ Click a group for the details.
   `IS NULL`, add the `N` prefix, remove an unused declaration — Fix all is one undo step.
 - **Rules**: switch rules off in Options → Analysis, or for one place with a comment:
   `-- sqlotus-disable-line SQ002`, `-- sqlotus-disable-next-line SQ001`, or `-- sqlotus-disable SQ005` …
-  `-- sqlotus-enable` around a block. The light bulb adds the comment for you.
+  `-- sqlotus-enable` around a block. The light bulb adds the comment for you (above the line when the line ends
+  inside a string).
 
 </details>
 
@@ -200,8 +201,9 @@ Keep a database's schema in a folder — usually a git repository shared with yo
 - **Commit** writes the chosen objects into the folder and runs `git commit` on that folder only. **Get latest**
   builds a script for the chosen folder changes, between `Scripts/pre-deploy.sql` and `Scripts/post-deploy.sql`
   (data moves, renames), and opens it in a tab connected to the database — it is never run for you.
-- **Pull**, **Push** and **History** run git in the folder. A folder can only be linked when it is empty or
-  already holds a Sqlotus schema, so a commit never takes other files with it; files edited by hand are reported.
+- **Pull**, **Push** and **History** run git in the folder; the first Push of a new branch publishes it to
+  `origin`. A folder can only be linked when it is empty or already holds a Sqlotus schema, so a commit never
+  takes other files with it; files edited by hand, and files git has not committed yet, are reported.
 - Works the same for SQL Server, PostgreSQL and MySQL.
 
 </details>
@@ -216,6 +218,8 @@ Keep a database's schema in a folder — usually a git repository shared with yo
   shape are combined.
 - Virtualized result grid: sort by column, filter, copy (with headers), **copy as INSERT statements / CSV /
   IN (…) list**, save as CSV. Shift+click a range in a column to see Count / Sum / Avg / Min / Max.
+- Values longer than 65,535 characters are shown cut: the grid says how many, copies and exports warn that they
+  hold the cut text, and such a result cannot be edited. Query a long value on its own when you need all of it.
 - **Excel**: open the result in Excel or save it as .xlsx (numbers stay numbers, header row, filters).
 - **Chart**: bar, line or pie chart of a result; copy it as an image.
 - **Compare results**: pin a result, run again (or another query), then compare — added, removed and changed
@@ -225,12 +229,13 @@ Keep a database's schema in a folder — usually a git repository shared with yo
   suggestions with a ready CREATE INDEX statement. SQL Server, PostgreSQL and MySQL; the query is not run.
 - **Edit rows** (✎ Edit on a result from one table with a primary key): change cells, add and delete rows, see the
   statements first; Save runs them in one transaction and keeps nothing if a row was changed by someone else meanwhile.
+  On a production connection Save shows the statements and asks first.
 - **Copy as** INSERT statements, CSV, IN (…) list, Markdown table, JSON or HTML table.
 - **Activity monitor**: sessions, running queries, waits, open transactions and blocking chains (who blocks whom);
   cancel a query or kill a session after confirming. SQL Server, PostgreSQL and MySQL.
 - **Environments**: mark connections Development / Test / Staging / Production. Production gets a red tab, a PROD
   badge, manual commit, and a confirmation naming the server before every statement that changes data or schema
-  and before every procedure call (`EXEC` / `CALL`).
+  and before every procedure call (`EXEC` / `CALL`) — also on multiple databases and when saving edited rows.
 - Per-connection tab colours. Passwords are stored in the Windows Credential Manager.
 
 </details>
@@ -280,6 +285,9 @@ sqlotus-lint --dialect mssql --fail-on warning sql/
 | `--fail-on error\|warning\|info\|never` | exit code 1 when a problem at this level or above is found (default `warning`) |
 | `--fix` | apply the safe quick fixes in place, then report what is left |
 | `--list-rules` | the rules and what they need |
+
+Files are read as UTF-8 or UTF-16 with a BOM, and `--fix` writes them back the same way; a file in another
+encoding is checked but never rewritten. Links to folders are not followed.
 
 A GitHub Actions step, with the schema folder committed by Source control:
 

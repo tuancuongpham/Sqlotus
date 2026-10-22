@@ -18,7 +18,8 @@ sqlotus-lint — check SQL files with the Sqlotus code analysis
 USAGE:
     sqlotus-lint [OPTIONS] <PATH>...
 
-PATH is a .sql file or a folder (searched recursively for .sql files).
+PATH is a .sql file or a folder (searched recursively for .sql files; links to
+folders are not followed). Files are UTF-8 or UTF-16 with a BOM.
 
 OPTIONS:
     -d, --dialect <mssql|postgres|mysql>  SQL dialect (default: mssql, or the schema folder's)
@@ -153,25 +154,29 @@ fn parse_args(raw: &[String]) -> Result<Option<Args>, String> {
     Ok(Some(a))
 }
 
-/// `.sql` files under `path`, sorted; hidden folders (`.git`) are skipped.
+/// `.sql` files under `path`, sorted; hidden folders (`.git`) are skipped,
+/// and links to folders are not followed (one to a parent would loop).
 fn collect(path: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
     let meta = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
     if meta.is_file() {
         out.push(path.to_path_buf());
         return Ok(());
     }
-    let mut entries: Vec<PathBuf> = std::fs::read_dir(path)
+    let mut entries: Vec<(PathBuf, std::fs::FileType)> = std::fs::read_dir(path)
         .map_err(|e| format!("{}: {e}", path.display()))?
-        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter_map(|e| e.ok().and_then(|e| Some((e.path(), e.file_type().ok()?))))
         .collect();
-    entries.sort();
-    for p in entries {
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    for (p, kind) in entries {
         let name = p.file_name().and_then(|n| n.to_str()).unwrap_or_default();
         if name.starts_with('.') || name == "node_modules" {
             continue;
         }
-        if p.is_dir() {
+        // the entry's own type: a link (or junction) to a folder is not a folder here
+        if kind.is_dir() {
             collect(&p, out)?;
+        } else if kind.is_symlink() && p.is_dir() {
+            continue;
         } else if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("sql")) {
             out.push(p);
         }
@@ -179,26 +184,57 @@ fn collect(path: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
     Ok(())
 }
 
-/// The text of a file: UTF-8 (BOM removed) or UTF-16 LE with BOM, as some
-/// editors save .sql files. Returns the text and whether it was UTF-16.
-fn read_text(path: &Path) -> Result<(String, bool), String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE]) {
-        let units: Vec<u16> = rest.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect();
-        return Ok((String::from_utf16_lossy(&units), true));
-    }
-    let text = String::from_utf8_lossy(bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&bytes)).into_owned();
-    Ok((text, false))
+/// How a file is stored, so that fixes are written back the same way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Encoding {
+    Utf8,
+    Utf8Bom,
+    Utf16Le,
+    Utf16Be,
+    /// Neither (another code page, or binary): checked as well as it can
+    /// be read, never written.
+    Other,
 }
 
-fn write_text(path: &Path, text: &str, utf16: bool) -> Result<(), String> {
-    let bytes: Vec<u8> = if utf16 {
-        [0xFF, 0xFE]
-            .into_iter()
-            .chain(text.encode_utf16().flat_map(u16::to_le_bytes))
-            .collect()
-    } else {
-        text.as_bytes().to_vec()
+/// The text of a file: UTF-8 (with or without a BOM) or UTF-16 with a BOM,
+/// as some editors save .sql files.
+fn read_text(path: &Path) -> Result<(String, Encoding), String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let utf16 = |rest: &[u8], unit: fn([u8; 2]) -> u16, enc: Encoding| {
+        let (pairs, odd) = rest.as_chunks::<2>();
+        let units: Vec<u16> = pairs.iter().map(|c| unit(*c)).collect();
+        match String::from_utf16(&units) {
+            Ok(text) if odd.is_empty() => (text, enc),
+            _ => (String::from_utf16_lossy(&units), Encoding::Other),
+        }
+    };
+    if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE]) {
+        return Ok(utf16(rest, u16::from_le_bytes, Encoding::Utf16Le));
+    }
+    if let Some(rest) = bytes.strip_prefix(&[0xFE, 0xFF]) {
+        return Ok(utf16(rest, u16::from_be_bytes, Encoding::Utf16Be));
+    }
+    let (body, enc) = match bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
+        Some(rest) => (rest, Encoding::Utf8Bom),
+        None => (&bytes[..], Encoding::Utf8),
+    };
+    Ok(match std::str::from_utf8(body) {
+        // NUL never appears in SQL text: UTF-16 without a BOM, or binary
+        Ok(text) if !text.contains('\0') => (text.to_string(), enc),
+        _ => (String::from_utf8_lossy(body).into_owned(), Encoding::Other),
+    })
+}
+
+fn write_text(path: &Path, text: &str, enc: Encoding) -> Result<(), String> {
+    let utf16 = |bom: [u8; 2], unit: fn(u16) -> [u8; 2]| -> Vec<u8> {
+        bom.into_iter().chain(text.encode_utf16().flat_map(unit)).collect()
+    };
+    let bytes: Vec<u8> = match enc {
+        Encoding::Utf8 => text.as_bytes().to_vec(),
+        Encoding::Utf8Bom => [0xEF, 0xBB, 0xBF].into_iter().chain(text.bytes()).collect(),
+        Encoding::Utf16Le => utf16([0xFF, 0xFE], u16::to_le_bytes),
+        Encoding::Utf16Be => utf16([0xFE, 0xFF], u16::to_be_bytes),
+        Encoding::Other => return Err(format!("{}: not UTF-8 or UTF-16 text", path.display())),
     };
     std::fs::write(path, bytes).map_err(|e| format!("{}: {e}", path.display()))
 }
@@ -286,7 +322,7 @@ fn run(raw: &[String], out: &mut dyn Write, err: &mut dyn Write) -> u8 {
     let mut json = Vec::new();
     let (mut count, mut fixed) = (0usize, 0usize);
     for file in &files {
-        let (mut text, utf16) = match read_text(file) {
+        let (mut text, encoding) = match read_text(file) {
             Ok(x) => x,
             Err(e) => {
                 let _ = writeln!(err, "sqlotus-lint: {e}");
@@ -294,9 +330,16 @@ fn run(raw: &[String], out: &mut dyn Write, err: &mut dyn Write) -> u8 {
             }
         };
         let mut found: Vec<Diagnostic> = lint(&text, dialect, catalog.as_ref(), &args.options);
-        if args.fix && found.iter().any(|d| d.fix.is_some()) {
+        if args.fix && found.iter().any(|d| d.fix.is_some()) && encoding == Encoding::Other {
+            // writing would turn every character it could not read into U+FFFD
+            let _ = writeln!(
+                err,
+                "sqlotus-lint: {}: not UTF-8 or UTF-16 text, fixes not written (save it as UTF-8 first)",
+                file.display()
+            );
+        } else if args.fix && found.iter().any(|d| d.fix.is_some()) {
             let (new_text, n) = apply_fixes(&text, &found);
-            if let Err(e) = write_text(file, &new_text, utf16) {
+            if let Err(e) = write_text(file, &new_text, encoding) {
                 let _ = writeln!(err, "sqlotus-lint: {e}");
                 return 2;
             }

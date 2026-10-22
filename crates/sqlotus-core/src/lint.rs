@@ -12,13 +12,19 @@
 //! ...                              -- until sqlotus-enable or the end
 //! -- sqlotus-enable
 //! ```
+//!
+//! [`ignore_edits`] writes such a comment for one problem ("Ignore on this
+//! line" in the editor).
 
 use serde::{Deserialize, Serialize};
 
 use crate::Dialect;
-use crate::analysis::{Diagnostic, Severity, diagnostics};
+use crate::analysis::{Diagnostic, Fix, Severity, diagnostics};
 use crate::catalog::Catalog;
-use crate::lexer::{TokenKind, tokenize};
+use crate::lexer::{Token, TokenKind, tokenize};
+
+const DISABLE_LINE: &str = "sqlotus-disable-line";
+const DISABLE_NEXT_LINE: &str = "sqlotus-disable-next-line";
 
 /// One analysis rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -144,34 +150,86 @@ fn is_code(w: &str) -> bool {
     letters > 0 && letters < w.len() && w[letters..].chars().all(|c| c.is_ascii_digit())
 }
 
+/// A comment's first word and the rule codes after it.
+struct Directive {
+    /// Lowercase, e.g. `sqlotus-disable-line`.
+    name: String,
+    /// Uppercase; empty means every rule.
+    codes: Vec<String>,
+    /// Byte offset after the last code (or the directive): where another
+    /// code goes.
+    end: usize,
+}
+
+fn directive(t: &Token<'_>) -> Option<Directive> {
+    if !t.is_comment() {
+        return None;
+    }
+    let rest = t.text.trim_start_matches(['-', '#', '/', '*']);
+    let base = t.start + t.text.len() - rest.len();
+    let body = rest.trim_end_matches(['*', '/']);
+    let mut words = comment_words(body).into_iter();
+    let (at, first) = words.next()?;
+    let mut end = base + at + first.len();
+    let mut codes = Vec::new();
+    for (at, w) in words {
+        if !is_code(w) {
+            break;
+        }
+        codes.push(w.to_ascii_uppercase());
+        end = base + at + w.len();
+    }
+    Some(Directive {
+        name: first.to_ascii_lowercase(),
+        codes,
+        end,
+    })
+}
+
+/// The words of a comment (split at spaces and commas) with their byte offsets.
+fn comment_words(body: &str) -> Vec<(usize, &str)> {
+    let mut out = Vec::new();
+    let mut from = None;
+    for (i, c) in body.char_indices().chain([(body.len(), ' ')]) {
+        let sep = c.is_whitespace() || c == ',';
+        match from {
+            Some(s) if sep => {
+                out.push((s, &body[s..i]));
+                from = None;
+            }
+            None if !sep => from = Some(i),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Where the line holding `at` starts (after the `\n`).
+fn line_start(src: &str, at: usize) -> usize {
+    src[..at].rfind('\n').map_or(0, |i| i + 1)
+}
+
+/// Where the next line after `at` starts (after the `\n`), or the end.
+fn next_line(src: &str, at: usize) -> usize {
+    src[at..].find('\n').map_or(src.len(), |i| at + i + 1)
+}
+
 fn suppressions(src: &str, dialect: Dialect) -> Vec<Suppression> {
-    let line_start = |at: usize| src[..at].rfind('\n').map_or(0, |i| i + 1);
-    let line_end = |at: usize| src[at..].find('\n').map_or(src.len(), |i| at + i + 1);
+    let line_start = |at: usize| line_start(src, at);
+    let line_end = |at: usize| next_line(src, at);
     let mut out = Vec::new();
     let mut open: Vec<(usize, Vec<String>)> = Vec::new();
     for t in tokenize(src, dialect) {
-        if !matches!(t.kind, TokenKind::LineComment | TokenKind::BlockComment) {
-            continue;
-        }
-        let body = t
-            .text
-            .trim_start_matches(['-', '#', '/', '*'])
-            .trim_end_matches(['*', '/'])
-            .trim();
-        let mut words = body
-            .split(|c: char| c.is_whitespace() || c == ',')
-            .filter(|w| !w.is_empty());
-        let Some(directive) = words.next() else {
+        let Some(Directive { name, codes, .. }) = directive(&t) else {
             continue;
         };
-        let codes: Vec<String> = words.take_while(|w| is_code(w)).map(str::to_ascii_uppercase).collect();
-        match directive.to_ascii_lowercase().as_str() {
-            "sqlotus-disable-line" => out.push(Suppression {
+        match name.as_str() {
+            DISABLE_LINE => out.push(Suppression {
                 start: line_start(t.start),
                 end: line_end(t.start),
                 codes,
             }),
-            "sqlotus-disable-next-line" => {
+            DISABLE_NEXT_LINE => {
                 let next = line_end(t.end());
                 out.push(Suppression {
                     start: next,
@@ -199,6 +257,77 @@ fn suppressions(src: &str, dialect: Dialect) -> Vec<Suppression> {
         codes,
     }));
     out
+}
+
+/// For each of `found`, the comment that switches its rule off on its line
+/// ("Ignore on this line"): the code added to a `sqlotus-disable-line`
+/// comment already there, a trailing `-- sqlotus-disable-line CODE` (a
+/// `/* … */` one before a comment that ends the line), or, when the line
+/// ends inside a string or comment, `-- sqlotus-disable-next-line CODE` on
+/// a new line above. `None` when no comment can go there without changing
+/// a string, or the rule is already off.
+pub fn ignore_edits(src: &str, dialect: Dialect, found: &[Diagnostic]) -> Vec<Option<Fix>> {
+    let tokens = tokenize(src, dialect);
+    found.iter().map(|d| ignore_edit(src, &tokens, d)).collect()
+}
+
+fn ignore_edit(src: &str, tokens: &[Token<'_>], d: &Diagnostic) -> Option<Fix> {
+    let at = d.start.min(src.len());
+    let start = line_start(src, at);
+    let mut end = src[at..].find('\n').map_or(src.len(), |i| at + i);
+    if end > at && src.as_bytes()[end - 1] == b'\r' {
+        end -= 1;
+    }
+    let code = d.code.as_str();
+    let insert = |at: usize, text: String| {
+        Some(Fix {
+            title: format!("Ignore {code} on this line"),
+            start: at,
+            end: at,
+            text,
+        })
+    };
+    // the code joins a directive that already covers the line
+    let add_code = |dir: Directive| {
+        let off = dir.codes.is_empty() || dir.codes.iter().any(|c| c.eq_ignore_ascii_case(code));
+        if off { None } else { insert(dir.end, format!(" {code}")) }
+    };
+    let on_line = |t: &&Token<'_>| (start..end).contains(&t.start);
+    if let Some(dir) = tokens
+        .iter()
+        .filter(on_line)
+        .filter_map(|t| directive(t))
+        .find(|x| x.name == DISABLE_LINE)
+    {
+        return add_code(dir);
+    }
+    // inside a string, quoted name or block comment that goes on past `at`
+    let inside = |at: usize| {
+        tokens
+            .iter()
+            .any(|t| t.kind != TokenKind::Whitespace && t.start < at && at < t.end())
+    };
+    if !inside(end) {
+        if let Some(c) = tokens.iter().filter(on_line).find(|t| t.kind == TokenKind::LineComment) {
+            // a comment ends the line: ours goes before it, which stays as it is
+            return insert(c.start, format!("/* {DISABLE_LINE} {code} */ "));
+        }
+        let code_end = start + src[start..end].trim_end().len();
+        return insert(code_end, format!(" -- {DISABLE_LINE} {code}"));
+    }
+    if inside(start) {
+        return None;
+    }
+    // the line ends in a string or comment: a directive on the line above
+    if let Some(dir) = tokens
+        .iter()
+        .find_map(|t| directive(t).filter(|x| x.name == DISABLE_NEXT_LINE && next_line(src, t.end()) == start))
+    {
+        return add_code(dir);
+    }
+    let indent: String = src[start..].chars().take_while(|c| *c == ' ' || *c == '\t').collect();
+    let eol = if src.contains("\r\n") { "\r\n" } else { "\n" };
+    insert(start, format!("{indent}-- {DISABLE_NEXT_LINE} {code}{eol}"))
 }
 
 #[cfg(test)]
@@ -262,6 +391,125 @@ mod tests {
         // MySQL # comments work too
         let my = lint("DELETE FROM t # sqlotus-disable-line", Dialect::MySql, None, &none);
         assert!(my.is_empty());
+    }
+
+    /// `src` after the "Ignore on this line" edit of its `code` problem
+    /// (checking that only that problem goes away), or None without one.
+    fn ignored(dialect: Dialect, src: &str, code: &str) -> Option<String> {
+        let none = LintOptions::default();
+        let others = |s: &str| -> Vec<String> {
+            lint(s, dialect, None, &none)
+                .into_iter()
+                .map(|d| d.code)
+                .filter(|c| c != code)
+                .collect()
+        };
+        let found = lint(src, dialect, None, &none);
+        let i = found.iter().position(|d| d.code == code).expect(code);
+        let f = ignore_edits(src, dialect, &found)[i].clone()?;
+        assert_eq!(f.start, f.end, "an insertion");
+        assert_eq!(f.title, format!("Ignore {code} on this line"));
+        let mut out = src.to_string();
+        out.replace_range(f.start..f.end, &f.text);
+        let after = lint(&out, dialect, None, &none);
+        assert!(after.iter().all(|d| d.code != code), "{out}\n{after:?}");
+        assert_eq!(others(&out), others(src), "only {code} goes: {out}");
+        Some(out)
+    }
+
+    #[test]
+    fn ignore_on_this_line() {
+        let ms = Dialect::MsSql;
+        let some = |s: &str| Some(s.to_string());
+        assert_eq!(
+            ignored(ms, "SELECT * FROM t", "SQ002"),
+            some("SELECT * FROM t -- sqlotus-disable-line SQ002")
+        );
+        // trailing spaces and CRLF line ends
+        assert_eq!(
+            ignored(ms, "SELECT * FROM t  \r\nDELETE FROM u", "SQ002"),
+            some("SELECT * FROM t -- sqlotus-disable-line SQ002  \r\nDELETE FROM u")
+        );
+        // a directive already on the line gets the code
+        assert_eq!(
+            ignored(ms, "DELETE FROM t -- sqlotus-disable-line SQ002", "SQ001"),
+            some("DELETE FROM t -- sqlotus-disable-line SQ002 SQ001")
+        );
+        assert_eq!(
+            ignored(
+                ms,
+                "SELECT * FROM t WHERE a = NULL /* sqlotus-disable-line SQ003, note */",
+                "SQ002"
+            ),
+            some("SELECT * FROM t WHERE a = NULL /* sqlotus-disable-line SQ003 SQ002, note */")
+        );
+        // a comment ending the line stays a comment of its own
+        assert_eq!(
+            ignored(ms, "SELECT * FROM t -- the main list", "SQ002"),
+            some("SELECT * FROM t /* sqlotus-disable-line SQ002 */ -- the main list")
+        );
+        assert_eq!(
+            ignored(
+                ms,
+                "SELECT * FROM t -- sqlotus-disable-next-line SQ001\nDELETE FROM u",
+                "SQ002"
+            ),
+            some("SELECT * FROM t /* sqlotus-disable-line SQ002 */ -- sqlotus-disable-next-line SQ001\nDELETE FROM u")
+        );
+        assert_eq!(
+            ignored(Dialect::MySql, "SELECT * FROM t # note", "SQ002"),
+            some("SELECT * FROM t /* sqlotus-disable-line SQ002 */ # note")
+        );
+        // the line ends inside a string or comment: never written into it
+        assert_eq!(
+            ignored(ms, "  SELECT * FROM t WHERE a = 'two\nlines'", "SQ002"),
+            some("  -- sqlotus-disable-next-line SQ002\n  SELECT * FROM t WHERE a = 'two\nlines'")
+        );
+        assert_eq!(
+            ignored(ms, "DELETE FROM t /* why:\nstaging */", "SQ001"),
+            some("-- sqlotus-disable-next-line SQ001\nDELETE FROM t /* why:\nstaging */")
+        );
+        assert_eq!(
+            ignored(ms, "SELECT 1\r\nDELETE FROM [odd\r\nname]", "SQ001"),
+            some("SELECT 1\r\n-- sqlotus-disable-next-line SQ001\r\nDELETE FROM [odd\r\nname]")
+        );
+        // ... joining a next-line directive already above it
+        assert_eq!(
+            ignored(
+                ms,
+                "-- sqlotus-disable-next-line SQ003\nSELECT * FROM t WHERE a = NULL AND b = 'x\ny'",
+                "SQ002"
+            ),
+            some("-- sqlotus-disable-next-line SQ003 SQ002\nSELECT * FROM t WHERE a = NULL AND b = 'x\ny'")
+        );
+        // starts and ends inside strings: no safe place
+        assert_eq!(
+            ignored(
+                ms,
+                "SELECT a FROM t WHERE c = 'one\ntwo' AND d = NULL AND e = 'three\nfour'",
+                "SQ003"
+            ),
+            None
+        );
+        // the rule is already off there
+        let d = |code: &str| Diagnostic {
+            start: 0,
+            end: 6,
+            severity: Severity::Warning,
+            code: code.into(),
+            message: String::new(),
+            fix: None,
+        };
+        let src = "DELETE FROM t -- sqlotus-disable-line sq001";
+        assert_eq!(ignore_edits(src, ms, &[d("SQ001")]), vec![None]);
+        assert_eq!(
+            ignore_edits("DELETE FROM t -- sqlotus-disable-line", ms, &[d("SQ001")]),
+            vec![None]
+        );
+        // a directive word inside a string is not a comment
+        let src = "DELETE FROM t WHERE a = '-- sqlotus-disable-line SQ002'";
+        let edit = ignore_edits(src, ms, &[d("SQ001")]).remove(0).unwrap();
+        assert_eq!(edit.start, src.len());
     }
 
     #[test]

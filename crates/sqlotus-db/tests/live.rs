@@ -513,3 +513,39 @@ async fn postgres_literals_round_trip() {
 async fn mysql_literals_round_trip() {
     literals_round_trip("SQLOTUS_TEST_MYSQL", sqlotus_core::Dialect::MySql).await;
 }
+
+/// A value longer than the display limit is cut and counted, so the grid can
+/// warn before it is edited or exported.
+async fn long_values_are_counted(var: &str, sql: &str) {
+    let Some(e) = env(var) else {
+        return;
+    };
+    let mut conn = connect(&e).await;
+    let out = conn.execute(sql, &Limits::default()).await;
+    assert!(!out.failed, "{out:?}");
+    let rs = &out.result_sets[0];
+    assert_eq!(rs.clipped, 1);
+    let v = rs.rows[0][0].as_deref().unwrap();
+    assert_eq!(v.chars().count(), 65_536, "65,535 characters and the ellipsis");
+    assert!(v.ends_with('…'));
+    assert_eq!(rs.rows[0][1].as_deref(), Some("short"), "short values are not cut");
+}
+
+#[tokio::test]
+async fn mssql_long_values_are_counted() {
+    long_values_are_counted(
+        "SQLOTUS_TEST_MSSQL",
+        "SELECT REPLICATE(CAST('a' AS nvarchar(max)), 70000) AS v, 'short' AS s",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn postgres_long_values_are_counted() {
+    long_values_are_counted("SQLOTUS_TEST_PG", "SELECT repeat('a', 70000) AS v, 'short' AS s").await;
+}
+
+#[tokio::test]
+async fn mysql_long_values_are_counted() {
+    long_values_are_counted("SQLOTUS_TEST_MYSQL", "SELECT REPEAT('a', 70000) AS v, 'short' AS s").await;
+}

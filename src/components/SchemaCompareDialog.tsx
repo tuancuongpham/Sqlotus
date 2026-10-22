@@ -81,6 +81,7 @@ export function SchemaCompareDialog({
   }, []);
 
   const connName = (id: string) => connections.find((c) => c.id === id)?.name ?? "?";
+  const gone = (s: Side) => !!s.connectionId && !connections.some((c) => c.id === s.connectionId);
   const storeSaved = async (list: SavedCompare[]) => {
     setSaved(list);
     await api.saveSavedCompares(list).catch((e) => toast.error("Could not save the list", errorText(e)));
@@ -101,6 +102,8 @@ export function SchemaCompareDialog({
     setIgnoreWhitespace(x.ignoreWhitespace);
     setIgnoreCase(x.ignoreCase);
     setResult(null);
+    if (gone(x.source) || gone(x.target))
+      toast.warning("A connection of this comparison no longer exists", "It was deleted: choose the server again, then Save to update the comparison.");
   };
   const exportReport = async () => {
     if (!result) return;
@@ -146,7 +149,8 @@ export function SchemaCompareDialog({
   }, [databases]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const dialectOf = (id: string) => connections.find((c) => c.id === id)?.dialect;
-  const sameKind = dialectOf(source.connectionId) === dialectOf(target.connectionId);
+  const missing = gone(source) || gone(target);
+  const sameKind = missing || dialectOf(source.connectionId) === dialectOf(target.connectionId);
   const sameDb = source.connectionId === target.connectionId && source.database === target.database;
 
   const run = async () => {
@@ -195,6 +199,9 @@ export function SchemaCompareDialog({
   }, [result, filter]);
   const identical = useMemo(() => (result?.diff.identicalObjects ?? []).filter((o) => matchesFilter(o, filter)), [result, filter]);
   const selected = result?.diff.differences.find((d) => d.key === current) ?? null;
+  // All / None act on what the filter shows; the script still takes every picked one
+  const shown = useMemo(() => new Set([...groups.changed, ...groups.added, ...groups.removed].map((d) => d.key)), [groups]);
+  const pickedHidden = [...picked].filter((k) => !shown.has(k)).length;
   const toggle = (key: string, on: boolean) =>
     setPicked((p) => {
       const next = new Set(p);
@@ -209,6 +216,7 @@ export function SchemaCompareDialog({
       <div className="compare-side">
         <b>{label}</b>
         <select value={side.connectionId} onChange={(e) => set({ connectionId: e.target.value, database: "" })}>
+          {gone(side) && <option value={side.connectionId}>(deleted connection)</option>}
           {connections.map((c) => (
             <option key={c.id} value={c.id}>
               {c.name} ({c.dialect})
@@ -282,10 +290,11 @@ export function SchemaCompareDialog({
             <input type="checkbox" checked={ignoreCase} onChange={(e) => setIgnoreCase(e.target.checked)} />
             Ignore case in definitions
           </label>
-          <button className="primary" onClick={() => void run()} disabled={busy || !source.database || !target.database || !sameKind}>
+          <button className="primary" onClick={() => void run()} disabled={busy || !source.database || !target.database || !sameKind || missing}>
             {busy ? "Comparing…" : "Compare"}
           </button>
         </div>
+        {missing && <div className="status-error compare-note">A saved connection of this comparison was deleted: choose the server again.</div>}
         {!sameKind && <div className="status-error compare-note">Both databases must be on the same kind of server.</div>}
         {sameDb && <div className="settings-hint compare-note">Source and target are the same database: they will be identical.</div>}
         {error && <div className="status-error compare-note">{error}</div>}
@@ -300,8 +309,17 @@ export function SchemaCompareDialog({
                 {result.diff.skipped.length > 0 && <span title={result.diff.skipped.join(", ")}>· {result.diff.skipped.length} not readable (skipped)</span>}
                 <span className="spacer" />
                 <input className="compare-filter" placeholder="Filter objects…" value={filter} onChange={(e) => setFilter(e.target.value)} />
-                <button onClick={() => setPicked(new Set(result.diff.differences.map((d) => d.key)))}>All</button>
-                <button onClick={() => setPicked(new Set())}>None</button>
+                {pickedHidden > 0 && (
+                  <span className="compare-hidden" title="Selected differences the filter hides are in the script too">
+                    {pickedHidden} selected, not shown
+                  </span>
+                )}
+                <button onClick={() => setPicked((p) => new Set([...p, ...shown]))} title={filter ? "Select the differences shown" : "Select every difference"}>
+                  All
+                </button>
+                <button onClick={() => setPicked((p) => new Set([...p].filter((k) => !shown.has(k))))} title={filter ? "Clear the differences shown" : "Clear every difference"}>
+                  None
+                </button>
               </div>
               {result.diff.differences.length === 0 && <div className="panel-empty">✓ No differences.</div>}
               {(Object.keys(groups) as ObjectDiff["change"][]).map((change) =>

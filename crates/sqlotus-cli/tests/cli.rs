@@ -121,6 +121,80 @@ fn fixes_in_place_keeping_the_encoding() {
 }
 
 #[test]
+fn encodings_are_kept_or_left_alone() {
+    let d = Dir::new("enc");
+    let src = "SELECT a FROM t WHERE b = NULL\n";
+    let fixed = "SELECT a FROM t WHERE b IS NULL\n";
+    // UTF-16 big-endian and UTF-8 with a BOM are written back as they were
+    let be: Vec<u8> = [0xFE, 0xFF]
+        .into_iter()
+        .chain(src.encode_utf16().flat_map(u16::to_be_bytes))
+        .collect();
+    std::fs::write(d.0.join("be.sql"), be).unwrap();
+    std::fs::write(d.0.join("bom.sql"), [&[0xEF, 0xBB, 0xBF], src.as_bytes()].concat()).unwrap();
+    // Windows-1252 (é = 0xE9): checked, but never rewritten
+    let latin = d.0.join("latin.sql");
+    let latin_bytes = b"SELECT a FROM t WHERE b = NULL -- caf\xE9\n".to_vec();
+    std::fs::write(&latin, &latin_bytes).unwrap();
+    let (out, report) = lint(&["--fix", "."], &d.0);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(report.contains("2 fixed"), "{report}");
+    assert!(
+        report.contains("latin.sql:1:"),
+        "the problem is still reported: {report}"
+    );
+    assert!(
+        stderr.contains("latin.sql: not UTF-8 or UTF-16 text, fixes not written"),
+        "{stderr}"
+    );
+    assert_eq!(out.status.code(), Some(1), "{report}");
+    let raw = std::fs::read(d.0.join("be.sql")).unwrap();
+    assert_eq!(&raw[..2], &[0xFE, 0xFF], "still UTF-16 BE");
+    let units: Vec<u16> = raw[2..]
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| u16::from_be_bytes(*c))
+        .collect();
+    assert_eq!(String::from_utf16(&units).unwrap(), fixed);
+    assert_eq!(
+        std::fs::read(d.0.join("bom.sql")).unwrap(),
+        [&[0xEF, 0xBB, 0xBF], fixed.as_bytes()].concat()
+    );
+    assert_eq!(std::fs::read(&latin).unwrap(), latin_bytes, "left as it was");
+}
+
+#[test]
+fn links_to_folders_are_not_followed() {
+    let d = Dir::new("links");
+    d.file("q/a.sql", "DELETE FROM t\n");
+    // a link back to the parent folder would loop forever if followed
+    let link = d.0.join("q").join("loop");
+    #[cfg(windows)]
+    let made = std::os::windows::fs::symlink_dir(&d.0, &link).is_ok()
+        || Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(&d.0)
+            .output()
+            .is_ok_and(|o| o.status.success());
+    #[cfg(unix)]
+    let made = std::os::unix::fs::symlink(&d.0, &link).is_ok();
+    if !made {
+        eprintln!("cannot make a folder link here, skipping");
+        return;
+    }
+    let (out, report) = lint(&["."], &d.0);
+    assert_eq!(out.status.code(), Some(1), "{report}");
+    assert!(report.contains("1 file(s), 1 problem(s)"), "{report}");
+    // remove the link first: removing the folder must not follow it
+    #[cfg(windows)]
+    let _ = std::fs::remove_dir(&link);
+    #[cfg(unix)]
+    let _ = std::fs::remove_file(&link);
+}
+
+#[test]
 fn schema_folder_checks_names() {
     let d = Dir::new("schema");
     let snapshot = serde_json::json!({

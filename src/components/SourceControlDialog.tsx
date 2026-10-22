@@ -136,6 +136,18 @@ export function SourceControlDialog({
     }
   };
 
+  const commitFiles = async () => {
+    const id = toast.progress("Committing the folder's files…");
+    try {
+      const r = await api.scCommitFiles(connectionId, database, message);
+      update(id, "success", r.commit ? `Committed ${r.commit}` : "Committed", `${r.written} file(s).`);
+      setMessage("");
+      await refresh();
+    } catch (e) {
+      update(id, "error", "Could not commit", errorText(e));
+    }
+  };
+
   const getLatest = async () => {
     if (!status) return;
     try {
@@ -242,6 +254,15 @@ export function SourceControlDialog({
                 ⚠ {status.handEdited.length} file(s) in the folder do not match its snapshot ({status.handEdited.slice(0, 3).join(", ")}
                 {status.handEdited.length > 3 ? ", …" : ""}). Sqlotus compares the snapshot, so change the database and commit instead of
                 editing the files.
+              </div>
+            )}
+            {status && status.uncommitted.length > 0 && (
+              <div className="settings-hint sc-note sc-pending" title={status.uncommitted.join("\n")}>
+                ⓘ {status.uncommitted.length} file(s) in the folder are not committed in git yet ({status.uncommitted.slice(0, 3).join(", ")}
+                {status.uncommitted.length > 3 ? ", …" : ""}) — for example after a commit that git refused.{" "}
+                <button onClick={() => void commitFiles()} disabled={!message.trim()} title="Write a commit message below first">
+                  Commit these files
+                </button>
               </div>
             )}
             {log !== null && (

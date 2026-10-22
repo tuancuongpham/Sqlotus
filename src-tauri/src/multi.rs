@@ -61,6 +61,7 @@ fn merge(per_db: Vec<(String, Vec<BatchOutput>)>) -> Vec<BatchOutput> {
             match merged.result_sets.get_mut(k) {
                 Some(target) => {
                     target.truncated |= rs.truncated;
+                    target.clipped += rs.clipped;
                     target.rows.extend(rs.rows);
                 }
                 None => merged.result_sets.push(rs),
@@ -154,6 +155,7 @@ mod tests {
                     .collect(),
                 rows: (0..rows).map(|i| vec![Some(i.to_string()); cols.len()]).collect(),
                 truncated: false,
+                clipped: 0,
             }],
             ..BatchOutput::default()
         }

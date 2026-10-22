@@ -3,7 +3,7 @@
 use mysql_async::prelude::Queryable;
 use mysql_async::{Conn, Opts, OptsBuilder, SslOpts, Value};
 
-use crate::{BatchOutput, ConnectionConfig, DbError, Limits, Result, ResultColumn, ResultSet, clip};
+use crate::{BatchOutput, ConnectionConfig, DbError, Limits, Result, ResultColumn, ResultSet};
 
 pub struct MySqlConn {
     conn: Conn,
@@ -103,6 +103,7 @@ impl MySqlConn {
                             .collect(),
                         rows: Vec::new(),
                         truncated: false,
+                        clipped: 0,
                     };
                     loop {
                         match result.next().await {
@@ -111,12 +112,7 @@ impl MySqlConn {
                                     rs.truncated = true;
                                     continue;
                                 }
-                                rs.rows.push(
-                                    row.unwrap()
-                                        .into_iter()
-                                        .map(|v| value(v).map(|s| clip(s, limits.max_cell_chars)))
-                                        .collect(),
-                                );
+                                rs.push_cells(row.unwrap().into_iter().map(value), limits.max_cell_chars);
                             }
                             Ok(None) => break,
                             Err(e) => {

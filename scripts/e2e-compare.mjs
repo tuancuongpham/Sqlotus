@@ -156,6 +156,23 @@ try {
   await compareNow();
   const generate = await evaluate(`[...document.querySelectorAll(".schema-compare-modal .modal-actions button")].find((b) => b.textContent.startsWith("Generate"))?.textContent`);
   check("drops need opting in", generate === "Generate script (0)", generate);
+  // All / None act on what the filter shows; selections it hides are counted
+  const setFilter = (v) =>
+    evaluate(`(() => { const el = document.querySelector(".compare-filter"); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(el, ${JSON.stringify(v)}); el.dispatchEvent(new Event("input", { bubbles: true })); })()`);
+  const generateLabel = () => evaluate(`[...document.querySelectorAll(".schema-compare-modal .modal-actions button")].find((b) => b.textContent.startsWith("Generate"))?.textContent`);
+  await setFilter("vcustomer");
+  await sleep(200);
+  await clickButton(".compare-summary", "All");
+  await sleep(200);
+  check("All picks what the filter shows", (await generateLabel()) === "Generate script (1)", await generateLabel());
+  await setFilter("no such object");
+  await sleep(200);
+  check("hidden selections are counted", (await text(".compare-summary")).includes("1 selected, not shown"), await text(".compare-summary"));
+  await clickButton(".compare-summary", "None");
+  await sleep(200);
+  check("None leaves hidden selections", (await generateLabel()) === "Generate script (1)", await generateLabel());
+  await setFilter("");
+  await sleep(200);
   await clickButton(".compare-summary", "All");
   await clickButton(".schema-compare-modal .modal-actions", "Generate script");
   await waitToast("Sync script", 8000);

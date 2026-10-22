@@ -55,10 +55,24 @@ fn require_link(state: &AppState, connection_id: &str, database: &str) -> CmdRes
 // git
 // ---------------------------------------------------------------------------
 
-/// Run git in `folder`; stdout on success, the error text otherwise.
+/// Run git in `folder`; stdout (or, when empty, stderr) on success, the
+/// error text otherwise.
 fn git(folder: &Path, args: &[&str]) -> Result<String, String> {
+    let (stdout, stderr) = run_git(folder, args)?;
+    let stdout = stdout.trim();
+    Ok(if stdout.is_empty() { stderr } else { stdout.to_string() })
+}
+
+/// Run git in `folder`: stdout as git wrote it (porcelain lines may start
+/// with a space) and stderr, or the error text.
+fn run_git(folder: &Path, args: &[&str]) -> Result<(String, String), String> {
     let mut cmd = Command::new("git");
-    cmd.current_dir(folder).args(args);
+    // English messages: the outcome is read from them ("nothing to commit", ...)
+    cmd.current_dir(folder)
+        .args(args)
+        .env_remove("LC_ALL")
+        .env("LC_MESSAGES", "C")
+        .env("LANGUAGE", "en");
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -71,16 +85,16 @@ fn git(folder: &Path, args: &[&str]) -> Result<String, String> {
             format!("Could not run git: {e}")
         }
     })?;
-    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
     if out.status.success() {
-        Ok(if stdout.is_empty() { stderr } else { stdout })
+        Ok((stdout, stderr))
     } else {
         // git puts "nothing to commit" on stdout and warnings on stderr: keep both
         Err(format!(
             "git {} failed: {}",
             args.first().copied().unwrap_or_default(),
-            format!("{stderr}\n{stdout}").trim()
+            format!("{stderr}\n{}", stdout.trim()).trim()
         ))
     }
 }
@@ -197,6 +211,42 @@ fn write_folder(folder: &Path, dialect: Dialect, model: &SchemaModel) -> Result<
     Ok((written, removed))
 }
 
+/// `Scripts/` holding nothing but the pre/post-deploy scripts.
+fn only_deploy_scripts(dir: &Path) -> bool {
+    std::fs::read_dir(dir).is_ok_and(|entries| {
+        entries.flatten().all(|e| {
+            let name = e.file_name().to_string_lossy().to_lowercase();
+            name == "pre-deploy.sql" || name == "post-deploy.sql"
+        })
+    })
+}
+
+/// Files under the folder git has not committed (`git status --porcelain`).
+fn uncommitted(folder: &Path) -> Vec<String> {
+    // quotepath off: names like dbo.SinhViên.sql stay readable
+    run_git(
+        folder,
+        &[
+            "-c",
+            "core.quotepath=false",
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+            "--",
+            ".",
+        ],
+    )
+    .map(|(out, _)| {
+        // "XY path", or "XY old -> new" for a rename; X or Y may be a space
+        out.lines()
+            .filter_map(|l| l.get(3..))
+            .map(|p| p.rsplit(" -> ").next().unwrap_or(p).trim_matches('"').to_string())
+            .filter(|p| !p.is_empty())
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
 /// A pre/post-deploy script with something to run (not only comments).
 fn deploy_script(folder: &Path, rel: &str) -> Option<String> {
     let text = std::fs::read_to_string(folder.join(rel)).ok()?;
@@ -270,6 +320,8 @@ pub async fn sc_link(
             .flatten()
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .filter(|n| !n.starts_with('.') && !n.to_lowercase().starts_with("readme"))
+            // the deploy-script templates Sqlotus wrote on an earlier link
+            .filter(|n| !(n == "Scripts" && only_deploy_scripts(&path.join(n))))
             .collect();
         if !others.is_empty() {
             return Err(format!(
@@ -348,6 +400,8 @@ pub struct StatusDto {
     in_sync: usize,
     skipped: Vec<String>,
     hand_edited: Vec<String>,
+    /// Files in the folder git has not committed yet.
+    uncommitted: Vec<String>,
     git: bool,
     branch: Option<String>,
     /// Nothing committed to the folder yet.
@@ -373,6 +427,12 @@ pub async fn sc_status(
         .ok_or("The connection no longer exists.")?;
     let dialect = cfg.dialect;
     let folder = PathBuf::from(&link.folder);
+    if !folder.is_dir() {
+        return Err(format!(
+            "The linked folder {} no longer exists (moved or deleted). Unlink, then link the database to its new place.",
+            folder.display()
+        ));
+    }
     let db = load_model(&state, &connection_id, &database, "database").await?;
     let snapshot = read_snapshot(&folder, dialect)?;
     let first_commit = snapshot.is_none();
@@ -396,13 +456,20 @@ pub async fn sc_status(
         .set_setting(&base_key(&connection_id, &database), &Some(&status.base))
         .map_err(err)?;
     let (f, m) = (folder.clone(), folder_model.clone());
-    let (edited, info) = blocking(move || {
+    let (edited, info, pending_files) = blocking(move || {
         let edited = if first_commit {
             vec![]
         } else {
             hand_edited(&f, &m, dialect)
         };
-        (edited, link_info(&f))
+        let info = link_info(&f);
+        // after a failed commit, or edits: the next commit would take them along
+        let pending = if info.git && !first_commit {
+            uncommitted(&f)
+        } else {
+            vec![]
+        };
+        (edited, info, pending)
     })
     .await?;
     let id = format!(
@@ -439,6 +506,7 @@ pub async fn sc_status(
         in_sync: status.in_sync,
         skipped: status.skipped,
         hand_edited: edited,
+        uncommitted: pending_files,
         git: info.git,
         branch: info.branch,
         first_commit,
@@ -516,6 +584,38 @@ pub async fn sc_commit(
     Ok(result)
 }
 
+/// Commit the folder's files git has not committed yet (for example after
+/// a commit that wrote the files but failed in git).
+#[tauri::command]
+pub async fn sc_commit_files(
+    state: State<'_, AppState>,
+    connection_id: String,
+    database: String,
+    message: String,
+) -> CmdResult<CommitResult> {
+    let link = require_link(&state, &connection_id, &database)?;
+    let folder = PathBuf::from(link.folder);
+    let message = message.trim().to_string();
+    if message.is_empty() {
+        return Err("Write a commit message first.".into());
+    }
+    blocking(move || -> CmdResult<CommitResult> {
+        if !is_git(&folder) {
+            return Err("The folder is not a git repository.".into());
+        }
+        let files = uncommitted(&folder).len();
+        git(&folder, &["add", "-A", "--", "."])?;
+        git(&folder, &["commit", "-m", &message, "--", "."])?;
+        Ok(CommitResult {
+            written: files,
+            removed: 0,
+            commit: git(&folder, &["rev-parse", "--short", "HEAD"]).ok(),
+            note: String::new(),
+        })
+    })
+    .await?
+}
+
 /// The script that brings the chosen folder changes into the database,
 /// between the pre- and post-deploy scripts. It opens in a tab for review.
 #[tauri::command]
@@ -568,9 +668,22 @@ pub async fn sc_git(
         if !is_git(&folder) {
             return Err("The folder is not a git repository.".to_string());
         }
-        git(&folder, &args)
+        match git(&folder, &args) {
+            // first push of a new branch: publish it and track it
+            Err(e) if action == "push" && e.contains("has no upstream branch") && has_origin(&folder) => {
+                git(&folder, &["push", "-u", "origin", "HEAD"])
+            }
+            Err(e) if e.contains("No configured push destination") || e.contains("no tracking information") => Err(format!(
+                "{e}\nThis repository has no remote (or the branch does not track one): add it with `git remote add origin <url>`."
+            )),
+            other => other,
+        }
     })
     .await?
+}
+
+fn has_origin(folder: &Path) -> bool {
+    git(folder, &["remote"]).is_ok_and(|r| r.lines().any(|l| l.trim() == "origin"))
 }
 
 #[cfg(test)]
@@ -678,6 +791,44 @@ mod tests {
             Some("-- fill it\nUPDATE dbo.A SET Id = Id;")
         );
         assert_eq!(deploy_script(&t.0, "Scripts/none.sql"), None);
+    }
+
+    #[test]
+    fn relink_pending_files_and_unicode() {
+        let t = Temp::new("pending");
+        // the deploy-script templates of an earlier link do not make the folder busy
+        std::fs::create_dir_all(t.0.join("Scripts")).unwrap();
+        std::fs::write(t.0.join(PRE_SCRIPT), PRE_TEMPLATE).unwrap();
+        std::fs::write(t.0.join(POST_SCRIPT), POST_TEMPLATE).unwrap();
+        assert!(only_deploy_scripts(&t.0.join("Scripts")));
+        std::fs::write(t.0.join("Scripts/other.sql"), "x").unwrap();
+        assert!(!only_deploy_scripts(&t.0.join("Scripts")));
+        std::fs::remove_file(t.0.join("Scripts/other.sql")).unwrap();
+        if git(&t.0, &["init"]).is_err() {
+            eprintln!("git not available, skipping");
+            return;
+        }
+        git(&t.0, &["config", "user.email", "test@example.com"]).unwrap();
+        git(&t.0, &["config", "user.name", "Test"]).unwrap();
+        // a Vietnamese object name and commit message survive git
+        write_folder(&t.0, Dialect::MsSql, &model(&["SinhViên"], &[])).unwrap();
+        let pending = uncommitted(&t.0);
+        assert!(pending.contains(&"Tables/dbo.SinhViên.sql".to_string()), "{pending:?}");
+        assert!(pending.contains(&"sqlotus-schema.json".to_string()), "{pending:?}");
+        git(&t.0, &["add", "-A", "--", "."]).unwrap();
+        git(&t.0, &["commit", "-m", "Thêm bảng Sinh viên", "--", "."]).unwrap();
+        assert_eq!(git(&t.0, &["log", "--format=%s"]).unwrap(), "Thêm bảng Sinh viên");
+        assert!(uncommitted(&t.0).is_empty());
+        // a changed file's line starts with a space (" M path"), a rename names both
+        std::fs::write(t.0.join("Tables/dbo.SinhViên.sql"), "-- edited\n").unwrap();
+        git(&t.0, &["mv", "sqlotus-schema.json", "moved.json"]).unwrap();
+        let mut pending = uncommitted(&t.0);
+        pending.sort();
+        assert_eq!(pending, ["Tables/dbo.SinhViên.sql", "moved.json"]);
+        // no remote: git says so in English, whatever the user's language
+        let e = git(&t.0, &["push"]).unwrap_err();
+        assert!(e.contains("No configured push destination"), "{e}");
+        assert!(!has_origin(&t.0));
     }
 
     #[test]

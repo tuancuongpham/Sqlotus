@@ -9,7 +9,7 @@ use tiberius::{
 use tokio::net::TcpStream;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
-use crate::{AuthKind, BatchOutput, ConnectionConfig, DbError, Limits, Result, ResultColumn, ResultSet, clip};
+use crate::{AuthKind, BatchOutput, ConnectionConfig, DbError, Limits, Result, ResultColumn, ResultSet};
 
 pub struct MssqlConn {
     client: Client<Compat<TcpStream>>,
@@ -223,6 +223,7 @@ fn new_result_set(meta: &ResultMetadata) -> ResultSet {
             .collect(),
         rows: Vec::new(),
         truncated: false,
+        clipped: 0,
     }
 }
 
@@ -231,11 +232,7 @@ fn push_row(rs: &mut ResultSet, row: Row, limits: &Limits) {
         rs.truncated = true;
         return;
     }
-    rs.rows.push(
-        row.into_iter()
-            .map(|cd| cell(cd).map(|s| clip(s, limits.max_cell_chars)))
-            .collect(),
-    );
+    rs.push_cells(row.into_iter().map(cell), limits.max_cell_chars);
 }
 
 fn error_text(e: &tiberius::error::Error) -> String {

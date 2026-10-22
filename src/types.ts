@@ -40,6 +40,8 @@ export interface ResultSet {
   columns: ResultColumn[];
   rows: (string | null)[][];
   truncated: boolean;
+  /** Values cut to 65,535 characters for display (editing and exports would use the cut text). */
+  clipped?: number;
 }
 
 export interface Message {
@@ -350,6 +352,8 @@ export interface EditContext {
   dialect: Dialect;
   sql: string;
   readOnly: boolean;
+  /** A production connection: Save asks first, naming the server. */
+  production?: { name: string; host: string };
   /** Run the query again after saving. */
   onSaved: () => void;
 }
@@ -362,6 +366,8 @@ export interface Diagnostic {
   message: string;
   /** A safe rewrite of start..end (UTF-16 offsets). */
   fix?: { title: string; start: number; end: number; text: string };
+  /** "Ignore on this line": the comment that switches the rule off there (same shape). */
+  ignore?: { title: string; start: number; end: number; text: string };
 }
 
 /** A code analysis rule (Options → Analysis). */
@@ -542,6 +548,8 @@ export interface ScStatus {
   inSync: number;
   skipped: string[];
   handEdited: string[];
+  /** Files in the folder git has not committed yet. */
+  uncommitted: string[];
   git: boolean;
   branch: string | null;
   firstCommit: boolean;

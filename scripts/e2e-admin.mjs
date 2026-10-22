@@ -12,7 +12,7 @@ mkdirSync(outDir, { recursive: true });
 const password = process.env.SQLOTUS_E2E_PASSWORD;
 if (!password) throw new Error("set SQLOTUS_E2E_PASSWORD");
 const ui = await attach(outDir);
-const { sleep, evaluate, waitFor, click, press, type, shot, invoke } = ui;
+const { sleep, evaluate, waitFor, click, press, type, shot, invoke, send, editorText } = ui;
 const { check, summary } = checker();
 
 async function until(fn, timeout = 10000) {
@@ -52,12 +52,21 @@ async function connectNewTab(label) {
   return ok;
 }
 
+/** Put `sql` in the active editor, once it shows it (the editor takes text asynchronously). */
 async function setText(sql) {
-  await click(".editor .view-lines");
-  await sleep(150);
-  await press("Control+A");
-  await press("Delete");
-  await type(sql);
+  const flat = (s) => s.replace(/\s+/g, " ").trim();
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await click(".editor .view-lines");
+    await sleep(150);
+    // after a dialog or a new tab the focus is elsewhere: put it back into the editor first
+    await evaluate(`document.querySelector(".editor .native-edit-context, .editor textarea")?.focus()`);
+    await press("Control+A");
+    await press("Delete");
+    await sleep(100);
+    // one insertion: typed keys can accept a completion or auto-close a bracket
+    await send("Input.insertText", { text: sql });
+    if (await until(async () => flat(await editorText()) === flat(sql), 3000)) break;
+  }
   await press("Escape");
 }
 

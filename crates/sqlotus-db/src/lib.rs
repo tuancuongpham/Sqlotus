@@ -94,6 +94,28 @@ pub struct ResultSet {
     pub rows: Vec<Vec<Option<String>>>,
     /// More rows existed than `Limits::max_rows`.
     pub truncated: bool,
+    /// Values cut to `Limits::max_cell_chars` for display: editing or
+    /// exporting them would use the cut text.
+    pub clipped: usize,
+}
+
+impl ResultSet {
+    /// Add a row, cutting values longer than `max` characters.
+    pub(crate) fn push_cells(&mut self, cells: impl IntoIterator<Item = Option<String>>, max: usize) {
+        let mut cut = 0;
+        let row = cells
+            .into_iter()
+            .map(|c| {
+                c.map(|s| {
+                    let (s, was_cut) = clip(s, max);
+                    cut += usize::from(was_cut);
+                    s
+                })
+            })
+            .collect();
+        self.clipped += cut;
+        self.rows.push(row);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -155,12 +177,14 @@ impl Default for Limits {
     }
 }
 
-pub(crate) fn clip(mut s: String, max: usize) -> String {
+/// `s` cut to `max` characters (with `…`), and whether it was cut.
+pub(crate) fn clip(mut s: String, max: usize) -> (String, bool) {
     if let Some((i, _)) = s.char_indices().nth(max) {
         s.truncate(i);
         s.push('…');
+        return (s, true);
     }
-    s
+    (s, false)
 }
 
 pub enum Connection {
@@ -515,7 +539,18 @@ mod tests {
 
     #[test]
     fn clip_long_values() {
-        assert_eq!(clip("abcdef".into(), 3), "abc…");
-        assert_eq!(clip("ab".into(), 3), "ab");
+        assert_eq!(clip("abcdef".into(), 3), ("abc…".to_string(), true));
+        assert_eq!(clip("abc".into(), 3), ("abc".to_string(), false));
+        assert_eq!(clip("ẫẫẫẫ".into(), 2), ("ẫẫ…".to_string(), true));
+        let mut rs = ResultSet {
+            columns: vec![],
+            rows: vec![],
+            truncated: false,
+            clipped: 0,
+        };
+        rs.push_cells([Some("abcdef".to_string()), None, Some("ab".to_string())], 3);
+        rs.push_cells([Some("xyzxyz".to_string())], 3);
+        assert_eq!(rs.clipped, 2);
+        assert_eq!(rs.rows[0], vec![Some("abc…".to_string()), None, Some("ab".to_string())]);
     }
 }

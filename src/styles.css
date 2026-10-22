@@ -2079,3 +2079,12 @@ button.diff-changed {
   flex: none;
   padding-bottom: 8px;
 }
+.grid-clipped {
+  color: #e5a50a;
+}
+
+.compare-hidden {
+  color: #e5a50a;
+  font-size: 12px;
+  white-space: nowrap;
+}
