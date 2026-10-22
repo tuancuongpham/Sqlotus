@@ -176,7 +176,7 @@ pub fn save_saved_compares(state: State<'_, AppState>, list: Vec<SavedCompare>) 
 }
 
 /// The script that applies the selected differences to the target.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn schema_sync_script(store: State<'_, CompareStore>, id: String, selected: Vec<String>) -> CmdResult<SyncScript> {
     let map = store.0.lock().map_err(err)?;
     let c = map

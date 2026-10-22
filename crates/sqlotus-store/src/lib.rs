@@ -155,6 +155,22 @@ fn history_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<HistoryEntry> {
     })
 }
 
+/// The JSON values in the first column of `sql`'s rows. A row this version
+/// cannot read (written by a newer one, with a kind of server or option it
+/// does not know) is left out and left alone, rather than hiding every other
+/// row behind an error.
+fn json_rows<T: DeserializeOwned>(db: &Connection, sql: &str) -> Result<Vec<T>> {
+    let mut stmt = db.prepare(sql)?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+    let mut out = Vec::new();
+    for json in rows {
+        if let Ok(v) = serde_json::from_str(&json?) {
+            out.push(v);
+        }
+    }
+    Ok(out)
+}
+
 const HISTORY_COLS: &str = "h.id, h.tab_id, h.title, h.connection_name, h.database, h.dialect, h.text, h.kind, h.created_at, h.updated_at, h.closed";
 
 impl Store {
@@ -184,15 +200,7 @@ impl Store {
     // -- connections ------------------------------------------------------
 
     pub fn list_connections(&self) -> Result<Vec<ConnectionConfig>> {
-        self.with(|db| {
-            let mut stmt = db.prepare("SELECT json FROM connections ORDER BY sort, rowid")?;
-            let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
-            let mut out = Vec::new();
-            for json in rows {
-                out.push(serde_json::from_str(&json?)?);
-            }
-            Ok(out)
-        })
+        self.with(|db| json_rows(db, "SELECT json FROM connections ORDER BY sort, rowid"))
     }
 
     pub fn get_connection(&self, id: &str) -> Result<Option<ConnectionConfig>> {
@@ -287,15 +295,7 @@ impl Store {
     // -- snippets ---------------------------------------------------------
 
     pub fn list_snippets(&self) -> Result<Vec<Snippet>> {
-        self.with(|db| {
-            let mut stmt = db.prepare("SELECT json FROM snippets ORDER BY prefix")?;
-            let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
-            let mut out = Vec::new();
-            for json in rows {
-                out.push(serde_json::from_str(&json?)?);
-            }
-            Ok(out)
-        })
+        self.with(|db| json_rows(db, "SELECT json FROM snippets ORDER BY prefix"))
     }
 
     pub fn save_snippet(&self, s: &Snippet) -> Result<()> {
@@ -495,6 +495,20 @@ impl Store {
         })
     }
 
+    /// Delete history not touched for `days` days, except the latest
+    /// version of each tab that is still open. Returns how many versions
+    /// were deleted.
+    pub fn prune_history(&self, days: u32) -> Result<usize> {
+        let cutoff = now_ms() - i64::from(days) * 24 * 60 * 60 * 1000;
+        self.with(|db| {
+            Ok(db.execute(
+                "DELETE FROM history WHERE updated_at < ?1
+                 AND NOT (closed = 0 AND id = (SELECT MAX(id) FROM history h WHERE h.tab_id = history.tab_id))",
+                [cutoff],
+            )?)
+        })
+    }
+
     // -- catalog cache ----------------------------------------------------
 
     pub fn save_catalog(&self, connection_id: &str, database: &str, snap: &CatalogSnapshot) -> Result<()> {
@@ -540,6 +554,29 @@ mod tests {
             text: text.into(),
             kind,
         }
+    }
+
+    #[test]
+    fn rows_a_newer_version_wrote_do_not_hide_the_others() {
+        let s = Store::open_in_memory().unwrap();
+        s.save_connection(&ConnectionConfig {
+            id: "c1".into(),
+            name: "Local".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        s.with(|db| {
+            db.execute(
+                "INSERT INTO connections (id, json, sort) VALUES ('c2', '{\"id\":\"c2\",\"dialect\":\"oracle\"}', 9)",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let list = s.list_connections().unwrap();
+        assert_eq!(list.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), vec!["c1"]);
+        // the unreadable one is kept as it is
+        assert!(s.get_connection("c2").is_err());
     }
 
     #[test]
@@ -609,6 +646,40 @@ mod tests {
         let closed = s.recently_closed(5).unwrap();
         assert_eq!(closed.len(), 1);
         assert!(closed[0].text.starts_with("UPDATE"));
+    }
+
+    #[test]
+    fn old_history_is_pruned_but_open_tabs_keep_their_latest_version() {
+        let s = Store::open_in_memory().unwrap();
+        let old1 = s
+            .record_history(&entry("open", "SELECT 1 AS first_version", HistoryKind::Execute))
+            .unwrap();
+        let old2 = s
+            .record_history(&entry("open", "SELECT 2 AS latest_version", HistoryKind::Execute))
+            .unwrap();
+        let gone = s
+            .record_history(&entry("closed", "SELECT 3 AS closed_tab", HistoryKind::Execute))
+            .unwrap();
+        s.mark_tab_closed("closed").unwrap();
+        let recent = s
+            .record_history(&entry("recent", "SELECT 4 AS recent_one", HistoryKind::Execute))
+            .unwrap();
+        let long_ago = now_ms() - 40 * 24 * 60 * 60 * 1000;
+        s.with(|db| {
+            db.execute(
+                "UPDATE history SET updated_at = ?1 WHERE id IN (?2, ?3, ?4)",
+                params![long_ago, old1, old2, gone],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(s.prune_history(30).unwrap(), 2);
+        let left: Vec<i64> = s.search_history("", 10).unwrap().iter().map(|h| h.id).collect();
+        assert_eq!(left, vec![recent, old2]);
+        // the text index forgets them too
+        assert!(s.search_history("closed_tab", 10).unwrap().is_empty());
+        assert!(s.search_history("first_version", 10).unwrap().is_empty());
+        assert_eq!(s.prune_history(30).unwrap(), 0);
     }
 
     #[test]

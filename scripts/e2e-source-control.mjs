@@ -8,34 +8,22 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { attach, checker } from "./cdp.mjs";
+import { helpers } from "./e2e-kit.mjs";
 
 const outDir = process.argv[2] ?? "e2e-out";
 mkdirSync(outDir, { recursive: true });
 if (!process.env.SQLOTUS_E2E_PASSWORD) throw new Error("set SQLOTUS_E2E_PASSWORD");
 const ui = await attach(outDir);
 const { sleep, evaluate, click, press, shot, invoke, send } = ui;
+const { until, toastText, waitToast, clearToasts, text, statusText } = helpers(ui);
 const { check, summary } = checker();
 
 const root = join(tmpdir(), `sqlotus-e2e-git-${Date.now()}`);
 const folder = join(root, "schema");
 const busyFolder = join(root, "busy");
 
-async function until(fn, timeout = 10000) {
-  const end = Date.now() + timeout;
-  while (Date.now() < end) {
-    const v = await fn();
-    if (v) return v;
-    await sleep(150);
-  }
-  return null;
-}
-const toastText = () => evaluate(`[...document.querySelectorAll(".toast")].map((t) => t.innerText.replace(/\\s+/g, " ")).join(" | ")`);
-const waitToast = (needle, timeout = 10000) => until(async () => ((await toastText()).includes(needle) ? toastText() : null), timeout);
-const clearToasts = () => evaluate(`document.querySelectorAll(".toast-close").forEach((b) => b.click())`);
 const clickButton = (scope, label) =>
   evaluate(`(() => { const b = [...document.querySelectorAll(${JSON.stringify(scope + " button")})].find((x) => x.textContent.trim().startsWith(${JSON.stringify(label)}) && !x.disabled); b?.click(); return !!b; })()`);
-const text = (sel) => evaluate(`document.querySelector(${JSON.stringify(sel)})?.innerText ?? ""`);
-const statusText = () => evaluate(`document.querySelector(".status-msg")?.textContent ?? ""`);
 const tabTitles = () => evaluate(`[...document.querySelectorAll(".tab")].map((t) => t.textContent)`);
 const before = new Set(await tabTitles());
 /** Set a React-controlled input or textarea. */
@@ -335,6 +323,8 @@ try {
     if (own < 0) break;
     await evaluate(`document.querySelectorAll(".tab")[${own}].dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }))`);
     await sleep(200);
+    // close only the tab just selected: Ctrl+W closes the active one
+    if (!(await evaluate(`!!document.querySelectorAll(".tab")[${own}]?.classList.contains("active")`))) break;
     await press("Control+W");
     await sleep(300);
     await clickButton(".confirm-modal", "Roll back and close");
@@ -346,7 +336,9 @@ try {
   const own = (await tabTitles()).findIndex((t) => !before.has(t));
   if (own >= 0) {
     await evaluate(`document.querySelectorAll(".tab")[${own}].dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }))`);
-    await press("Control+W");
+    await sleep(200);
+    // close only the tab just selected: Ctrl+W closes the active one
+    if (await evaluate(`!!document.querySelectorAll(".tab")[${own}]?.classList.contains("active")`)) await press("Control+W");
   }
   rmSync(root, { recursive: true, force: true });
 }

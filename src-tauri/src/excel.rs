@@ -5,7 +5,8 @@
 use std::path::PathBuf;
 
 use rust_xlsxwriter::{Format, Workbook};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use sqlotus_core::sqltype::SqlType;
 use tauri_plugin_opener::OpenerExt;
 
 use crate::commands::{CmdResult, err};
@@ -17,39 +18,8 @@ pub struct SheetColumn {
     type_name: String,
 }
 
-const NUMERIC: &[&str] = &[
-    "tinyint",
-    "smallint",
-    "int",
-    "bigint",
-    "decimal",
-    "numeric",
-    "money",
-    "smallmoney",
-    "float",
-    "real",
-    "integer",
-    "double",
-    "int2",
-    "int4",
-    "int8",
-    "float4",
-    "float8",
-    "serial",
-    "bigserial",
-    "LONGLONG",
-    "LONG",
-    "SHORT",
-    "TINY",
-    "NEWDECIMAL",
-    "DOUBLE",
-    "FLOAT",
-    "INT24",
-];
-
 fn is_numeric(type_name: &str) -> bool {
-    let base = type_name.split('(').next().unwrap_or("").trim();
-    NUMERIC.iter().any(|n| n.eq_ignore_ascii_case(base))
+    SqlType::parse(type_name).is_number()
 }
 
 /// Excel stores numbers as doubles: only values that survive the round
@@ -67,11 +37,16 @@ fn exact_number(v: &str) -> Option<f64> {
     (n.is_finite() && significant <= 15 && !v.contains(['e', 'E'])).then_some(n)
 }
 
+/// The most characters an Excel cell holds.
+const CELL_LIMIT: usize = 32_767;
+
+/// Write the sheet; returns how many values were cut to [`CELL_LIMIT`].
 fn write_workbook(
     path: &PathBuf,
     columns: &[SheetColumn],
     rows: &[Vec<Option<String>>],
-) -> Result<(), rust_xlsxwriter::XlsxError> {
+) -> Result<usize, rust_xlsxwriter::XlsxError> {
+    let mut cut = 0;
     let mut wb = Workbook::new();
     let ws = wb.add_worksheet();
     ws.set_name("Results")?;
@@ -92,6 +67,11 @@ fn write_workbook(
             let col = j as u16;
             match exact_number(v) {
                 Some(n) if numeric.get(j).copied().unwrap_or(false) => ws.write_number(r, col, n)?,
+                // longer text would make the whole workbook fail
+                _ if v.chars().count() > CELL_LIMIT => {
+                    cut += 1;
+                    ws.write_string(r, col, v.chars().take(CELL_LIMIT).collect::<String>())?
+                }
                 _ => ws.write_string(r, col, v)?,
             };
         }
@@ -101,7 +81,16 @@ fn write_workbook(
     }
     ws.set_freeze_panes(1, 0)?;
     ws.autofit();
-    wb.save(path)
+    wb.save(path)?;
+    Ok(cut)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExcelFile {
+    path: String,
+    /// Values cut to the 32,767 characters a cell holds.
+    cut: usize,
 }
 
 /// Write the rows to `path` (or a new file in the temp folder) and, when
@@ -113,7 +102,7 @@ pub async fn export_xlsx(
     columns: Vec<SheetColumn>,
     rows: Vec<Vec<Option<String>>>,
     open: bool,
-) -> CmdResult<String> {
+) -> CmdResult<ExcelFile> {
     if rows.len() >= 1_048_576 {
         return Err("Excel sheets hold at most 1,048,575 rows; filter the results or save them as CSV.".into());
     }
@@ -130,7 +119,7 @@ pub async fn export_xlsx(
         }
     };
     let target = path.clone();
-    tauri::async_runtime::spawn_blocking(move || write_workbook(&target, &columns, &rows))
+    let cut = tauri::async_runtime::spawn_blocking(move || write_workbook(&target, &columns, &rows))
         .await
         .map_err(err)?
         .map_err(|e| format!("Could not write the workbook: {e}"))?;
@@ -140,7 +129,7 @@ pub async fn export_xlsx(
             .open_path(&shown, None::<&str>)
             .map_err(|e| format!("The workbook was saved to {shown}, but no app opened it: {e}"))?;
     }
-    Ok(shown)
+    Ok(ExcelFile { path: shown, cut })
 }
 
 #[cfg(test)]
@@ -173,5 +162,11 @@ mod tests {
         assert_eq!(exact_number("-0.001"), Some(-0.001));
         assert_eq!(exact_number("9007199254740993"), None); // bigint beyond double precision
         assert_eq!(exact_number("1234567890.1234567890"), None);
+        // a value longer than an Excel cell holds
+        let long = vec![vec![Some("1".into()), Some("x".repeat(40_000))]];
+        let probe = std::env::temp_dir().join(format!("sqlotus-long-{}.xlsx", std::process::id()));
+        let result = write_workbook(&probe, &columns, &long);
+        std::fs::remove_file(&probe).ok();
+        assert_eq!(result.unwrap(), 1, "cut to what a cell holds, not a failed workbook");
     }
 }

@@ -4,24 +4,16 @@
 //   node scripts/e2e-features.mjs [screenshot-dir]
 import { mkdirSync } from "node:fs";
 import { attach, checker } from "./cdp.mjs";
+import { helpers } from "./e2e-kit.mjs";
 
 const outDir = process.argv[2] ?? "e2e-out";
 mkdirSync(outDir, { recursive: true });
 const ui = await attach(outDir);
 const { sleep, evaluate, waitFor, click, press, type, shot, editorText, send } = ui;
+const { until, statusText } = helpers(ui);
 const { check, summary } = checker();
 
-async function until(fn, timeout = 10000) {
-  const end = Date.now() + timeout;
-  while (Date.now() < end) {
-    const v = await fn();
-    if (v) return v;
-    await sleep(150);
-  }
-  return null;
-}
 const suggestText = () => evaluate(`document.querySelector(".suggest-widget.visible")?.innerText ?? ""`);
-const statusText = () => evaluate(`document.querySelector(".status-msg")?.textContent ?? ""`);
 const tabCount = () => evaluate(`document.querySelectorAll(".tab").length`);
 
 async function newConnectedTab(label, database) {

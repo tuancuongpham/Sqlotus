@@ -3,7 +3,7 @@
 //   npm test
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { NUMERIC, quoteName, sqlLiteral, toCsv, toHtml, toInsert, toJson, toMarkdown, toTsv } from "../src/export.ts";
+import { NUMERIC, quoteName, sqlLiteral, textWidth, toCsv, toHtml, toInsert, toJson, toMarkdown, toText, toTsv } from "../src/export.ts";
 
 const rs = (columns, rows = []) => ({ columns: columns.map(([name, typeName]) => ({ name, typeName })), rows, truncated: false });
 
@@ -30,11 +30,26 @@ test("SQL literals", () => {
   assert.equal(sqlLiteral("C:\\temp", "text", "postgres"), "'C:\\temp'");
   assert.equal(sqlLiteral("it's \\'", "VAR_STRING", "mysql"), "'it''s \\\\'''");
   assert.equal(sqlLiteral("0x0A0B", "varbinary", "mssql"), "0x0A0B");
-  // no type name: numbers stay numbers, the rest is quoted
+  // no type name: numbers stay numbers, the rest is quoted; PostgreSQL
+  // (no types for a script of several statements) reads quoted values into any type
   assert.equal(sqlLiteral("7", "", "mssql"), "7");
   assert.equal(sqlLiteral("07a", "", "postgres"), "'07a'");
+  assert.equal(sqlLiteral("00123", "", "postgres"), "'00123'");
   // leading zeros in a text column stay text
   assert.equal(sqlLiteral("007", "varchar", "mssql"), "N'007'");
+  // binary values: 0x... on SQL Server, X'...' on MySQL, quoted \x... on PostgreSQL
+  assert.equal(sqlLiteral("0x", "varbinary", "mssql"), "0x");
+  assert.equal(sqlLiteral("0x41", "blob", "mysql"), "X'41'");
+  assert.equal(sqlLiteral("0x0102", "varbinary", "mysql"), "X'0102'");
+  assert.equal(sqlLiteral("\\x00ff", "bytea", "postgres"), "'\\x00ff'");
+  // bits: MySQL shows BIT(n) as a number; PostgreSQL bit is a bit string
+  assert.equal(sqlLiteral("170", "bit", "mysql"), "170");
+  assert.equal(sqlLiteral("1", "bit", "mssql"), "1");
+  assert.equal(sqlLiteral("10101010", "bit", "postgres"), "'10101010'");
+  // SQL Server datetime as ISO 8601, which no DATEFORMAT misreads
+  assert.equal(sqlLiteral("2024-01-12 10:20:30.123", "datetime", "mssql"), "N'2024-01-12T10:20:30.123'");
+  assert.equal(sqlLiteral("2024-01-12 10:20:00", "smalldatetime", "mssql"), "N'2024-01-12T10:20:00'");
+  assert.equal(sqlLiteral("2024-01-12 10:20:30.1234567", "datetime2", "mssql"), "N'2024-01-12 10:20:30.1234567'");
 });
 
 test("quoted names", () => {
@@ -93,4 +108,39 @@ test("CSV quoting", () => {
 test("TSV for the clipboard", () => {
   const tsv = toTsv(rs([["a", "text"], ["b", "text"]]), [["x\ty", "1\r\n2"], [null, "z"]], true);
   assert.equal(tsv, "a\tb\r\nx y\t1 2\r\nNULL\tz");
+});
+
+test("CSV formula guard", () => {
+  const cols = rs([["note", "nvarchar"], ["delta", "int"], ["=head", "text"]]);
+  const rows = [
+    ["=HYPERLINK(\"http://x\",\"y\")", "-5", "+84 912 345 678"],
+    ["@SUM(A1)", "7", "-not a number"],
+    ["plain", null, "a=b"],
+  ];
+  // off: the values as they are
+  assert.ok(toCsv(cols, rows).includes('"=HYPERLINK(""http://x"",""y"")"'));
+  const csv = toCsv(cols, rows, true).split("\r\n");
+  // headers are text too; numbers in numeric columns stay numbers
+  assert.equal(csv[0], "note,delta,'=head");
+  assert.equal(csv[1], `"'=HYPERLINK(""http://x"",""y"")",-5,'+84 912 345 678`);
+  assert.equal(csv[2], "'@SUM(A1),7,'-not a number");
+  assert.equal(csv[3], "plain,,a=b");
+});
+
+test("fixed-width text table", () => {
+  const t = toText(rs([["id", "int"], ["name", "nvarchar"], ["note", "text"]]), [
+    ["1", "Nguyễn Văn A", "two\nlines"],
+    ["10", "中文", null],
+  ]);
+  assert.equal(
+    t,
+    [" id | name         | note", "----+--------------+-----------", "  1 | Nguyễn Văn A | two lines", " 10 | 中文         | NULL", "(2 rows)"].join("\n"),
+  );
+  // combining marks take no room (decomposed Vietnamese)
+  assert.equal(textWidth("Nguyễn"), 6);
+  assert.equal(textWidth("中文"), 4);
+  const long = toText(rs([["v", "text"]]), [["x".repeat(50)]], 10).split("\n");
+  assert.equal(long[2], " xxxxxxxxx…");
+  assert.equal(toText(rs([["v", "text"]]), []).split("\n").pop(), "(0 rows)");
+  assert.equal(toText(rs([["v", "text"]]), [["a"]]).split("\n").pop(), "(1 row)");
 });

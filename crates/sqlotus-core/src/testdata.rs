@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::Dialect;
 use crate::catalog::{Column, DbObject, ForeignKey};
 use crate::script::object_name;
+use crate::sqltype::SqlType;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -326,80 +327,6 @@ fn fold(s: &str) -> String {
 // choosing generators
 // ---------------------------------------------------------------------------
 
-fn base_type(t: &str) -> String {
-    t.split('(').next().unwrap_or("").trim().to_ascii_lowercase()
-}
-
-/// `nvarchar(50)` → Some(50); `max`, no length or non-text → None.
-fn max_length(t: &str) -> Option<usize> {
-    let inner = t.split_once('(')?.1.split(')').next()?;
-    inner.split(',').next()?.trim().parse().ok()
-}
-
-/// `decimal(12, 2)` → 2.
-fn scale(t: &str) -> u32 {
-    t.split_once('(')
-        .and_then(|(_, r)| r.split(')').next())
-        .and_then(|r| r.split(',').nth(1))
-        .and_then(|s| s.trim().parse().ok())
-        .unwrap_or(if matches!(base_type(t).as_str(), "money" | "smallmoney") {
-            2
-        } else {
-            0
-        })
-}
-
-fn is_int(t: &str) -> bool {
-    matches!(
-        t,
-        "int"
-            | "integer"
-            | "bigint"
-            | "smallint"
-            | "tinyint"
-            | "mediumint"
-            | "int2"
-            | "int4"
-            | "int8"
-            | "serial"
-            | "bigserial"
-            | "smallserial"
-    )
-}
-fn is_decimal(t: &str) -> bool {
-    matches!(
-        t,
-        "decimal"
-            | "numeric"
-            | "money"
-            | "smallmoney"
-            | "float"
-            | "real"
-            | "double"
-            | "double precision"
-            | "float4"
-            | "float8"
-    )
-}
-fn is_text(t: &str) -> bool {
-    matches!(
-        t,
-        "char"
-            | "varchar"
-            | "nchar"
-            | "nvarchar"
-            | "text"
-            | "ntext"
-            | "character varying"
-            | "character"
-            | "tinytext"
-            | "mediumtext"
-            | "longtext"
-            | "citext"
-            | "bpchar"
-    )
-}
-
 fn table_kind(table: &str) -> &'static str {
     let t = fold(table);
     let has = |words: &[&str]| words.iter().any(|w| t.contains(w));
@@ -421,9 +348,10 @@ fn table_kind(table: &str) -> &'static str {
 }
 
 fn choose(table: &str, c: &Column, fk: bool, dialect: Dialect) -> (Generator, &'static str) {
-    let ty = base_type(&c.data_type);
+    let ty = SqlType::parse(&c.data_type);
+    let b = ty.base();
     // SQL Server's timestamp is rowversion, set by the server
-    if c.is_identity || c.is_computed || ty == "rowversion" || (dialect == Dialect::MsSql && ty == "timestamp") {
+    if c.is_identity || c.is_computed || b == "rowversion" || (dialect == Dialect::MsSql && b == "timestamp") {
         return (Generator::Skip, "filled by the server");
     }
     if fk {
@@ -433,13 +361,13 @@ fn choose(table: &str, c: &Column, fk: bool, dialect: Dialect) -> (Generator, &'
     let has = |words: &[&str]| words.iter().any(|w| name.contains(w));
     let ends = |words: &[&str]| words.iter().any(|w| name.ends_with(w));
     if c.is_primary_key {
-        return match ty.as_str() {
+        return match b {
             "uniqueidentifier" | "uuid" => (Generator::Guid, "new GUID"),
-            t if is_int(t) => (Generator::Sequence, "continues after the current maximum"),
+            _ if ty.is_integer() => (Generator::Sequence, "continues after the current maximum"),
             _ => (Generator::Code, "unique code"),
         };
     }
-    match ty.as_str() {
+    match b {
         "uniqueidentifier" | "uuid" => return (Generator::Guid, "random GUID"),
         "bit" | "bool" | "boolean" => return (Generator::Boolean, "true / false"),
         "date" => {
@@ -456,24 +384,24 @@ fn choose(table: &str, c: &Column, fk: bool, dialect: Dialect) -> (Generator, &'
         t if t.starts_with("time") => return (Generator::DateTime, "time of day"),
         _ => {}
     }
-    if is_int(&ty) || is_decimal(&ty) {
-        if ty == "tinyint" && has(&["is", "flag", "active"]) {
+    if ty.is_number() {
+        if b == "tinyint" && has(&["is", "flag", "active"]) {
             return (Generator::Boolean, "0 / 1");
         }
-        return if is_decimal(&ty) {
+        return if ty.is_decimal() {
             (Generator::Decimal, "amount")
         } else {
             (Generator::Integer, "number")
         };
     }
-    if !is_text(&ty) {
+    if !ty.is_text() {
         return if c.nullable {
             (Generator::Null, "type not supported: NULL")
         } else {
             (Generator::Skip, "type not supported: left to its default")
         };
     }
-    let len = max_length(&c.data_type).unwrap_or(4000);
+    let len = ty.length().unwrap_or(4000);
     if has(&["email", "mail"]) {
         (Generator::Email, "e-mail address")
     } else if has(&["phone", "mobile", "tel", "sdt", "dienthoai", "fax"]) {
@@ -614,16 +542,17 @@ fn value(
     opts: &TestDataOptions,
     ctx: &DataContext,
     fk_row: Option<&HashMap<String, Option<String>>>,
+    dialect: Dialect,
 ) -> Value {
     let loc = opts.locale;
-    let ty = base_type(&c.data_type);
-    let len = max_length(&c.data_type);
+    let ty = SqlType::parse(&c.data_type);
+    let len = ty.length();
     let text = |s: String| Value::Text(fit(s, len));
     match g {
         Generator::Skip | Generator::Null => Value::Null,
         Generator::Fixed => match opts.fixed.get(&c.column) {
             Some(v) if v.eq_ignore_ascii_case("null") => Value::Null,
-            Some(v) if is_int(&ty) || is_decimal(&ty) => Value::Raw(v.clone()),
+            Some(v) if ty.is_number() => Value::Raw(v.clone()),
             Some(v) => text(v.clone()),
             None => Value::Null,
         },
@@ -727,7 +656,9 @@ fn value(
             } else if ["year", "nam"].iter().any(|w| name.ends_with(w)) {
                 (2000, 2026)
             } else {
-                match ty.as_str() {
+                match ty.base() {
+                    // MySQL's tinyint is signed (-128..127) unless declared unsigned
+                    "tinyint" if dialect == Dialect::MySql && !ty.is_unsigned() => (0, 127),
                     "tinyint" => (0, 255),
                     "smallint" | "int2" => (1, 10_000),
                     _ => (1, 100_000),
@@ -736,8 +667,14 @@ fn value(
             Value::Raw(rng.range(lo, hi).to_string())
         }
         Generator::Decimal => {
-            let s = scale(&c.data_type).min(4);
-            let cents = rng.range(100, 1_000_000);
+            let money = matches!(ty.base(), "money" | "smallmoney");
+            let s = ty.scale().unwrap_or(if money { 2 } else { 0 }).min(4);
+            // decimal(5, 2) holds up to 999.99: stay below 10^(precision - scale)
+            let top: i64 = match ty.integer_digits() {
+                Some(d) if d < 7 => 10i64.pow(d) * 100 - 1,
+                _ => 1_000_000,
+            };
+            let cents = rng.range(1.min(top), top.max(1));
             let v = cents as f64 / 100.0;
             Value::Raw(format!("{v:.prec$}", prec = s as usize))
         }
@@ -754,13 +691,23 @@ fn value(
                 rng.range(0, 59),
                 rng.range(0, 59)
             );
-            if g == Generator::DateTime && ty.starts_with("time") && !ty.starts_with("timestamp") {
+            if g == Generator::DateTime && ty.base().starts_with("time") && !ty.base().starts_with("timestamp") {
                 Value::Text(time)
             } else if g == Generator::DateTime {
                 Value::Text(format!("{date} {time}"))
             } else {
                 Value::Text(date)
             }
+        }
+        // PostgreSQL bit(n) is a string of n bits
+        Generator::Boolean if dialect == Dialect::Postgres && matches!(ty.base(), "bit" | "varbit" | "bit varying") => {
+            let n = len.unwrap_or(1).clamp(1, 64);
+            Value::Raw(format!(
+                "B'{}'",
+                (0..n)
+                    .map(|_| if rng.percent(50) { '1' } else { '0' })
+                    .collect::<String>()
+            ))
         }
         Generator::Boolean => Value::Raw(if rng.percent(50) { "1" } else { "0" }.into()),
         Generator::Guid => {
@@ -782,7 +729,7 @@ fn value(
             Value::Raw((start + row as i64 + 1).to_string())
         }
         Generator::ForeignKey => match fk_row.and_then(|r| r.get(&c.column.to_lowercase())) {
-            Some(Some(v)) if is_int(&ty) || is_decimal(&ty) => Value::Raw(v.clone()),
+            Some(Some(v)) if ty.is_number() => Value::Raw(v.clone()),
             Some(Some(v)) => Value::Text(v.clone()),
             _ => Value::Null,
         },
@@ -823,19 +770,12 @@ fn code_capacity(len: Option<usize>) -> usize {
 }
 
 fn literal(v: Value, c: &ColumnPlan, dialect: Dialect) -> String {
-    let ty = base_type(&c.data_type);
+    let ty = SqlType::parse(&c.data_type);
     match v {
         Value::Null => "NULL".into(),
-        Value::Raw(s) if matches!(ty.as_str(), "bool" | "boolean") => if s == "1" { "TRUE" } else { "FALSE" }.into(),
+        Value::Raw(s) if matches!(ty.base(), "bool" | "boolean") => if s == "1" { "TRUE" } else { "FALSE" }.into(),
         Value::Raw(s) => s,
-        Value::Text(s) => {
-            let q = dialect.string_literal(&s);
-            if dialect == Dialect::MsSql && matches!(ty.as_str(), "nchar" | "nvarchar" | "ntext") {
-                format!("N{q}")
-            } else {
-                q
-            }
-        }
+        Value::Text(s) => dialect.typed_string(&s, &ty),
     }
 }
 
@@ -881,7 +821,7 @@ pub fn insert_script(
         }
     }
     for p in cols.iter().filter(|p| gen_of(p) == Generator::Code) {
-        let capacity = code_capacity(max_length(&p.data_type));
+        let capacity = code_capacity(SqlType::parse(&p.data_type).length());
         if opts.rows > capacity {
             return Err(format!(
                 "{} ({}) can hold only {capacity} different codes; generate fewer rows or choose another generator for it.",
@@ -930,7 +870,7 @@ pub fn insert_script(
                 let v = if null {
                     Value::Null
                 } else {
-                    value(g, p, row, &mut rng, opts, ctx, Some(&fk_row))
+                    value(g, p, row, &mut rng, opts, ctx, Some(&fk_row), dialect)
                 };
                 literal(v, p, dialect)
             })
@@ -1047,6 +987,27 @@ mod tests {
     }
 
     #[test]
+    fn mysql_unsigned_columns_are_numbers() {
+        // MySQL 8 writes `int unsigned` without a display width
+        let t = DbObject {
+            schema: String::new(),
+            name: "stock".into(),
+            kind: ObjectKind::Table,
+            columns: vec![
+                col("id", "int unsigned", false, true, false),
+                col("qty", "smallint unsigned", false, false, false),
+                col("level", "tinyint unsigned", true, false, false),
+            ],
+            params: vec![],
+        };
+        let g: Vec<Generator> = plan_columns(&t, &[], Dialect::MySql)
+            .iter()
+            .map(|p| p.generator)
+            .collect();
+        assert_eq!(g, vec![Generator::Sequence, Generator::Integer, Generator::Integer]);
+    }
+
+    #[test]
     fn generates_valid_rows() {
         let t = customers();
         let plans = plan_columns(&t, &[], Dialect::MsSql);
@@ -1134,7 +1095,17 @@ mod tests {
         let s = insert_script(&t, &plans, &[], &DataContext::default(), &opts, Dialect::Postgres).unwrap();
         assert!(s.contains("'O''Neil'") && !s.contains("N'O"));
         assert!(!s.contains("\"Email\"") && !s.contains(" Email,"));
-        assert!(s.contains("TRUE") || s.contains("FALSE") || s.contains(", 1)") || s.contains(", 0)"));
+        // a PostgreSQL bit column is a bit string, a boolean column TRUE / FALSE
+        assert!(s.contains("B'0'") || s.contains("B'1'"), "{s}");
+        let mut b = t.clone();
+        b.columns
+            .iter_mut()
+            .find(|c| c.name == "ConHoatDong")
+            .unwrap()
+            .data_type = "boolean".into();
+        let bp = plan_columns(&b, &[], Dialect::Postgres);
+        let s = insert_script(&b, &bp, &[], &DataContext::default(), &opts, Dialect::Postgres).unwrap();
+        assert!(s.contains("TRUE") || s.contains("FALSE"), "{s}");
         assert_eq!(fold("Nguyễn Văn Đức"), "nguyen van duc");
         // short codes stay unique: base 36 over the whole width
         let codes: std::collections::HashSet<String> = (0..1296).map(|r| code("Code", r, 1296, Some(2))).collect();

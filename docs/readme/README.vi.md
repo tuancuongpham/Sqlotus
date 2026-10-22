@@ -59,9 +59,9 @@ Chạy bộ cài bản mới. Kết nối, mật khẩu đã lưu, lịch sử v
 | **Viết SQL nhanh** | gợi ý theo ngữ cảnh, JOIN theo khoá ngoại, sinh `INSERT`/`EXEC`, mở rộng `*`, snippet |
 | **Format và refactor** | formatter tuỳ chỉnh, qualify tên, đổi tên biến và alias, đi tới định nghĩa |
 | **An toàn** | phân tích khi gõ kèm danh sách Problems và sửa nhanh, hỏi lại câu lệnh nguy hiểm, kết nối read-only và production, nhắc transaction đang mở |
-| **Hiểu database** | Object Search, Object Explorer, sơ đồ ER, Used by, sức khoẻ index, Activity, so sánh schema |
+| **Hiểu database** | Object Search, Object Explorer, tìm một giá trị trong mọi cột, sơ đồ ER, Used by, sức khoẻ index, Activity, so sánh schema, script backup và restore |
 | **Làm việc nhóm** | schema trong repository git (commit, get latest, xung đột), cùng bộ phân tích chạy trong CI bằng `sqlotus-lint` |
-| **Làm việc với kết quả** | lưới ảo hoá, sửa dữ liệu, copy dạng INSERT/CSV/JSON/Markdown, Excel, biểu đồ, so sánh kết quả, kế hoạch thực thi |
+| **Làm việc với kết quả** | lưới ảo hoá hoặc dạng chữ, xem một dòng dạng form, đi theo khoá ngoại, sửa dữ liệu, copy dạng INSERT/CSV/JSON/Markdown, Excel, biểu đồ, so sánh kết quả, kế hoạch thực thi |
 | **Không mất query** | tự lưu phiên bản mọi tab, tìm full-text, mở lại tab đã đóng, khôi phục tab khi mở lại app |
 
 Bấm vào từng nhóm để xem chi tiết.
@@ -106,11 +106,17 @@ Bấm vào từng nhóm để xem chi tiết.
   lệnh ảnh hưởng tới phiên của người khác hoặc cả server (`WITH ROLLBACK IMMEDIATE`, `SET OFFLINE`, `KILL`, `SHUTDOWN`).
 - **Kết nối read-only**: chặn INSERT/UPDATE/DELETE/MERGE/DDL/GRANT/KILL, vẫn chạy được SELECT (tab có 🔒). Với PostgreSQL
   và MySQL, phiên kết nối còn được đặt chỉ đọc ngay trên server, nên procedure và function cũng không ghi được. SQL
-  Server không có phiên chỉ đọc: procedure được gọi không bị kiểm tra, nên hãy dùng login chỉ có quyền đọc khi cần.
+  Server không có phiên chỉ đọc: procedure được gọi không bị kiểm tra, nên hãy dùng login chỉ có quyền đọc khi cần. Bảng
+  tạm và biến bảng vẫn dùng được.
 - **Nhắc transaction đang mở**: tab hiện **TRAN**, thanh công cụ có nút Commit / Roll back, đóng tab sẽ hỏi.
 - **Hỏi trước khi lưu thay đổi lớn**: script chỉ INSERT/UPDATE/DELETE chạy trong transaction; nếu đổi quá số dòng
   giới hạn (mặc định 1.000, Options → Safety) hoặc lỗi giữa chừng thì hỏi Commit hay Roll back; ít hơn thì tự commit
-  và báo số dòng. **Manual commit** theo từng kết nối: thay đổi nằm trong transaction tới khi bấm Commit.
+  và báo số dòng. **Manual commit** theo từng kết nối: thay đổi, kể cả lời gọi procedure, nằm trong transaction tới khi
+  bấm Commit. Câu lệnh mà server không cho chạy trong transaction (BACKUP, RESTORE, CREATE DATABASE…) được chạy riêng, và
+  thông báo sẽ nói rõ điều đó.
+- **Lời gọi procedure** (Options → Safety, mặc định tắt): Sqlotus không đếm được số dòng mà procedure thay đổi, nên khi
+  bật, script có gọi procedure (`EXEC`, `CALL`) sẽ chạy trong transaction và bạn chọn Commit hay Roll back. Procedure
+  không thay đổi gì thì được commit luôn, không hỏi.
 - **Môi trường kết nối** Development/Test/Staging/Production: Production có tab đỏ, nhãn PROD, manual commit và hỏi
   lại (ghi rõ server) trước mọi câu lệnh thay đổi dữ liệu hoặc schema và trước mọi lời gọi procedure (`EXEC` / `CALL`) —
   cả khi chạy trên nhiều database và khi lưu dữ liệu sửa trên lưới.
@@ -148,7 +154,17 @@ Bấm vào từng nhóm để xem chi tiết.
   cả database; xem định nghĩa có highlight, mở ra tab mới.
 - **Query History** (Ctrl+Shift+H): tự lưu phiên bản các tab (định kỳ và mỗi lần Execute), tìm full-text, mở lại tab đã
   đóng (Ctrl+Shift+T), diff với phiên bản trước hoặc với tab hiện tại. Các tab đang mở được khôi phục khi mở lại app.
+  Có thể chỉ giữ lịch sử trong một số ngày (Options → Editor).
 - **Object Explorer** (F8, mở sẵn): lọc object/cột, Select top 100, script SELECT/INSERT/UPDATE/DELETE/EXEC/CREATE/ALTER.
+  Danh sách object tự nạp lại sau khi script tạo, sửa hoặc xoá object (khi transaction của nó kết thúc), nên gợi ý code,
+  phân tích và explorer biết ngay bảng mới.
+- **Data as INSERT** (một bảng trong explorer): dữ liệu của bảng thành các câu INSERT — tất cả hoặc N dòng đầu, có thể lọc
+  theo điều kiện — giữ nguyên giá trị identity, bỏ qua cột tính toán và rowversion. Script mở ra tab mới.
+- **Find value** (thanh công cụ explorer): script tìm một đoạn chữ trong mọi cột chữ của mọi bảng, liệt kê bảng, cột, số
+  dòng và một giá trị ví dụ. Script chỉ đọc; được mở ra để xem trước vì nó đọc toàn bộ từng cột.
+- **Backup** (SQL Server, thanh công cụ explorer): backup full, differential hoặc log, có copy-only, nén, checksum và
+  kiểm tra file có restore được không; restore một file backup, kể cả thành bản sao bên cạnh database gốc (file dữ liệu
+  đặt vào thư mục data và log của server). Hộp thoại chỉ viết script và mở ra tab: không có gì chạy cho tới khi bạn chạy.
 - **Sơ đồ ER**: bảng và khoá ngoại của cả database hoặc một bảng cùng các bảng liên quan, tự sắp xếp; kéo thả, zoom,
   tô sáng quan hệ, copy ảnh hoặc lưu SVG.
 - **Used by**: view, proc, function, trigger và khoá ngoại nào đang dùng bảng/cột/module, kèm dòng — xem trước khi đổi
@@ -192,14 +208,27 @@ Giữ schema của một database trong một thư mục — thường là repos
 <details>
 <summary><b>Chạy query và kết quả</b></summary>
 
-- F5 / Ctrl+E chạy vùng chọn hoặc cả tab, Shift+F5 chạy câu lệnh tại con trỏ; tách batch `GO` / `GO n`; script MySQL
-  có dòng `DELIMITER` (file dump, procedure, trigger) chạy giống công cụ dòng lệnh mysql; huỷ query; nhiều result set.
+- F5 / Ctrl+E chạy vùng chọn hoặc cả tab, Shift+F5 chạy câu lệnh tại con trỏ (F5 cũng vậy nếu bật Options → Editor →
+  "Execute runs the statement at the cursor"); tách batch `GO` / `GO n`; script MySQL có dòng `DELIMITER` (file dump,
+  procedure, trigger) chạy giống công cụ dòng lệnh mysql; huỷ query; nhiều result set.
+- **Biến SQLCMD** (SQL Server): `:setvar Schema "dbo"` khai báo biến, `$(Schema)` được thay bằng giá trị ở mọi chỗ phía
+  dưới; `:on error exit` dừng ở batch lỗi đầu tiên. Chạy vùng chọn hoặc câu lệnh tại con trỏ vẫn giữ các biến khai báo
+  phía trên. Các lệnh SQLCMD khác bị từ chối chứ không gửi tới server.
 - **Chạy trên nhiều database** (Ctrl+Shift+F5): mỗi dòng có cột `Database`, gộp lại nếu cùng cấu trúc.
 - **Lưới kết quả ảo hoá**: sắp xếp, lọc, copy kèm header, **copy dạng INSERT / CSV / IN list / Markdown / JSON /
   HTML**, lưu CSV. Shift+click chọn vùng trong một cột để xem Count / Sum / Avg / Min / Max.
+- **Grid hoặc Text**: xem các dòng dưới dạng bảng chữ cố định độ rộng như công cụ dòng lệnh (lựa chọn được giữ cho các
+  kết quả sau); có cả **Copy as → Text table**.
+- **Record**: dòng đang chọn hiển thị như một form — mọi cột kèm kiểu và giá trị đầy đủ, lọc cột, chuyển từng dòng; bấm
+  vào giá trị để copy.
+- **Đi theo khoá ngoại**: với kết quả truy được về bảng gốc (kể cả có JOIN), cột khoá ngoại được đánh dấu ↗. Ctrl+click
+  một giá trị để mở dòng được tham chiếu ở tab mới; chuột phải một dòng để xem các dòng đang tham chiếu tới nó.
+- File CSV thêm dấu `'` trước chữ bắt đầu bằng `=`, `+`, `-` hoặc `@`, để bảng tính hiển thị chứ không chạy như công thức
+  (số vẫn giữ nguyên; Options → Safety).
 - Giá trị dài hơn 65.535 ký tự được hiển thị bị cắt: lưới báo số giá trị bị cắt, copy và xuất file sẽ cảnh báo vì chứa phần
   đã cắt, và kết quả đó không sửa được trên lưới. Cần đủ giá trị thì query riêng giá trị đó.
-- **Excel**: mở kết quả bằng Excel hoặc lưu .xlsx (số vẫn là số, có header và filter).
+- **Excel**: mở kết quả bằng Excel hoặc lưu .xlsx (số vẫn là số, có header và filter; một ô chứa tối đa 32.767 ký tự,
+  giá trị dài hơn sẽ bị cắt và có cảnh báo).
 - **Biểu đồ** cột, đường, tròn; copy thành ảnh.
 - **So sánh kết quả**: ghim một kết quả, chạy lại rồi so sánh — dòng thêm, bớt, thay đổi theo cột khoá bạn chọn.
 - **Kế hoạch thực thi ước tính** (Ctrl+L): dạng cây, % chi phí từng bước, cảnh báo scan cả bảng, key lookup, chuyển
@@ -209,7 +238,11 @@ Giữ schema của một database trong một thư mục — thường là repos
   production, Save hiện các câu lệnh và hỏi trước.
 - **Activity**: các phiên, câu đang chạy, đang chờ gì, transaction mở, chuỗi blocking (ai chặn ai); huỷ query hoặc
   kill phiên sau khi xác nhận.
+- **Thư mục** cho kết nối (theo khách hàng, dự án): các kết nối cùng thư mục nằm chung, thư mục thu gọn được, ô lọc tìm
+  kết nối theo tên, server, database hoặc thư mục.
 - Màu tab theo kết nối. Mật khẩu lưu trong Windows Credential Manager.
+- **Giao diện**: tối, sáng, hoặc theo Windows (tự đổi khi Windows đổi). **Ctrl+lăn chuột** (hoặc Ctrl+= / Ctrl+-) đổi cỡ
+  chữ editor, Ctrl+0 về mặc định.
 
 </details>
 
@@ -236,6 +269,8 @@ Giữ schema của một database trong một thư mục — thường là repos
 | Ctrl+N / Ctrl+W / Ctrl+Tab | Tab mới / đóng / chuyển |
 | Ctrl+Shift+T | Mở lại tab vừa đóng |
 | Ctrl+R | Ẩn/hiện kết quả |
+| Ctrl+lăn chuột, Ctrl+= / Ctrl+- / Ctrl+0 | Cỡ chữ editor |
+| Ctrl+click giá trị khoá ngoại | Mở dòng được tham chiếu |
 
 </details>
 
@@ -360,8 +395,12 @@ Có. **Options → Snippets → Import snippets…** đọc một thư mục cá
   chưa cung cấp cho batch khác).
 - So sánh schema coi đổi tên cột/bảng là xoá + thêm; identity / cột computed khác nhau phải sửa tay. Source control cũng
   vậy: dùng `Scripts/pre-deploy.sql` để đổi tên hoặc chuyển dữ liệu.
+- So sánh schema không tạo kiểu do người dùng định nghĩa (enum và domain của PostgreSQL, alias type và table type của SQL
+  Server): hãy tạo chúng ở database đích trước.
 - Source control giữ schema, không giữ dữ liệu trong bảng, và so sánh theo snapshot: hãy sửa database rồi commit, đừng sửa
   tay các file `.sql`.
+- SQLCMD: chỉ có `:setvar` và `:on error` (`:r`, `:connect` và các lệnh khác bị từ chối).
+- Find value đọc toàn bộ mọi cột chữ của mọi bảng: hãy chạy khi database chịu được tải đó.
 - Hiện chỉ chạy trên Windows.
 - Chưa hỗ trợ kết nối named pipe (LocalDB); dùng TCP.
 - Dữ liệu test chưa đọc ràng buộc CHECK và UNIQUE: giá trị có thể vi phạm điều kiện CHECK hoặc bị trùng ở cột UNIQUE (mã

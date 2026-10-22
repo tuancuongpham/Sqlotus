@@ -8,10 +8,11 @@
 use std::collections::HashMap;
 
 use crate::Dialect;
-use crate::analysis::{Diagnostic, Severity, diag, resolve, word};
+use crate::analysis::{Diagnostic, Severity, diag, resolve};
 use crate::catalog::{Catalog, Column};
-use crate::lexer::{Token, TokenKind};
+use crate::lexer::{Token, TokenKind, matching_paren, word};
 use crate::scope::Scope;
+use crate::sqltype::SqlType;
 
 const COMPARISON: &[&str] = &["=", "<>", "!=", "<", ">", "<=", ">="];
 
@@ -20,50 +21,6 @@ fn is_comparison(t: Option<&Token<'_>>) -> bool {
         (t.kind == TokenKind::Operator && COMPARISON.contains(&t.text))
             || (t.kind == TokenKind::Word && matches!(t.upper().as_str(), "LIKE" | "BETWEEN" | "IN"))
     })
-}
-
-/// Lower-case type name without length / precision: `varchar(50)` → `varchar`.
-fn base_type(data_type: &str) -> String {
-    data_type.split('(').next().unwrap_or("").trim().to_ascii_lowercase()
-}
-
-fn is_text_type(t: &str) -> bool {
-    matches!(
-        t,
-        "char"
-            | "varchar"
-            | "nchar"
-            | "nvarchar"
-            | "text"
-            | "ntext"
-            | "character varying"
-            | "character"
-            | "tinytext"
-            | "mediumtext"
-            | "longtext"
-    )
-}
-
-fn is_non_unicode_text(t: &str) -> bool {
-    matches!(t, "char" | "varchar" | "text")
-}
-
-/// Index of the `)` matching the `(` at `open`.
-fn matching_paren(t: &[Token<'_>], open: usize) -> Option<usize> {
-    let mut depth = 0i32;
-    for (k, x) in t.iter().enumerate().skip(open) {
-        match x.kind {
-            TokenKind::LParen => depth += 1,
-            TokenKind::RParen => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(k);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
 }
 
 /// Whether token `i` sits in a WHERE, ON or HAVING condition (not in a
@@ -162,6 +119,36 @@ pub(crate) fn not_in_subquery(t: &[Token<'_>], scope: &Scope, cat: Option<&Catal
             .and_then(|c| column_ref(t, k, scope, c))
             .map(|(col, _)| col.nullable);
         if nullable == Some(false) {
+            continue;
+        }
+        // the subquery keeps its NULLs out itself: ... WHERE col IS NOT NULL
+        let column = match (t.get(k), t.get(k + 1), t.get(k + 2)) {
+            (Some(_), Some(dot), Some(c)) if dot.kind == TokenKind::Dot && c.is_name() => Some(c.ident_value()),
+            (Some(c), _, _) if c.is_name() => Some(c.ident_value()),
+            _ => None,
+        };
+        let mut depth = 0i32;
+        let end = t[i + 2..]
+            .iter()
+            .position(|x| {
+                match x.kind {
+                    TokenKind::LParen => depth += 1,
+                    TokenKind::RParen => depth -= 1,
+                    _ => {}
+                }
+                depth == 0
+            })
+            .map_or(t.len(), |p| i + 2 + p);
+        let filtered = column.is_some_and(|col| {
+            (k..end.saturating_sub(3)).any(|j| {
+                t[j].is_name()
+                    && t[j].ident_value().eq_ignore_ascii_case(&col)
+                    && word(t.get(j + 1)) == "IS"
+                    && word(t.get(j + 2)) == "NOT"
+                    && word(t.get(j + 3)) == "NULL"
+            })
+        });
+        if filtered {
             continue;
         }
         let (severity, why) = match nullable {
@@ -296,11 +283,12 @@ pub(crate) fn implicit_conversions(
             let (Some((col, _)), Some(value)) = (col, t.get(value_idx)) else {
                 continue;
             };
-            let ty = base_type(&col.data_type);
+            let col_type = SqlType::parse(&col.data_type);
+            let ty = col_type.base();
             let message = match value.kind {
                 TokenKind::String
                     if dialect == Dialect::MsSql
-                        && is_non_unicode_text(&ty)
+                        && col_type.is_narrow_text()
                         && (value.text.starts_with('N') || value.text.starts_with('n'))
                         && value.text.is_ascii() =>
                 {
@@ -309,22 +297,23 @@ pub(crate) fn implicit_conversions(
                         col.name
                     )
                 }
-                TokenKind::Variable if dialect == Dialect::MsSql && is_non_unicode_text(&ty) => {
+                TokenKind::Variable if dialect == Dialect::MsSql && col_type.is_narrow_text() => {
                     let Some(vt) = variable_types.get(&value.text.to_lowercase()) else {
                         continue;
                     };
-                    if !matches!(base_type(vt).as_str(), "nvarchar" | "nchar") {
+                    let var_type = SqlType::parse(vt);
+                    if !matches!(var_type.base(), "nvarchar" | "nchar") {
                         continue;
                     }
                     format!(
                         "{} is {}, so {ty} column {} is converted for every row and its index cannot be used; declare {} as {ty}",
                         value.text,
-                        base_type(vt),
+                        var_type.base(),
                         col.name,
                         value.text
                     )
                 }
-                TokenKind::Number if is_text_type(&ty) => format!(
+                TokenKind::Number if col_type.is_text() => format!(
                     "Comparing {ty} column {} with a number converts every value of it (no index seek{}); quote the value: '{}'",
                     col.name,
                     if dialect == Dialect::MsSql {
@@ -415,6 +404,21 @@ mod tests {
             .is_empty()
         );
         assert!(codes("SELECT Id FROM dbo.Customers WHERE Id NOT IN (1, 2)", ms).is_empty());
+        // a subquery that keeps NULLs out itself is safe
+        for safe in [
+            "SELECT a FROM t WHERE a NOT IN (SELECT b FROM u WHERE b IS NOT NULL)",
+            "SELECT a FROM t WHERE a NOT IN (SELECT u.b FROM u WHERE x = 1 AND u.b IS NOT NULL)",
+        ] {
+            assert!(codes(safe, ms).is_empty(), "{safe}");
+        }
+        assert_eq!(
+            codes(
+                "SELECT a FROM t WHERE a NOT IN (SELECT b FROM u WHERE c IS NOT NULL)",
+                ms
+            )
+            .len(),
+            1
+        );
         // unknown column without a catalog: still a hint
         let d = diagnostics("SELECT a FROM t WHERE a NOT IN (SELECT b FROM u)", ms, None);
         assert!(d.iter().any(|d| d.code == "SQ009"), "{d:?}");

@@ -17,6 +17,8 @@ export interface ConnectionConfig {
   manualCommit?: boolean;
   /** Groups connections; production asks before every change. */
   environment?: Environment | null;
+  /** A folder of the user's in the connection list. */
+  group?: string | null;
 }
 
 export type Environment = "dev" | "test" | "staging" | "prod";
@@ -65,8 +67,10 @@ export interface ExecuteResult {
   /** Rows changed by INSERT/UPDATE/DELETE/MERGE, when reported. */
   rowsAffected?: number | null;
   /** Sqlotus kept the changes in a transaction and needs a decision. */
-  pendingCommit?: { rows: number | null; limit: number; failed: boolean } | null;
+  pendingCommit?: { rows: number | null; limit: number; failed: boolean; calls?: string[] } | null;
   notice?: string | null;
+  /** The script created, altered or dropped objects: loaded objects are stale. */
+  schemaChanged?: boolean;
 }
 
 export interface PlanNode {
@@ -211,11 +215,34 @@ export interface CompletionOptions {
   maxItems: number;
 }
 
+export type Theme = "dark" | "light" | "system";
+
+export interface EditorSettings {
+  fontSize: number;
+  autosaveSeconds: number;
+  maxRows: number;
+  /** "system" follows the Windows light/dark setting. */
+  theme: Theme;
+  /** Execute (F5) runs the statement at the cursor when nothing is selected. */
+  f5RunsStatement?: boolean;
+  /** Query history older than this many days is deleted; 0 keeps it all. */
+  historyDays?: number;
+}
+
+export interface SafetySettings {
+  confirmRowsOver: number;
+  promptVariables: boolean;
+  /** Scripts that call procedures run in a transaction; ask before committing. */
+  confirmProcedureCalls?: boolean;
+  /** CSV files: a ' before text starting with = + - @, so spreadsheets do not run it. */
+  csvFormulaGuard?: boolean;
+}
+
 export interface Settings {
   format: FormatOptions;
   completion: CompletionOptions;
-  editor: { fontSize: number; autosaveSeconds: number; maxRows: number; theme: "dark" | "light" };
-  safety: { confirmRowsOver: number; promptVariables: boolean };
+  editor: EditorSettings;
+  safety: SafetySettings;
   /** Code analysis rules that are switched off. */
   analysis?: { disabled: string[] };
 }
@@ -356,6 +383,79 @@ export interface EditContext {
   production?: { name: string; host: string };
   /** Run the query again after saving. */
   onSaved: () => void;
+  /** Open a query in a new tab of the same database and run it. */
+  openQuery: (title: string, sql: string) => void;
+}
+
+/** A foreign key a result row can be followed along. */
+export interface RowLink {
+  direction: "references" | "referencedBy";
+  constraint: string;
+  /** Result columns holding the key's values, in key order. */
+  columns: number[];
+  schema: string;
+  table: string;
+  targetColumns: string[];
+}
+
+export interface DataScript {
+  script: string;
+  rows: number;
+  truncated: boolean;
+  problems: string[];
+}
+
+export interface FindValueOptions {
+  value: string;
+  mode: "contains" | "startsWith" | "exact";
+  schema: string;
+  ignoreCase: boolean;
+}
+
+export interface BackupInfo {
+  backupDir: string;
+  dataDir: string;
+  logDir: string;
+  express: boolean;
+  recoveryModel: string;
+}
+
+export interface BackupOptions {
+  database: string;
+  kind: "full" | "differential" | "log";
+  path: string;
+  copyOnly: boolean;
+  compression: boolean;
+  checksum: boolean;
+  overwrite: boolean;
+  verify: boolean;
+}
+
+export interface BackupFile {
+  logicalName: string;
+  physicalName: string;
+  /** D data, L log, F full-text catalog, S FILESTREAM. */
+  kind: string;
+}
+
+export interface RestoreMove {
+  logicalName: string;
+  path: string;
+}
+
+export interface RestoreOptions {
+  path: string;
+  fileNumber: number;
+  database: string;
+  moves: RestoreMove[];
+  replace: boolean;
+  recovery: boolean;
+  closeConnections: boolean;
+}
+
+export interface BackupContents {
+  sets: { position: number; databaseName: string; kind: string; finished: string }[];
+  files: BackupFile[];
 }
 
 export interface Diagnostic {

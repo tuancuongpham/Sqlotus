@@ -1,6 +1,7 @@
 //! Database access: connecting, running batches with text results, and
 //! loading the metadata catalog used by completion and search.
 
+mod endpoint;
 mod metadata;
 mod mssql;
 mod mysql;
@@ -15,6 +16,7 @@ use sqlotus_core::catalog::ObjectKind;
 use sqlotus_core::plan::StatementPlan;
 use sqlotus_core::variables::VariableValue;
 
+pub use endpoint::Endpoint;
 pub use metadata::{CatalogSnapshot, load_catalog};
 pub use schema::load_schema;
 pub use sqlotus_core::catalog::ObjectDefinition;
@@ -48,7 +50,8 @@ pub struct ConnectionConfig {
     pub id: String,
     pub name: String,
     pub dialect: Dialect,
-    /// Host name. SQL Server also accepts `host\instance` and `host,port`.
+    /// Host name as typed: SQL Server also accepts `host\instance` and
+    /// `host,port`, PostgreSQL and MySQL `host:port` (see [`Endpoint`]).
     pub host: String,
     pub port: Option<u16>,
     pub database: Option<String>,
@@ -68,9 +71,20 @@ pub struct ConnectionConfig {
     /// `dev`, `test`, `staging` or `prod`: groups connections and sets
     /// safety defaults (production asks before every change).
     pub environment: Option<String>,
+    /// A folder of the user's in the connection list (e.g. a customer).
+    pub group: Option<String>,
 }
 
 impl ConnectionConfig {
+    /// Where to connect: the host field read for this server, with the Port
+    /// field winning over a port typed in the host.
+    pub fn endpoint(&self) -> Endpoint {
+        let mut e = Endpoint::parse(self.dialect, &self.host);
+        e.port = self.port.or(e.port);
+        e
+    }
+
+    /// The server's standard port, used when none is given.
     pub fn default_port(&self) -> u16 {
         match self.dialect {
             Dialect::MsSql => 1433,
@@ -158,6 +172,16 @@ impl BatchOutput {
             kind: MessageKind::Error,
             text: text.into(),
         });
+    }
+
+    /// The error messages, one per line.
+    pub fn errors(&self) -> String {
+        self.messages
+            .iter()
+            .filter(|m| m.kind == MessageKind::Error)
+            .map(|m| m.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 
@@ -270,6 +294,33 @@ impl Connection {
         }
     }
 
+    /// Run one INSERT, UPDATE or DELETE and return how many rows it changed
+    /// itself: saving an edited result row needs exactly one. SQL Server's
+    /// counts take in the rows its triggers change (an AFTER UPDATE trigger
+    /// that matched nothing can still report a row), so there the
+    /// statement's own `@@ROWCOUNT` is read.
+    pub async fn rows_changed(&mut self, sql: &str, limits: &Limits) -> std::result::Result<u64, String> {
+        if self.dialect() != Dialect::MsSql {
+            let out = self.execute(sql, limits).await;
+            return if out.failed {
+                Err(out.errors())
+            } else {
+                Ok(out.rows_affected)
+            };
+        }
+        let checked = format!("{};\nSELECT @@ROWCOUNT;", sql.trim_end().trim_end_matches(';'));
+        let out = self.execute(&checked, limits).await;
+        if out.failed {
+            return Err(out.errors());
+        }
+        out.result_sets
+            .last()
+            .and_then(|rs| rs.rows.first())
+            .and_then(|row| row.first().cloned().flatten())
+            .and_then(|n| n.parse().ok())
+            .ok_or_else(|| "the server did not say how many rows changed".to_string())
+    }
+
     /// The statement that starts a transaction in this dialect.
     pub fn begin_statement(&self) -> &'static str {
         match self.dialect() {
@@ -328,6 +379,38 @@ impl Connection {
             .unwrap_or(0))
     }
 
+    /// Whether the open transaction has written anything: `None` when the
+    /// server does not tell (no permission to look, no transaction, a failed
+    /// transaction).
+    pub async fn transaction_wrote(&mut self) -> Option<bool> {
+        let sql = match self.dialect() {
+            // log records this session's transaction wrote outside tempdb
+            // (reading them needs VIEW SERVER STATE)
+            Dialect::MsSql => {
+                "SELECT CASE WHEN EXISTS (SELECT 1 FROM sys.dm_tran_session_transactions st \
+                 JOIN sys.dm_tran_database_transactions dt ON dt.transaction_id = st.transaction_id \
+                 WHERE st.session_id = @@SPID AND dt.database_id <> 2 AND dt.database_transaction_log_record_count > 0) \
+                 THEN 1 ELSE 0 END"
+            }
+            // a transaction gets an id when it first writes
+            Dialect::Postgres => "SELECT CASE WHEN txid_current_if_assigned() IS NULL THEN 0 ELSE 1 END",
+            // rows InnoDB changed in this connection's transaction (needs
+            // PROCESS); the table is a copy refreshed at most every 0.1 s, so
+            // wait for a copy made after the changes
+            Dialect::MySql => {
+                self.query_strings("DO SLEEP(0.11)").await.ok()?;
+                "SELECT CASE WHEN COALESCE(SUM(trx_rows_modified), 0) > 0 THEN 1 ELSE 0 END \
+                 FROM information_schema.innodb_trx WHERE trx_mysql_thread_id = CONNECTION_ID()"
+            }
+        };
+        let rows = self.query_strings(sql).await.ok()?;
+        match rows.first()?.first()?.as_deref()? {
+            "1" => Some(true),
+            "0" => Some(false),
+            _ => None,
+        }
+    }
+
     /// Estimated execution plans of the statements in `script` (nothing is
     /// executed).
     pub async fn explain(&mut self, script: &str) -> ExplainOutput {
@@ -356,8 +439,16 @@ impl Connection {
                 out.errors.extend(errors(&on));
                 return out;
             }
-            for batch in sqlotus_core::statements::split_batches(script, dialect) {
-                let o = self.execute(batch.span.text(script), &limits).await;
+            let batches = match script_batches(script, dialect) {
+                Ok((b, _)) => b,
+                Err(e) => {
+                    out.errors.push(e);
+                    let _ = self.execute("SET SHOWPLAN_XML OFF", &limits).await;
+                    return out;
+                }
+            };
+            for batch in batches {
+                let o = self.execute(&batch.text, &limits).await;
                 for xml in first_text(&o) {
                     match sqlotus_core::plan::parse_showplan_xml(&xml) {
                         Ok(p) => out.plans.extend(p),
@@ -485,9 +576,42 @@ pub struct ScriptBatch {
 
 /// Run a whole script: T-SQL is split on `GO` (honouring `GO n`); other
 /// dialects run as a single multi-statement batch. Later batches still run
-/// after a failed one.
+/// after a failed one, unless a T-SQL script says `:on error exit`.
 pub async fn execute_script(conn: &mut Connection, script: &str, limits: &Limits) -> Vec<ScriptBatch> {
     execute_script_with(conn, script, limits, &ScriptOptions::default()).await
+}
+
+/// One batch of a script as the server receives it.
+struct RunBatch {
+    /// Byte offsets in the script.
+    start: usize,
+    end: usize,
+    text: String,
+    repeat: u32,
+}
+
+/// The batches of a script and whether to stop at the first failed one.
+/// T-SQL SQLCMD command lines (`:setvar`, `:on error`) are taken out and
+/// `$(variables)` replaced; a command Sqlotus cannot run is an error.
+fn script_batches(script: &str, dialect: Dialect) -> std::result::Result<(Vec<RunBatch>, bool), String> {
+    let sqlcmd = match dialect {
+        Dialect::MsSql => sqlotus_core::sqlcmd::Sqlcmd::parse(script)?,
+        _ => None,
+    };
+    let source = sqlcmd.as_ref().map_or(script, |c| c.text.as_str());
+    let batches = sqlotus_core::statements::split_batches(source, dialect)
+        .into_iter()
+        .map(|b| RunBatch {
+            start: b.span.start,
+            end: b.span.end,
+            text: match &sqlcmd {
+                Some(c) => c.expand(b.span.start..b.span.end),
+                None => b.span.text(script).to_string(),
+            },
+            repeat: b.repeat,
+        })
+        .collect();
+    Ok((batches, sqlcmd.is_some_and(|c| c.stop_on_error)))
 }
 
 /// [`execute_script`] with variable values and/or row counting.
@@ -498,22 +622,38 @@ pub async fn execute_script_with(
     options: &ScriptOptions,
 ) -> Vec<ScriptBatch> {
     let dialect = conn.dialect();
+    let (batches, stop_on_error) = match script_batches(script, dialect) {
+        Ok(b) => b,
+        Err(e) => {
+            // nothing runs when a SQLCMD line cannot be honoured
+            let mut output = BatchOutput::default();
+            output.error(e);
+            return vec![ScriptBatch {
+                start: 0,
+                end: script.len(),
+                output,
+            }];
+        }
+    };
     let mut results = Vec::new();
-    for batch in sqlotus_core::statements::split_batches(script, dialect) {
-        let original = batch.span.text(script);
-        let prelude = sqlotus_core::variables::prelude(original, dialect, &options.variables);
-        let text = format!("{prelude}{original}");
+    for batch in batches {
+        let prelude = sqlotus_core::variables::prelude(&batch.text, dialect, &options.variables);
+        let text = format!("{prelude}{}", batch.text);
         for _ in 0..batch.repeat {
             let output = if options.counted {
                 conn.execute_counted(&text, limits).await
             } else {
                 conn.execute(&text, limits).await
             };
+            let failed = output.failed;
             results.push(ScriptBatch {
-                start: batch.span.start,
-                end: batch.span.end,
+                start: batch.start,
+                end: batch.end,
                 output,
             });
+            if failed && stop_on_error {
+                return results;
+            }
         }
     }
     results

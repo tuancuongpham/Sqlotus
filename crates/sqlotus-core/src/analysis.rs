@@ -1,15 +1,16 @@
-//! Editor intelligence beyond completion: code-analysis diagnostics,
-//! execution warnings, hover text, parameter hints and "what object is
-//! under the cursor".
+//! Editor intelligence beyond completion: code-analysis diagnostics, hover
+//! text, parameter hints and "what object is under the cursor". The checks
+//! made before a script runs are in [`crate::safety`].
 
 use std::collections::{HashMap, HashSet};
 
 use serde::Serialize;
 
 use crate::catalog::{Catalog, DbObject, ObjectDefinition, ObjectKind};
-use crate::lexer::{Token, TokenKind, tokenize};
+use crate::keywords::STATEMENT_KEYWORDS;
+use crate::lexer::{Token, TokenKind, significant, tokenize, word};
 use crate::scope::{Scope, TableRef, analyze_statement, document_symbols};
-use crate::statements::{split_batches, split_statements};
+use crate::statements::{Span, split_batches, split_statements, tokens_in};
 use crate::{Dialect, keywords};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -53,302 +54,6 @@ pub(crate) fn diag(t: &Token<'_>, severity: Severity, code: &str, message: Strin
         message,
         fix: None,
     }
-}
-
-pub(crate) fn sig<'a>(tokens: &[Token<'a>]) -> Vec<Token<'a>> {
-    tokens.iter().filter(|t| !t.is_trivia()).copied().collect()
-}
-
-pub(crate) fn word(t: Option<&Token<'_>>) -> String {
-    t.filter(|t| t.kind == TokenKind::Word)
-        .map(|t| t.upper())
-        .unwrap_or_default()
-}
-
-/// Statement keywords that end the reach of a preceding UPDATE/DELETE.
-pub(crate) const STATEMENT_KEYWORDS: &[&str] = &[
-    "SELECT", "INSERT", "UPDATE", "DELETE", "MERGE", "IF", "WHILE", "DECLARE", "SET", "EXEC", "EXECUTE", "BEGIN",
-    "END", "RETURN", "PRINT", "CREATE", "ALTER", "DROP", "TRUNCATE", "GO",
-];
-
-/// UPDATE / DELETE statements (index of the keyword) with no WHERE clause.
-fn unfiltered_modifications(t: &[Token<'_>]) -> Vec<usize> {
-    let mut found = Vec::new();
-    for (i, tok) in t.iter().enumerate() {
-        let u = word(Some(tok));
-        if u != "UPDATE" && u != "DELETE" {
-            continue;
-        }
-        let prev = if i > 0 { word(t.get(i - 1)) } else { String::new() };
-        let prev_kind = i.checked_sub(1).map(|p| t[p].kind);
-        // ON DELETE CASCADE, AFTER UPDATE, GRANT DELETE, UPDATE(col), MERGE ... THEN DELETE
-        if matches!(
-            prev.as_str(),
-            "ON" | "OF" | "AFTER" | "FOR" | "INSTEAD" | "GRANT" | "DENY" | "REVOKE" | "THEN" | "KEY"
-        ) || prev_kind == Some(TokenKind::Comma)
-            || prev_kind == Some(TokenKind::LParen)
-            || t.get(i + 1).is_some_and(|n| n.kind == TokenKind::LParen)
-        {
-            continue;
-        }
-        let mut depth = 0i32;
-        let mut has_where = false;
-        for (k, n) in t.iter().enumerate().skip(i + 1) {
-            match n.kind {
-                TokenKind::LParen => depth += 1,
-                TokenKind::RParen => depth -= 1,
-                TokenKind::Semicolon if depth <= 0 => break,
-                TokenKind::Word if depth == 0 => {
-                    let w = n.upper();
-                    if w == "WHERE" || w == "CURRENT" {
-                        has_where = true;
-                        break;
-                    }
-                    // a nested SELECT in UPDATE ... FROM (SELECT ...) stays inside parens;
-                    // at depth 0 a new statement keyword ends this one (SET belongs to UPDATE)
-                    let ends = STATEMENT_KEYWORDS.contains(&w.as_str())
-                        && !(w == "SET" && u == "UPDATE")
-                        && !(w == "SELECT" && k > 0 && t[k - 1].kind == TokenKind::LParen);
-                    if ends {
-                        break;
-                    }
-                }
-                _ => {}
-            }
-            if depth < 0 {
-                break;
-            }
-        }
-        if !has_where {
-            found.push(i);
-        }
-    }
-    found
-}
-
-/// Statements that would change data or schema, as `KEYWORD target`
-/// strings — used to enforce read-only connections.
-pub fn modifying_statements(sql: &str, dialect: Dialect) -> Vec<String> {
-    const MODIFYING: &[&str] = &[
-        "INSERT", "UPDATE", "DELETE", "MERGE", "TRUNCATE", "DROP", "ALTER", "CREATE", "GRANT", "REVOKE", "DENY",
-        "RENAME", "REPLACE", "UPSERT",
-    ];
-    let tokens = tokenize(sql, dialect);
-    let t = sig(&tokens);
-    let mut out = Vec::new();
-    for (i, tok) in t.iter().enumerate() {
-        let u = word(Some(tok));
-        let prev = if i > 0 { word(t.get(i - 1)) } else { String::new() };
-        let prev_kind = i.checked_sub(1).map(|p| t[p].kind);
-        // keywords used as parts of other statements, not statements themselves
-        let part_of_other = matches!(
-            prev.as_str(),
-            "ON" | "OF" | "AFTER" | "FOR" | "INSTEAD" | "GRANT" | "DENY" | "REVOKE" | "KEY"
-        ) || matches!(prev_kind, Some(TokenKind::Dot | TokenKind::Comma | TokenKind::LParen))
-            || t.get(i + 1)
-                .is_some_and(|n| n.kind == TokenKind::LParen && u != "INSERT");
-        if MODIFYING.contains(&u.as_str()) && !part_of_other && !(u == "REPLACE" && dialect != Dialect::MySql) {
-            out.push(format!("{u} {}", statement_target(&t[i + 1..])).trim().to_string());
-        }
-        // KILL / SHUTDOWN reach other sessions; only as a statement, not a column named kill
-        let statement_start = i == 0 || t[i - 1].kind == TokenKind::Semicolon || prev == "GO";
-        if statement_start && (u == "KILL" || (u == "SHUTDOWN" && dialect == Dialect::MsSql)) {
-            out.push(u.clone());
-        }
-        // SELECT ... INTO new_table creates a table
-        if u == "INTO" && prev != "INSERT" && prev != "MERGE" && t[..i].iter().any(|x| word(Some(x)) == "SELECT") {
-            out.push("SELECT INTO".into());
-        }
-    }
-    out
-}
-
-/// Procedure calls (`EXEC p`, `EXECUTE p`, `CALL p`): they may change data
-/// without any modifying keyword in the script itself.
-pub fn routine_calls(sql: &str, dialect: Dialect) -> Vec<String> {
-    let tokens = tokenize(sql, dialect);
-    let t = sig(&tokens);
-    let mut out = Vec::new();
-    for (i, tok) in t.iter().enumerate() {
-        let u = word(Some(tok));
-        if !matches!(u.as_str(), "EXEC" | "EXECUTE" | "CALL") {
-            continue;
-        }
-        let prev = if i > 0 { word(t.get(i - 1)) } else { String::new() };
-        let next = word(t.get(i + 1));
-        // GRANT EXECUTE ON, WITH EXECUTE AS, EXECUTE AS USER, a column named "call"
-        let not_a_call = matches!(prev.as_str(), "GRANT" | "DENY" | "REVOKE" | "WITH" | ",")
-            || next == "AS"
-            || next == "ON"
-            || i.checked_sub(1).is_some_and(|p| t[p].kind == TokenKind::Dot)
-            || t.get(i + 1).is_none_or(|n| n.kind == TokenKind::Semicolon);
-        if !not_a_call {
-            out.push(format!("{u} {}", statement_target(&t[i + 1..])).trim().to_string());
-        }
-    }
-    out
-}
-
-/// Whether the script manages transactions itself (BEGIN TRAN, COMMIT,
-/// ROLLBACK, SAVEPOINT, autocommit settings, ...).
-pub fn has_transaction_control(sql: &str, dialect: Dialect) -> bool {
-    let tokens = tokenize(sql, dialect);
-    let t = sig(&tokens);
-    t.iter().enumerate().any(|(i, tok)| {
-        let next = word(t.get(i + 1));
-        match word(Some(tok)).as_str() {
-            "COMMIT" | "ROLLBACK" | "SAVEPOINT" => true,
-            "BEGIN" => {
-                matches!(next.as_str(), "TRAN" | "TRANSACTION" | "DISTRIBUTED" | "WORK")
-                    || (dialect != Dialect::MsSql && t.get(i + 1).is_none_or(|n| n.kind == TokenKind::Semicolon))
-            }
-            "START" => next == "TRANSACTION",
-            "SAVE" => matches!(next.as_str(), "TRAN" | "TRANSACTION"),
-            "SET" => matches!(next.as_str(), "IMPLICIT_TRANSACTIONS" | "AUTOCOMMIT" | "XACT_ABORT"),
-            _ => false,
-        }
-    })
-}
-
-/// Whether every change in the script is a row change (INSERT, UPDATE,
-/// DELETE, MERGE) — no DDL, which some servers commit implicitly — and the
-/// script does not manage transactions itself. Such scripts can run inside a
-/// transaction that Sqlotus commits or rolls back.
-pub fn row_changes_only(sql: &str, dialect: Dialect) -> bool {
-    let changes = modifying_statements(sql, dialect);
-    !changes.is_empty()
-        && changes.iter().all(|c| {
-            matches!(
-                c.split(' ').next().unwrap_or(""),
-                "INSERT" | "UPDATE" | "DELETE" | "MERGE" | "REPLACE" | "UPSERT"
-            )
-        })
-        && !has_transaction_control(sql, dialect)
-}
-
-/// The words naming what a statement changes, e.g. `FROM dbo.Orders` or
-/// `TABLE [Sales].[Archive]`: leading keywords plus one qualified name.
-fn statement_target(rest: &[Token<'_>]) -> String {
-    const LEAD: &[&str] = &[
-        "FROM",
-        "INTO",
-        "TOP",
-        "TABLE",
-        "VIEW",
-        "PROCEDURE",
-        "PROC",
-        "FUNCTION",
-        "TRIGGER",
-        "INDEX",
-        "DATABASE",
-        "SCHEMA",
-        "LOGIN",
-        "USER",
-        "ROLE",
-        "SEQUENCE",
-        "TYPE",
-        "SYNONYM",
-        "OR",
-        "UNIQUE",
-        "CLUSTERED",
-        "NONCLUSTERED",
-        "IF",
-        "EXISTS",
-        "NOT",
-        "TEMPORARY",
-        "TEMP",
-    ];
-    let mut words: Vec<String> = Vec::new();
-    let mut name = String::new();
-    for x in rest {
-        if x.kind == TokenKind::Dot && !name.is_empty() {
-            name.push('.');
-        } else if x.is_name() && (name.is_empty() || name.ends_with('.')) {
-            if name.is_empty() && x.kind == TokenKind::Word && LEAD.contains(&x.upper().as_str()) {
-                words.push(x.upper());
-            } else {
-                name.push_str(x.text);
-            }
-        } else {
-            break;
-        }
-    }
-    words.push(name);
-    words.join(" ").trim().to_string()
-}
-
-/// Whether the statement these tokens belong to is an ALTER TABLE.
-fn in_alter_table(before: &[Token<'_>]) -> bool {
-    let start = before
-        .iter()
-        .rposition(|x| x.kind == TokenKind::Semicolon)
-        .map_or(0, |p| p + 1);
-    let stmt = &before[start..];
-    stmt.windows(2)
-        .any(|w| word(Some(&w[0])) == "ALTER" && word(Some(&w[1])) == "TABLE")
-}
-
-/// Warnings to confirm before executing `sql`: UPDATE/DELETE without WHERE,
-/// TRUNCATE, DROP TABLE/DATABASE/SCHEMA/COLUMN, and statements that reach
-/// other sessions (ROLLBACK IMMEDIATE, SET OFFLINE, KILL, SHUTDOWN).
-pub fn execution_warnings(sql: &str, dialect: Dialect) -> Vec<String> {
-    let tokens = tokenize(sql, dialect);
-    let t = sig(&tokens);
-    let mut out = Vec::new();
-    for i in unfiltered_modifications(&t) {
-        let target = t[i + 1..]
-            .iter()
-            .take_while(|x| x.is_name() || x.kind == TokenKind::Dot || x.upper() == "FROM" || x.upper() == "TOP")
-            .filter(|x| x.is_name() && x.upper() != "FROM")
-            .map(|x| x.text)
-            .collect::<Vec<_>>()
-            .join(".");
-        out.push(format!(
-            "{} {} has no WHERE clause and will affect every row.",
-            t[i].upper(),
-            target
-        ));
-    }
-    for (i, tok) in t.iter().enumerate() {
-        let u = word(Some(tok));
-        let next = word(t.get(i + 1));
-        let prev = if i > 0 { word(t.get(i - 1)) } else { String::new() };
-        // `TRUNCATE t` is valid in PostgreSQL and MySQL; `TRUNCATE(x, 2)` is a MySQL function
-        let next_is_name = t.get(i + 1).is_some_and(|n| n.is_name());
-        let call = t.get(i + 1).is_some_and(|n| n.kind == TokenKind::LParen);
-        if u == "TRUNCATE" && !call && (next == "TABLE" || next_is_name) {
-            out.push("TRUNCATE TABLE removes every row.".into());
-        }
-        if u == "DROP" && matches!(next.as_str(), "TABLE" | "DATABASE" | "SCHEMA") && prev != "IF" {
-            out.push(format!("DROP {next} permanently removes the object and its data."));
-        }
-        // ALTER TABLE ... DROP COLUMN c, or MySQL's ALTER TABLE ... DROP c
-        let mysql_short = dialect == Dialect::MySql
-            && next_is_name
-            && !matches!(
-                next.as_str(),
-                "CONSTRAINT" | "INDEX" | "KEY" | "PRIMARY" | "FOREIGN" | "CHECK" | "PARTITION" | "DEFAULT" | "TRIGGER"
-            )
-            && in_alter_table(&t[..i]);
-        if u == "DROP" && (next == "COLUMN" || mysql_short) {
-            out.push("DROP COLUMN permanently removes the column and its data.".into());
-        }
-        // statements that reach other people's sessions or the whole server
-        let statement_start = i == 0 || t[i - 1].kind == TokenKind::Semicolon || prev == "GO";
-        if u == "ROLLBACK" && next == "IMMEDIATE" && prev == "WITH" {
-            out.push("WITH ROLLBACK IMMEDIATE disconnects other users and rolls back their open transactions.".into());
-        }
-        if u == "OFFLINE" && prev == "SET" {
-            out.push("SET OFFLINE takes the database offline for everyone.".into());
-        }
-        if u == "KILL" && statement_start && t.get(i + 1).is_some_and(|n| n.kind == TokenKind::Number || n.is_name()) {
-            out.push("KILL ends another session and rolls back its open transaction.".into());
-        }
-        if u == "SHUTDOWN" && statement_start && dialect == Dialect::MsSql {
-            out.push("SHUTDOWN stops the SQL Server instance for everyone.".into());
-        }
-    }
-    out
 }
 
 const SYSTEM_SCHEMAS: &[&str] = &[
@@ -411,7 +116,7 @@ pub(crate) fn resolve<'c>(cat: &'c Catalog, r: &TableRef) -> Option<&'c DbObject
 /// Code analysis for the whole document.
 pub fn diagnostics(src: &str, dialect: Dialect, catalog: Option<&Catalog>) -> Vec<Diagnostic> {
     let tokens = tokenize(src, dialect);
-    let all = sig(&tokens);
+    let all = significant(&tokens);
     let mut out = Vec::new();
     let created = created_objects(&all);
     let catalog = catalog.filter(|c| !c.objects.is_empty());
@@ -422,14 +127,11 @@ pub fn diagnostics(src: &str, dialect: Dialect, catalog: Option<&Catalog>) -> Ve
         .collect();
 
     // per statement
-    for span in split_statements(src, dialect) {
-        let stmt_tokens: Vec<Token<'_>> = tokens
-            .iter()
-            .filter(|t| t.start >= span.start && t.end() <= span.end)
-            .copied()
-            .collect();
-        let t = sig(&stmt_tokens);
-        for i in unfiltered_modifications(&t) {
+    let statements = split_statements(src, dialect);
+    for span in &statements {
+        let stmt_tokens = tokens_in(&tokens, span);
+        let t = significant(stmt_tokens);
+        for i in crate::safety::unfiltered_modifications(&t) {
             out.push(diag(
                 &t[i],
                 Severity::Warning,
@@ -439,7 +141,7 @@ pub fn diagnostics(src: &str, dialect: Dialect, catalog: Option<&Catalog>) -> Ve
         }
         select_star(&t, &mut out);
         null_comparison(&t, &mut out);
-        let scope = analyze_statement(&stmt_tokens, dialect);
+        let scope = analyze_statement(stmt_tokens, dialect);
         crate::rules::not_in_subquery(&t, &scope, catalog, &mut out);
         crate::rules::non_sargable(&t, &scope, catalog, &mut out);
         if let Some(cat) = catalog {
@@ -455,7 +157,7 @@ pub fn diagnostics(src: &str, dialect: Dialect, catalog: Option<&Catalog>) -> Ve
         }
     }
     if dialect != Dialect::Postgres {
-        unused_variables(src, dialect, &tokens, &mut out);
+        unused_variables(src, dialect, &tokens, &statements, &mut out);
     }
     out.sort_by_key(|d| d.start);
     out
@@ -613,12 +315,10 @@ fn deprecated_types(t: &[Token<'_>], out: &mut Vec<Diagnostic>) {
     }
 }
 
-fn unused_variables(src: &str, dialect: Dialect, tokens: &[Token<'_>], out: &mut Vec<Diagnostic>) {
+fn unused_variables(src: &str, dialect: Dialect, tokens: &[Token<'_>], statements: &[Span], out: &mut Vec<Diagnostic>) {
+    let all = significant(tokens);
     for batch in split_batches(src, dialect) {
-        let t: Vec<Token<'_>> = sig(tokens)
-            .into_iter()
-            .filter(|x| x.start >= batch.span.start && x.end() <= batch.span.end)
-            .collect();
+        let t = tokens_in(&all, &batch.span);
         let mut uses: HashMap<String, Vec<usize>> = HashMap::new();
         for (i, x) in t.iter().enumerate() {
             if x.kind == TokenKind::Variable && !x.text.starts_with("@@") {
@@ -629,11 +329,11 @@ fn unused_variables(src: &str, dialect: Dialect, tokens: &[Token<'_>], out: &mut
         for (_, idx) in uses {
             let i = idx[0];
             let prev = if i > 0 { word(t.get(i - 1)) } else { String::new() };
-            let declared = prev == "DECLARE" || (i > 0 && t[i - 1].kind == TokenKind::Comma && in_declare(&t, i));
+            let declared = prev == "DECLARE" || (i > 0 && t[i - 1].kind == TokenKind::Comma && in_declare(t, i));
             let message = if declared {
                 // a DECLAREd variable that is only ever assigned is not used either
-                let assigned = idx[1..].iter().any(|&k| is_assignment(&t, k));
-                if idx[1..].iter().any(|&k| !is_assignment(&t, k)) {
+                let assigned = idx[1..].iter().any(|&k| is_assignment(t, k));
+                if idx[1..].iter().any(|&k| !is_assignment(t, k)) {
                     continue;
                 }
                 if assigned {
@@ -641,7 +341,7 @@ fn unused_variables(src: &str, dialect: Dialect, tokens: &[Token<'_>], out: &mut
                 } else {
                     "is declared but never used"
                 }
-            } else if routine && idx.len() == 1 && is_parameter(&t, i) {
+            } else if routine && idx.len() == 1 && is_parameter(t, i) {
                 // parameters: an assignment may be the point (OUTPUT), so only a parameter that never appears
                 "is declared but never used"
             } else {
@@ -649,7 +349,7 @@ fn unused_variables(src: &str, dialect: Dialect, tokens: &[Token<'_>], out: &mut
             };
             let mut d = diag(&t[i], Severity::Info, "SQ005", format!("{} {message}", t[i].text));
             if declared && idx.len() == 1 {
-                d.fix = remove_declaration(src, dialect, &t, i);
+                d.fix = remove_declaration(src, statements, t, i);
             }
             out.push(d);
         }
@@ -658,16 +358,13 @@ fn unused_variables(src: &str, dialect: Dialect, tokens: &[Token<'_>], out: &mut
 
 /// Remove `DECLARE @v type [= value]` when it declares only `@v` and holds
 /// no other statement; the line goes too when nothing else is on it.
-fn remove_declaration(src: &str, dialect: Dialect, t: &[Token<'_>], i: usize) -> Option<Fix> {
-    let span = split_statements(src, dialect)
-        .into_iter()
-        .find(|s| s.start <= t[i].start && t[i].end() <= s.end)?;
-    let stmt: Vec<&Token<'_>> = t
-        .iter()
-        .filter(|x| x.start >= span.start && x.end() <= span.end)
-        .collect();
+fn remove_declaration(src: &str, statements: &[Span], t: &[Token<'_>], i: usize) -> Option<Fix> {
+    let span = *statements
+        .get(statements.partition_point(|s| s.end < t[i].end()))
+        .filter(|s| s.start <= t[i].start)?;
+    let stmt = tokens_in(t, &span);
     let lone = stmt.len() >= 3
-        && word(stmt.first().copied()) == "DECLARE"
+        && word(stmt.first()) == "DECLARE"
         && stmt[1].start == t[i].start
         && stmt[2..].iter().all(|x| {
             x.kind != TokenKind::Comma
@@ -778,7 +475,10 @@ fn invalid_objects(
     let ctes: HashSet<String> = scope.ctes.iter().map(|c| c.name.to_lowercase()).collect();
     for r in &scope.tables {
         let lname = r.name.to_lowercase();
+        // SQLCMD variables (`$(Schema).Orders`) name an object only when the script runs
+        let sqlcmd = r.name.contains("$(") || r.schema.as_ref().is_some_and(|s| s.contains("$("));
         let skip = r.local
+            || sqlcmd
             || r.name.is_empty()
             || r.via == "SELECT INTO"
             || (r.is_call && r.schema.is_none())
@@ -841,7 +541,7 @@ fn invalid_columns(t: &[Token<'_>], scope: &Scope, cat: &Catalog, out: &mut Vec<
         }
         let col = c.ident_value();
         // the table name itself in `FROM dbo.Orders` style refs is not a column use
-        if c.start == r.name_start {
+        if c.start == r.name_start || col.contains("$(") {
             continue;
         }
         if !obj.columns.iter().any(|x| x.name.eq_ignore_ascii_case(&col)) {
@@ -932,7 +632,7 @@ fn locate<'a>(src: &'a str, offset: usize, dialect: Dialect) -> Option<Located<'
         .copied()
         .collect();
     let scope = analyze_statement(&stmt, dialect);
-    let tokens = sig(&stmt);
+    let tokens = significant(&stmt);
     let idx = tokens
         .iter()
         .position(|t| t.start <= offset && offset <= t.end() && (t.is_name() || t.kind == TokenKind::Variable))?;
@@ -1164,7 +864,7 @@ const BUILTIN_SIGNATURES: &[(&str, &[&str])] = &[
 /// Parameter hints inside `fn(...|` or after `EXEC proc ...|`.
 pub fn signature_help(src: &str, offset: usize, dialect: Dialect, catalog: Option<&Catalog>) -> Option<SignatureInfo> {
     let all = tokenize(src, dialect);
-    let t: Vec<Token<'_>> = sig(&all).into_iter().filter(|x| x.end() <= offset).collect();
+    let t: Vec<Token<'_>> = significant(&all).into_iter().filter(|x| x.end() <= offset).collect();
     // innermost unclosed '('
     let mut depth = 0i32;
     let mut commas = 0usize;
@@ -1305,102 +1005,6 @@ mod tests {
         assert!(codes("UPDATE dbo.Orders SET Total = 0 WHERE Id = 1").is_empty());
         assert!(codes("DELETE o FROM dbo.Orders o WHERE o.Id = 1").is_empty());
         assert!(codes("CREATE TABLE x (a int REFERENCES dbo.Orders(Id) ON DELETE CASCADE)").is_empty());
-        assert_eq!(execution_warnings("delete from dbo.Orders", Dialect::MsSql).len(), 1);
-        assert!(execution_warnings("delete from dbo.Orders where Id = 1", Dialect::MsSql).is_empty());
-        assert_eq!(
-            execution_warnings("TRUNCATE TABLE t; DROP TABLE t", Dialect::MsSql).len(),
-            2
-        );
-        // PostgreSQL / MySQL allow TRUNCATE without TABLE; MySQL's TRUNCATE() is a function
-        assert_eq!(execution_warnings("TRUNCATE orders", Dialect::Postgres).len(), 1);
-        assert_eq!(execution_warnings("truncate orders;", Dialect::MySql).len(), 1);
-        assert!(execution_warnings("SELECT TRUNCATE(total, 0) FROM orders", Dialect::MySql).is_empty());
-        // dropping a column loses its data
-        let w = execution_warnings("ALTER TABLE dbo.Orders DROP COLUMN Total", Dialect::MsSql);
-        assert_eq!(w, vec!["DROP COLUMN permanently removes the column and its data."]);
-        assert_eq!(
-            execution_warnings("ALTER TABLE orders DROP total", Dialect::MySql).len(),
-            1
-        );
-        assert_eq!(
-            execution_warnings("ALTER TABLE orders ADD note text, DROP total", Dialect::MySql).len(),
-            1
-        );
-        assert!(execution_warnings("ALTER TABLE orders DROP CONSTRAINT fk", Dialect::MsSql).is_empty());
-        assert!(execution_warnings("ALTER TABLE orders DROP INDEX ix", Dialect::MySql).is_empty());
-        // statements that reach other sessions or the server
-        let ms = |s: &str| execution_warnings(s, Dialect::MsSql);
-        assert_eq!(
-            ms("ALTER DATABASE Shop SET SINGLE_USER WITH ROLLBACK IMMEDIATE;").len(),
-            1
-        );
-        assert_eq!(ms("ALTER DATABASE Shop SET OFFLINE").len(), 1);
-        assert_eq!(ms("KILL 53").len(), 1);
-        assert_eq!(execution_warnings("KILL QUERY 12", Dialect::MySql).len(), 1);
-        assert_eq!(
-            ms("SELECT 1;
-SHUTDOWN WITH NOWAIT")
-            .len(),
-            1
-        );
-        assert!(ms("ALTER DATABASE Shop SET MULTI_USER").is_empty());
-        assert!(ms("SELECT kill, shutdown FROM t").is_empty());
-        assert!(ms("ROLLBACK TRANSACTION").is_empty());
-        assert!(execution_warnings("SELECT 1 AS shutdown", Dialect::Postgres).is_empty());
-    }
-
-    #[test]
-    fn procedure_calls() {
-        let c = |s: &str, d: Dialect| routine_calls(s, d);
-        assert_eq!(
-            c("EXEC dbo.ArchiveOrders @Days = 30", Dialect::MsSql),
-            vec!["EXEC dbo.ArchiveOrders"]
-        );
-        assert_eq!(
-            c("execute sp_rename 'a', 'b'", Dialect::MsSql),
-            vec!["EXECUTE sp_rename"]
-        );
-        assert_eq!(
-            c("CALL archive_orders(30)", Dialect::MySql),
-            vec!["CALL archive_orders"]
-        );
-        assert!(c("GRANT EXECUTE ON dbo.p TO u", Dialect::MsSql).is_empty());
-        assert!(c("EXECUTE AS USER = 'u'; SELECT 1", Dialect::MsSql).is_empty());
-        assert!(c("SELECT 1 -- exec dbo.p", Dialect::MsSql).is_empty());
-        assert!(c("SELECT t.call FROM t", Dialect::Postgres).is_empty());
-    }
-
-    #[test]
-    fn read_only_classification() {
-        let m = |s: &str| modifying_statements(s, Dialect::MsSql);
-        assert!(m("SELECT * FROM t WHERE x IN (SELECT y FROM u)").is_empty());
-        assert!(m("SELECT REPLACE(a, 'x', 'y'), LEFT(b, 1) FROM t").is_empty());
-        assert_eq!(m("UPDATE dbo.t SET a = 1"), vec!["UPDATE dbo.t"]);
-        assert_eq!(
-            m("DELETE FROM [Sales].Orders WHERE 1 = 0"),
-            vec!["DELETE FROM [Sales].Orders"]
-        );
-        assert_eq!(m("DROP TABLE IF EXISTS dbo.Old"), vec!["DROP TABLE IF EXISTS dbo.Old"]);
-        assert_eq!(m("DELETE FROM t; INSERT INTO t VALUES (1)").len(), 2);
-        assert_eq!(m("SELECT a INTO #x FROM t"), vec!["SELECT INTO"]);
-        assert_eq!(m("CREATE TABLE t (a int REFERENCES u(a) ON DELETE CASCADE)").len(), 1);
-        assert!(modifying_statements("SELECT 1; -- delete from t", Dialect::MsSql).is_empty());
-        assert_eq!(m("KILL 53"), vec!["KILL"]);
-        assert_eq!(m("SELECT 1; SHUTDOWN"), vec!["SHUTDOWN"]);
-        assert!(m("SELECT kill, shutdown FROM t").is_empty());
-        let ms = Dialect::MsSql;
-        assert!(row_changes_only(
-            "UPDATE t SET a = 1 WHERE b = 2; DELETE FROM u WHERE 1 = 0",
-            ms
-        ));
-        assert!(!row_changes_only("BEGIN TRAN; UPDATE t SET a = 1", ms));
-        assert!(!row_changes_only("UPDATE t SET a = 1; DROP TABLE u", ms));
-        assert!(!row_changes_only("SELECT 1", ms));
-        assert!(row_changes_only("IF 1 = 1 BEGIN UPDATE t SET a = 1 END", ms));
-        assert!(!row_changes_only(
-            "BEGIN; UPDATE t SET a = 1; COMMIT;",
-            Dialect::Postgres
-        ));
     }
 
     #[test]
@@ -1414,6 +1018,11 @@ SHUTDOWN WITH NOWAIT")
     #[test]
     fn invalid_objects_and_columns() {
         assert_eq!(codes("SELECT Id FROM dbo.Ordrs"), vec!["SQ006"]);
+        // SQLCMD variables name objects only when the script runs
+        assert!(
+            codes(":setvar S dbo\nSELECT o.Id, o.$(Col) FROM $(S).Orders o JOIN dbo.Orders_$(Env) x ON 1 = 1")
+                .is_empty()
+        );
         assert_eq!(codes("SELECT o.Totl FROM dbo.Orders o"), vec!["SQ007"]);
         assert!(codes("SELECT o.Total FROM dbo.Orders o JOIN #t t ON t.x = o.Id").is_empty());
         assert!(codes("WITH c AS (SELECT Id FROM dbo.Orders) SELECT c.Id FROM c").is_empty());

@@ -4,7 +4,7 @@
 
 use crate::Dialect;
 use crate::keywords;
-use crate::lexer::{Token, TokenKind, tokenize};
+use crate::lexer::{Token, TokenKind, significant, tokenize};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TableRef {
@@ -67,30 +67,13 @@ pub struct DocSymbols {
     pub local_tables: Vec<LocalTable>,
 }
 
-fn significant<'a>(tokens: &[Token<'a>]) -> Vec<Token<'a>> {
-    tokens.iter().filter(|t| !t.is_trivia()).copied().collect()
-}
-
 fn is_word(t: Option<&Token<'_>>, w: &str) -> bool {
     t.is_some_and(|t| t.kind == TokenKind::Word && t.text.eq_ignore_ascii_case(w))
 }
 
 /// Index of the `)` matching the `(` at `open`, or the end.
-fn matching_paren(t: &[Token<'_>], open: usize) -> usize {
-    let mut depth = 0i32;
-    for (i, tok) in t.iter().enumerate().skip(open) {
-        match tok.kind {
-            TokenKind::LParen => depth += 1,
-            TokenKind::RParen => {
-                depth -= 1;
-                if depth == 0 {
-                    return i;
-                }
-            }
-            _ => {}
-        }
-    }
-    t.len()
+fn close_of(t: &[Token<'_>], open: usize) -> usize {
+    crate::lexer::matching_paren(t, open).unwrap_or(t.len())
 }
 
 fn is_alias_candidate(t: &Token<'_>, dialect: Dialect) -> bool {
@@ -147,7 +130,12 @@ fn is_clause_word(u: &str) -> bool {
 pub fn analyze_statement(tokens: &[Token<'_>], dialect: Dialect) -> Scope {
     let t = significant(tokens);
     let mut scope = Scope::default();
-    analyze_sig(&t, dialect, &mut scope);
+    Walker {
+        dialect,
+        scope: &mut scope,
+        nesting: 0,
+    }
+    .walk(&t);
     scope.tables.sort_by_key(|r| r.start);
     // CTE references resolve to the CTE's columns
     for r in &mut scope.tables {
@@ -162,120 +150,144 @@ pub fn analyze_statement(tokens: &[Token<'_>], dialect: Dialect) -> Scope {
     scope
 }
 
-/// Walk significant tokens collecting table references. Subqueries are
-/// descended into, so tables of inner queries are visible too (good enough
-/// for completion, which cannot tell scopes apart in broken SQL anyway).
-fn analyze_sig(t: &[Token<'_>], dialect: Dialect, scope: &mut Scope) {
-    let mut depth = 0i32;
-    let mut from_depths: Vec<i32> = Vec::new();
-    let mut i = 0;
-    while i < t.len() {
-        let tok = &t[i];
-        match tok.kind {
-            TokenKind::LParen => {
-                depth += 1;
-                i += 1;
-                continue;
-            }
-            TokenKind::RParen => {
-                from_depths.retain(|d| *d != depth);
-                depth -= 1;
-                i += 1;
-                continue;
-            }
-            TokenKind::Comma if from_depths.contains(&depth) => {
-                i = table_refs(t, i + 1, dialect, scope, ",");
-                continue;
-            }
-            TokenKind::Word => {}
-            _ => {
-                i += 1;
-                continue;
-            }
+/// Subqueries nested deeper than this are not looked into: SQL Server
+/// itself stops at 32 levels, and a pasted text nested thousands of levels
+/// deep would otherwise overflow the stack and close the application.
+const MAX_NESTING: usize = 64;
+
+/// Walks significant tokens collecting table references and CTEs.
+/// Subqueries are descended into, so tables of inner queries are visible
+/// too (good enough for completion, which cannot tell scopes apart in broken
+/// SQL anyway).
+struct Walker<'s> {
+    dialect: Dialect,
+    scope: &'s mut Scope,
+    nesting: usize,
+}
+
+impl Walker<'_> {
+    /// A subquery or CTE body, unless nested too deep.
+    fn descend(&mut self, t: &[Token<'_>]) {
+        if self.nesting < MAX_NESTING {
+            self.nesting += 1;
+            self.walk(t);
+            self.nesting -= 1;
         }
-        let upper = tok.upper();
-        match upper.as_str() {
-            "WITH" if t.get(i + 1).is_some_and(|n| n.kind != TokenKind::LParen) => {
-                i = parse_ctes(t, i + 1, dialect, scope);
-            }
-            "FROM" | "JOIN" | "APPLY" | "UPDATE" | "INTO" | "USING" | "STRAIGHT_JOIN" => {
-                if upper == "FROM" && !from_depths.contains(&depth) {
-                    from_depths.push(depth);
+    }
+
+    fn walk(&mut self, t: &[Token<'_>]) {
+        let mut depth = 0i32;
+        let mut from_depths: Vec<i32> = Vec::new();
+        let mut i = 0;
+        while i < t.len() {
+            let tok = &t[i];
+            match tok.kind {
+                TokenKind::LParen => {
+                    depth += 1;
+                    i += 1;
+                    continue;
                 }
-                let via = if upper == "INTO" && i > 0 && t[i - 1].upper() != "INSERT" && t[i - 1].upper() != "MERGE" {
-                    // SELECT ... INTO creates the table
-                    "SELECT INTO".to_string()
-                } else {
-                    upper.clone()
-                };
-                i = table_refs(t, i + 1, dialect, scope, &via).max(i + 1);
+                TokenKind::RParen => {
+                    from_depths.retain(|d| *d != depth);
+                    depth -= 1;
+                    i += 1;
+                    continue;
+                }
+                TokenKind::Comma if from_depths.contains(&depth) => {
+                    i = self.table_refs(t, i + 1, ",");
+                    continue;
+                }
+                TokenKind::Word => {}
+                _ => {
+                    i += 1;
+                    continue;
+                }
             }
-            "WHERE" | "GROUP" | "ORDER" | "HAVING" | "SELECT" | "UNION" | "EXCEPT" | "INTERSECT" | "SET" | "LIMIT"
-            | "WINDOW" | "OPTION" | "VALUES" => {
-                from_depths.retain(|d| *d != depth);
-                i += 1;
+            let upper = tok.upper();
+            match upper.as_str() {
+                "WITH" if t.get(i + 1).is_some_and(|n| n.kind != TokenKind::LParen) => {
+                    i = self.ctes(t, i + 1);
+                }
+                "FROM" | "JOIN" | "APPLY" | "UPDATE" | "INTO" | "USING" | "STRAIGHT_JOIN" => {
+                    if upper == "FROM" && !from_depths.contains(&depth) {
+                        from_depths.push(depth);
+                    }
+                    let via = if upper == "INTO" && i > 0 && t[i - 1].upper() != "INSERT" && t[i - 1].upper() != "MERGE"
+                    {
+                        // SELECT ... INTO creates the table
+                        "SELECT INTO".to_string()
+                    } else {
+                        upper.clone()
+                    };
+                    i = self.table_refs(t, i + 1, &via).max(i + 1);
+                }
+                "WHERE" | "GROUP" | "ORDER" | "HAVING" | "SELECT" | "UNION" | "EXCEPT" | "INTERSECT" | "SET"
+                | "LIMIT" | "WINDOW" | "OPTION" | "VALUES" => {
+                    from_depths.retain(|d| *d != depth);
+                    i += 1;
+                }
+                _ => i += 1,
             }
-            _ => i += 1,
         }
     }
-}
 
-/// Parse one table reference at `k`; derived tables are also analyzed.
-fn table_refs(t: &[Token<'_>], k: usize, dialect: Dialect, scope: &mut Scope, via: &str) -> usize {
-    let Some((mut r, next)) = parse_table_ref(t, k, dialect) else {
-        return k;
-    };
-    r.via = via.to_string();
-    if t.get(k).is_some_and(|x| x.kind == TokenKind::LParen) {
-        let close = matching_paren(t, k).min(t.len());
-        analyze_sig(&t[k + 1..close], dialect, scope);
-    }
-    scope.tables.push(r);
-    next
-}
-
-fn parse_ctes(t: &[Token<'_>], mut i: usize, dialect: Dialect, scope: &mut Scope) -> usize {
-    if is_word(t.get(i), "RECURSIVE") {
-        i += 1;
-    }
-    loop {
-        let Some(name_tok) = t.get(i).filter(|n| n.is_name()) else {
-            return i;
+    /// Parse one table reference at `k`; derived tables are also analyzed.
+    fn table_refs(&mut self, t: &[Token<'_>], k: usize, via: &str) -> usize {
+        let Some((mut r, next)) = parse_table_ref(t, k, self.dialect) else {
+            return k;
         };
-        let name = name_tok.ident_value();
-        i += 1;
-        let mut columns = Vec::new();
-        if t.get(i).is_some_and(|n| n.kind == TokenKind::LParen) {
-            let close = matching_paren(t, i);
-            columns = t[i + 1..close.min(t.len())]
-                .iter()
-                .filter(|x| x.is_name())
-                .map(|x| x.ident_value())
-                .collect();
-            i = close + 1;
+        r.via = via.to_string();
+        if t.get(k).is_some_and(|x| x.kind == TokenKind::LParen) {
+            let close = close_of(t, k).min(t.len());
+            self.descend(&t[k + 1..close]);
         }
-        if !is_word(t.get(i), "AS") {
-            scope.ctes.push(LocalTable { name, columns });
+        self.scope.tables.push(r);
+        next
+    }
+
+    fn ctes(&mut self, t: &[Token<'_>], mut i: usize) -> usize {
+        if is_word(t.get(i), "RECURSIVE") {
+            i += 1;
+        }
+        loop {
+            let Some(name_tok) = t.get(i).filter(|n| n.is_name()) else {
+                return i;
+            };
+            let name = name_tok.ident_value();
+            i += 1;
+            let mut columns = Vec::new();
+            if t.get(i).is_some_and(|n| n.kind == TokenKind::LParen) {
+                let close = close_of(t, i);
+                columns = t[i + 1..close.min(t.len())]
+                    .iter()
+                    .filter(|x| x.is_name())
+                    .map(|x| x.ident_value())
+                    .collect();
+                i = close + 1;
+            }
+            if !is_word(t.get(i), "AS") {
+                self.scope.ctes.push(LocalTable { name, columns });
+                return i;
+            }
+            i += 1;
+            if is_word(t.get(i), "MATERIALIZED") || is_word(t.get(i), "NOT") {
+                i += if is_word(t.get(i), "NOT") { 2 } else { 1 };
+            }
+            if t.get(i).is_some_and(|n| n.kind == TokenKind::LParen) {
+                let close = close_of(t, i);
+                if columns.is_empty() {
+                    columns = select_list_names(&t[i + 1..close.min(t.len())], self.dialect);
+                }
+                self.descend(&t[i + 1..close.min(t.len())]);
+                i = close + 1;
+            }
+            self.scope.ctes.push(LocalTable { name, columns });
+            if t.get(i).is_some_and(|n| n.kind == TokenKind::Comma) {
+                i += 1;
+                continue;
+            }
             return i;
         }
-        i += 1;
-        if is_word(t.get(i), "MATERIALIZED") || is_word(t.get(i), "NOT") {
-            i += if is_word(t.get(i), "NOT") { 2 } else { 1 };
-        }
-        if t.get(i).is_some_and(|n| n.kind == TokenKind::LParen) {
-            let close = matching_paren(t, i);
-            if columns.is_empty() {
-                columns = select_list_names(&t[i + 1..close.min(t.len())], dialect);
-            }
-            analyze_sig(&t[i + 1..close.min(t.len())], dialect, scope);
-            i = close + 1;
-        }
-        scope.ctes.push(LocalTable { name, columns });
-        if t.get(i).is_some_and(|n| n.kind == TokenKind::Comma) {
-            i += 1;
-            continue;
-        }
-        return i;
     }
 }
 
@@ -288,7 +300,7 @@ fn parse_table_ref(t: &[Token<'_>], mut i: usize, dialect: Dialect) -> Option<(T
     let mut database = None;
     let (schema, name, columns, local) = match first.kind {
         TokenKind::LParen => {
-            let close = matching_paren(t, i);
+            let close = close_of(t, i);
             let cols = select_list_names(&t[i + 1..close.min(t.len())], dialect);
             i = close + 1;
             (None, String::new(), cols, true)
@@ -316,7 +328,7 @@ fn parse_table_ref(t: &[Token<'_>], mut i: usize, dialect: Dialect) -> Option<(T
             }
             // table-valued function arguments
             if t.get(i).is_some_and(|n| n.kind == TokenKind::LParen) {
-                i = matching_paren(t, i) + 1;
+                i = close_of(t, i) + 1;
                 is_call = true;
             }
             let name = parts.pop().unwrap_or_default();
@@ -380,7 +392,7 @@ pub fn select_list_names(t: &[Token<'_>], dialect: Dialect) -> Vec<String> {
         } else if u == "TOP" {
             i += 1;
             if t.get(i).is_some_and(|n| n.kind == TokenKind::LParen) {
-                i = matching_paren(&t, i) + 1;
+                i = close_of(&t, i) + 1;
             } else {
                 i += 1;
             }
@@ -474,7 +486,7 @@ pub fn document_symbols(src: &str, dialect: Dialect) -> DocSymbols {
         if let Some((name, open)) = table_def
             && t.get(open).is_some_and(|n| n.kind == TokenKind::LParen)
         {
-            let close = matching_paren(&t, open);
+            let close = close_of(&t, open);
             let columns = column_defs(&t[open + 1..close.min(t.len())]);
             syms.local_tables.push(LocalTable { name, columns });
         }

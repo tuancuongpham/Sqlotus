@@ -618,7 +618,7 @@ pub async fn sc_commit_files(
 
 /// The script that brings the chosen folder changes into the database,
 /// between the pre- and post-deploy scripts. It opens in a tab for review.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn sc_get_latest_script(
     store: State<'_, SourceControlStore>,
     id: String,

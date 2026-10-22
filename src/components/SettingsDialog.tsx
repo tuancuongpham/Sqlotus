@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { api, errorText, newId } from "../api";
 import { toast } from "../notify";
-import type { AnalysisRule, Dialect, Settings, Snippet } from "../types";
+import type { AnalysisRule, Dialect, Settings, Snippet, Theme } from "../types";
 
 const SAMPLE = `select o.Id, c.Name, sum(i.Qty * i.Price) as Total from dbo.Orders o inner join dbo.Customers c on c.Id = o.CustomerId left join dbo.OrderItems i on i.OrderId = o.Id where o.CreatedAt >= '2024-01-01' and (c.Country = 'VN' or c.Vip = 1) group by o.Id, c.Name having sum(i.Qty) > 1 order by Total desc`;
 
@@ -53,7 +53,7 @@ export function SettingsDialog({ settings, dialect, onClose, onSaved }: Props) {
     setS({ ...s, completion: { ...c, [k]: v } });
   const e = s.editor;
   const setE = <K extends keyof Settings["editor"]>(k: K, v: Settings["editor"][K]) => setS({ ...s, editor: { ...e, [k]: v } });
-  const sf = s.safety ?? { confirmRowsOver: 1000, promptVariables: true };
+  const sf = s.safety ?? { confirmRowsOver: 1000, promptVariables: true, confirmProcedureCalls: false, csvFormulaGuard: true };
   const setSf = <K extends keyof Settings["safety"]>(k: K, v: Settings["safety"][K]) => setS({ ...s, safety: { ...sf, [k]: v } });
 
   const close = async () => {
@@ -151,15 +151,27 @@ export function SettingsDialog({ settings, dialect, onClose, onSaved }: Props) {
           <div className="settings-body settings-form">
             <label>
               Theme
-              <select value={e.theme} onChange={(ev) => setE("theme", ev.target.value as "dark" | "light")}>
+              <select value={e.theme} onChange={(ev) => setE("theme", ev.target.value as Theme)}>
                 <option value="dark">Dark</option>
                 <option value="light">Light</option>
+                <option value="system">Follow Windows</option>
               </select>
             </label>
             <label>
               Font size
               <input type="number" min={9} max={28} value={e.fontSize} onChange={(ev) => setE("fontSize", Number(ev.target.value) || 14)} />
             </label>
+            <small className="settings-hint">Ctrl+mouse wheel (or Ctrl+= / Ctrl+-) changes it in the editor; Ctrl+0 resets it.</small>
+            <label className="check">
+              <input
+                className="f5-statement"
+                type="checkbox"
+                checked={!!e.f5RunsStatement}
+                onChange={(ev) => setE("f5RunsStatement", ev.target.checked)}
+              />
+              Execute (F5) runs the statement at the cursor when nothing is selected
+            </label>
+            <small className="settings-hint">To run the whole script then, select it all first (Ctrl+A, F5).</small>
             <label>
               History autosave (seconds)
               <input
@@ -170,6 +182,17 @@ export function SettingsDialog({ settings, dialect, onClose, onSaved }: Props) {
                 onChange={(ev) => setE("autosaveSeconds", Number(ev.target.value) || 15)}
               />
             </label>
+            <label>
+              Keep query history for (days, 0 = always)
+              <input
+                className="history-days"
+                type="number"
+                min={0}
+                value={e.historyDays ?? 0}
+                onChange={(ev) => setE("historyDays", Math.max(0, Math.floor(Number(ev.target.value) || 0)))}
+              />
+            </label>
+            <small className="settings-hint">Older versions are deleted when you press Done and at each start; the last version of an open tab is kept.</small>
             <label>
               Max rows per result
               <input type="number" min={100} value={e.maxRows} onChange={(ev) => setE("maxRows", Number(ev.target.value) || 100000)} />
@@ -228,9 +251,34 @@ export function SettingsDialog({ settings, dialect, onClose, onSaved }: Props) {
               fail half-way, Sqlotus asks whether to commit or roll back. 0 turns this off.
             </small>
             <label className="check">
+              <input
+                className="confirm-calls"
+                type="checkbox"
+                checked={!!sf.confirmProcedureCalls}
+                onChange={(ev) => setSf("confirmProcedureCalls", ev.target.checked)}
+              />
+              Ask before committing what called procedures changed
+            </label>
+            <small className="settings-hint">
+              Sqlotus cannot count the rows a procedure changes (EXEC, CALL). With this on, scripts that call procedures run in a
+              transaction, and you commit or roll back what they did. Procedures that change nothing are committed without asking.
+            </small>
+            <label className="check">
               <input type="checkbox" checked={sf.promptVariables} onChange={(ev) => setSf("promptVariables", ev.target.checked)} />
               Ask for values of variables the script uses without declaring them
             </label>
+            <label className="check">
+              <input
+                className="csv-guard"
+                type="checkbox"
+                checked={sf.csvFormulaGuard ?? true}
+                onChange={(ev) => setSf("csvFormulaGuard", ev.target.checked)}
+              />
+              Keep spreadsheets from running text in CSV files as formulas
+            </label>
+            <small className="settings-hint">
+              Text starting with =, +, - or @ gets a ' in front in CSV files (Excel then shows it as text). Numbers stay as they are.
+            </small>
             <small className="settings-hint">
               Read-only and manual-commit modes are set per connection in the Connect dialog.
             </small>

@@ -6,9 +6,11 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 
 use crate::Dialect;
-use crate::analysis::{STATEMENT_KEYWORDS, in_declare, sig, word};
-use crate::lexer::{Token, TokenKind, tokenize};
-use crate::statements::split_batches;
+use crate::analysis::in_declare;
+use crate::keywords::STATEMENT_KEYWORDS;
+use crate::lexer::{Token, TokenKind, significant, tokenize, word};
+use crate::sqltype::SqlType;
+use crate::statements::{defines_module, split_batches, tokens_in};
 
 /// A value for an undeclared variable, entered by the user.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,21 +57,10 @@ fn is_named_argument(t: &[Token<'_>], i: usize) -> bool {
         && matches!(statement_keyword(t, i).as_str(), "EXEC" | "EXECUTE")
 }
 
-/// `CREATE/ALTER PROCEDURE|FUNCTION|TRIGGER|VIEW` must be the first
-/// statement of its batch, so nothing may be put in front of it.
-fn is_module_batch(t: &[Token<'_>]) -> bool {
-    matches!(word(t.first()).as_str(), "CREATE" | "ALTER")
-        && t.iter().take(6).any(|x| {
-            matches!(
-                x.upper().as_str(),
-                "PROCEDURE" | "PROC" | "FUNCTION" | "TRIGGER" | "VIEW"
-            )
-        })
-}
-
 fn mssql_undeclared(t: &[Token<'_>], out: &mut Vec<String>, seen: &mut HashSet<String>) {
-    // the server reports undeclared variables in a module body when it is created
-    if is_module_batch(t) {
+    // the server reports undeclared variables in a module body when it is
+    // created, and CREATE PROCEDURE must start its batch: nothing goes in front
+    if defines_module(t) {
         return;
     }
     let mut declared = HashSet::new();
@@ -78,11 +69,17 @@ fn mssql_undeclared(t: &[Token<'_>], out: &mut Vec<String>, seen: &mut HashSet<S
             continue;
         }
         let key = x.text.to_lowercase();
-        let declares = word(i.checked_sub(1).and_then(|p| t.get(p))) == "DECLARE"
-            || (i > 0 && t[i - 1].kind == TokenKind::Comma && in_declare(t, i));
+        let prev = word(i.checked_sub(1).and_then(|p| t.get(p)));
+        let declares = prev == "DECLARE" || (i > 0 && t[i - 1].kind == TokenKind::Comma && in_declare(t, i));
+        // a table variable (FROM @t, INSERT INTO @t): no value can stand in for
+        // it, so the server's "must declare the table variable" is the answer
+        let table = matches!(
+            prev.as_str(),
+            "FROM" | "JOIN" | "INTO" | "UPDATE" | "TABLE" | "MERGE" | "USING" | "INSERT" | "DELETE" | "APPLY"
+        );
         if declares {
             declared.insert(key);
-        } else if !declared.contains(&key) && !is_named_argument(t, i) && seen.insert(key) {
+        } else if !declared.contains(&key) && !table && !is_named_argument(t, i) && seen.insert(key) {
             out.push(x.text.to_string());
         }
     }
@@ -125,21 +122,16 @@ pub fn undeclared_variables(sql: &str, dialect: Dialect) -> Vec<String> {
     let tokens = tokenize(sql, dialect);
     match dialect {
         Dialect::Postgres => Vec::new(),
-        Dialect::MySql => mysql_undeclared(&sig(&tokens)),
+        Dialect::MySql => mysql_undeclared(&significant(&tokens)),
         Dialect::MsSql => {
-            let all = sig(&tokens);
+            let all = significant(&tokens);
             let mut out = Vec::new();
             let mut seen = HashSet::new();
             for batch in split_batches(sql, dialect) {
-                let t: Vec<Token<'_>> = all
-                    .iter()
-                    .filter(|x| x.start >= batch.span.start && x.end() <= batch.span.end)
-                    .copied()
-                    .collect();
                 // a variable missing in two batches is asked for once
                 let mut batch_seen = HashSet::new();
                 let before = out.len();
-                mssql_undeclared(&t, &mut out, &mut batch_seen);
+                mssql_undeclared(tokens_in(&all, &batch.span), &mut out, &mut batch_seen);
                 let mut kept = out.split_off(before);
                 kept.retain(|v| seen.insert(v.to_lowercase()));
                 out.extend(kept);
@@ -149,24 +141,10 @@ pub fn undeclared_variables(sql: &str, dialect: Dialect) -> Vec<String> {
     }
 }
 
-const NUMERIC_TYPES: &[&str] = &[
-    "int",
-    "bigint",
-    "smallint",
-    "tinyint",
-    "bit",
-    "decimal",
-    "numeric",
-    "money",
-    "smallmoney",
-    "float",
-    "real",
-];
-
 /// The value as a SQL literal for a variable of `data_type`.
 pub fn literal(value: Option<&str>, data_type: &str, dialect: Dialect) -> String {
     let Some(v) = value else { return "NULL".into() };
-    let base = data_type.split('(').next().unwrap_or("").trim().to_ascii_lowercase();
+    let ty = SqlType::parse(data_type);
     let numeric_value = {
         let s = v.trim();
         !s.is_empty()
@@ -174,25 +152,11 @@ pub fn literal(value: Option<&str>, data_type: &str, dialect: Dialect) -> String
             && !s.contains(['e', 'E', 'x', 'X'])
             && s.chars().all(|c| c.is_ascii_digit() || matches!(c, '-' | '+' | '.'))
     };
-    if (NUMERIC_TYPES.contains(&base.as_str()) || (dialect == Dialect::MySql && data_type.is_empty())) && numeric_value
-    {
+    let numeric_type = ty.is_number() || ty.base() == "bit" || (dialect == Dialect::MySql && data_type.is_empty());
+    if numeric_type && numeric_value {
         return v.trim().to_string();
     }
-    let quoted = dialect.string_literal(v);
-    let unicode = dialect == Dialect::MsSql
-        && !matches!(
-            base.as_str(),
-            "varchar"
-                | "char"
-                | "date"
-                | "datetime"
-                | "datetime2"
-                | "smalldatetime"
-                | "time"
-                | "datetimeoffset"
-                | "uniqueidentifier"
-        );
-    if unicode { format!("N{quoted}") } else { quoted }
+    dialect.typed_string(v, &ty)
 }
 
 /// Text to put in front of `batch` so the given variables exist in it. It
@@ -266,9 +230,20 @@ mod tests {
             value: Some("1".into()),
         }];
         assert_eq!(prelude("CREATE PROCEDURE dbo.p AS SELECT @Other", ms, &v), "");
+        // ... but a batch that switches a trigger off is not a module
+        assert_eq!(
+            undeclared_variables("ALTER TABLE dbo.t DISABLE TRIGGER ALL; UPDATE dbo.t SET a = @x", ms),
+            vec!["@x"]
+        );
         // declared in another batch does not count, and each name is asked once
         assert_eq!(
             undeclared_variables("DECLARE @x int = 1\nGO\nSELECT @x\nGO\nSELECT @x", ms),
+            vec!["@x"]
+        );
+        // a table variable has no value to ask for: the server says it must be declared
+        assert!(undeclared_variables("INSERT INTO @t (a) VALUES (1); SELECT * FROM @t", ms).is_empty());
+        assert_eq!(
+            undeclared_variables("SELECT * FROM t JOIN @ids i ON i.Id = t.Id WHERE t.x = @x", ms),
             vec!["@x"]
         );
     }
@@ -308,6 +283,16 @@ mod tests {
         );
         assert_eq!(prelude("DECLARE @Id int = 1; SELECT @Id", Dialect::MsSql, &vars), "");
         assert_eq!(literal(Some("2024-01-31"), "date", Dialect::MsSql), "'2024-01-31'");
+        // ISO 8601, which no DATEFORMAT misreads
+        assert_eq!(
+            literal(Some("2024-01-12 10:20:30.123"), "datetime", Dialect::MsSql),
+            "'2024-01-12T10:20:30.123'"
+        );
+        assert_eq!(
+            literal(Some("2024-01-12 10:20"), "smalldatetime", Dialect::MsSql),
+            "'2024-01-12T10:20'"
+        );
+        assert_eq!(literal(Some("12/01/2024"), "datetime", Dialect::MsSql), "'12/01/2024'");
         assert_eq!(literal(Some("abc"), "int", Dialect::MsSql), "N'abc'");
         assert!(prelude("SELECT @Id", Dialect::MySql, &vars[..1]).starts_with("SET @Id = 5; "));
         // a path typed for MySQL keeps its backslashes

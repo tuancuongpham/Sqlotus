@@ -2,6 +2,7 @@
 //! (multi-tenant setups), tagging every row with its database.
 
 use sqlotus_core::byte_to_utf16;
+use sqlotus_core::safety::ScriptRun;
 use sqlotus_db::{BatchOutput, Connection, Limits, Message, MessageKind, ResultColumn, ResultSet, execute_script};
 use tauri::State;
 
@@ -86,14 +87,11 @@ pub async fn execute_multi(
     databases: Vec<String>,
 ) -> CmdResult<ExecuteResult> {
     let session = state.session(&tab_id).ok_or("tab is not connected")?;
-    if session.config.read_only
-        && !sqlotus_core::analysis::modifying_statements(&sql, session.config.dialect).is_empty()
-    {
+    let changes = !ScriptRun::new(&sql, session.config.dialect).changes().is_empty();
+    if session.config.read_only && changes {
         return Err("This connection is read-only, so the script was not run on any database.".into());
     }
-    if session.config.manual_commit
-        && !sqlotus_core::analysis::modifying_statements(&sql, session.config.dialect).is_empty()
-    {
+    if session.config.manual_commit && changes {
         return Err("Manual commit is on for this connection, but a multi-database run commits each database on its own connection. Run the changes database by database instead.".into());
     }
     let limits = Limits {

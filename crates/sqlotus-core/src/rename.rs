@@ -6,9 +6,10 @@
 use serde::Serialize;
 
 use crate::Dialect;
-use crate::lexer::{Token, TokenKind, tokenize};
+use crate::lexer::{Token, TokenKind, significant, tokenize};
 use crate::scope::analyze_statement;
 use crate::statements::{split_batches, statement_at};
+use crate::text::apply_edits;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -18,10 +19,6 @@ pub struct RenameTarget {
     pub name: String,
     /// Byte ranges of every occurrence.
     pub ranges: Vec<(usize, usize)>,
-}
-
-fn sig<'a>(tokens: &[Token<'a>]) -> Vec<Token<'a>> {
-    tokens.iter().filter(|t| !t.is_trivia()).copied().collect()
 }
 
 /// Occurrences of the renameable symbol under `offset`, if any.
@@ -58,7 +55,7 @@ pub fn rename_target(src: &str, offset: usize, dialect: Dialect) -> Option<Renam
         .copied()
         .collect();
     let scope = analyze_statement(&stmt, dialect);
-    let t = sig(&stmt);
+    let t = significant(&stmt);
     let name = tok.ident_value();
     let same = |x: &Token<'_>| x.is_name() && x.ident_value().eq_ignore_ascii_case(&name);
     let idx = t.iter().position(|x| x.start == tok.start)?;
@@ -67,18 +64,20 @@ pub fn rename_target(src: &str, offset: usize, dialect: Dialect) -> Option<Renam
         return None;
     }
 
-    if scope
+    let after_dot = |i: usize| i > 0 && t[i - 1].kind == TokenKind::Dot;
+    let before_dot = |i: usize| t.get(i + 1).is_some_and(|n| n.kind == TokenKind::Dot);
+    if let Some(table) = scope
         .tables
         .iter()
-        .any(|r| r.alias.as_ref().is_some_and(|a| a.eq_ignore_ascii_case(&name)))
+        .find(|r| r.alias.as_ref().is_some_and(|a| a.eq_ignore_ascii_case(&name)))
     {
-        let ranges = t
+        let ranges: Vec<(usize, usize)> = t
             .iter()
             .enumerate()
             .filter(|(i, x)| {
                 same(x)
-                    && !(*i > 0 && t[i - 1].kind == TokenKind::Dot)
-                    && (t.get(i + 1).is_some_and(|n| n.kind == TokenKind::Dot)
+                    && !after_dot(*i)
+                    && (before_dot(*i)
                         || scope
                             .tables
                             .iter()
@@ -87,6 +86,19 @@ pub fn rename_target(src: &str, offset: usize, dialect: Dialect) -> Option<Renam
             })
             .map(|(_, x)| (x.start, x.end()))
             .collect();
+        // a bare name under the cursor is a column, not the alias
+        if !ranges.iter().any(|&(s, _)| s == tok.start) {
+            return None;
+        }
+        // `generate_series(1, 9) AS g`: a bare g is the function's column,
+        // which the alias names too, so renaming one would break the other
+        let bare = t
+            .iter()
+            .enumerate()
+            .any(|(i, x)| same(x) && !after_dot(i) && !ranges.contains(&(x.start, x.end())));
+        if table.is_call && bare {
+            return None;
+        }
         return Some(RenameTarget {
             kind: "alias".into(),
             name,
@@ -95,12 +107,50 @@ pub fn rename_target(src: &str, offset: usize, dialect: Dialect) -> Option<Renam
     }
 
     if scope.ctes.iter().any(|c| c.name.eq_ignore_ascii_case(&name)) {
-        let ranges = t
+        // the CTE list: from WITH to the statement it serves, outside parentheses
+        let with = t.iter().position(|x| x.upper() == "WITH");
+        let mut depth = 0i32;
+        let mut body = t.len();
+        for (i, x) in t.iter().enumerate().skip(with.map_or(t.len(), |w| w + 1)) {
+            match x.kind {
+                TokenKind::LParen => depth += 1,
+                TokenKind::RParen => depth -= 1,
+                _ if depth == 0
+                    && matches!(x.upper().as_str(), "SELECT" | "INSERT" | "UPDATE" | "DELETE" | "MERGE") =>
+                {
+                    body = i;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        let definition = |i: usize| {
+            with.is_some_and(|w| w < i && i < body)
+                && i > 0
+                && (matches!(t[i - 1].upper().as_str(), "WITH" | "RECURSIVE") || t[i - 1].kind == TokenKind::Comma)
+                && t.get(i + 1)
+                    .is_some_and(|n| n.upper() == "AS" || n.kind == TokenKind::LParen)
+        };
+        // the definition, table references and `cte.column` qualifiers; a
+        // column or column alias of the same name stays as it is
+        let ranges: Vec<(usize, usize)> = t
             .iter()
             .enumerate()
-            .filter(|(i, x)| same(x) && !(*i > 0 && t[i - 1].kind == TokenKind::Dot))
+            .filter(|(i, x)| {
+                same(x)
+                    && !after_dot(*i)
+                    && (definition(*i)
+                        || before_dot(*i)
+                        || scope
+                            .tables
+                            .iter()
+                            .any(|r| r.schema.is_none() && r.name_start == x.start))
+            })
             .map(|(_, x)| (x.start, x.end()))
             .collect();
+        if !ranges.iter().any(|&(s, _)| s == tok.start) {
+            return None;
+        }
         return Some(RenameTarget {
             kind: "cte".into(),
             name,
@@ -125,13 +175,7 @@ fn alias_token(t: &[Token<'_>], name_end: usize, i: usize) -> bool {
 /// Apply a rename to `src`; returns `None` when nothing is renameable.
 pub fn rename(src: &str, offset: usize, dialect: Dialect, new_name: &str) -> Option<String> {
     let target = rename_target(src, offset, dialect)?;
-    let mut out = src.to_string();
-    let mut ranges = target.ranges;
-    ranges.sort_by_key(|r| std::cmp::Reverse(r.0));
-    for (s, e) in ranges {
-        out.replace_range(s..e, new_name);
-    }
-    Some(out)
+    Some(apply_edits(src, target.ranges.into_iter().map(|(s, e)| (s, e, new_name))).0)
 }
 
 #[cfg(test)]
@@ -178,5 +222,29 @@ mod tests {
         assert!(rename_target("SELECT o.Id FROM dbo.Orders o", 10, Dialect::MsSql).is_none());
         assert!(rename_target("SELECT Id FROM Orders", 17, Dialect::MsSql).is_none());
         assert!(rename_target("SELECT @@ROWCOUNT", 9, Dialect::MsSql).is_none());
+    }
+
+    #[test]
+    fn columns_named_like_a_cte_or_alias_stay() {
+        // a column and a column alias named like the CTE are not the CTE
+        let src = "WITH total AS (SELECT sum(amount) AS total FROM t) SELECT total FROM total";
+        assert_eq!(
+            rename(src, src.rfind("total").unwrap(), Dialect::Postgres, "sums").unwrap(),
+            "WITH sums AS (SELECT sum(amount) AS total FROM t) SELECT total FROM sums"
+        );
+        assert!(rename_target(src, src.find("SELECT total").unwrap() + 8, Dialect::Postgres).is_none());
+        // a recursive CTE is renamed inside its own body too
+        let src = "WITH RECURSIVE tree AS (SELECT id FROM nodes UNION ALL SELECT n.id FROM nodes n JOIN tree t ON t.id = n.parent) SELECT tree.id FROM tree";
+        assert_eq!(
+            rename(src, src.rfind("tree").unwrap(), Dialect::Postgres, "walk").unwrap(),
+            "WITH RECURSIVE walk AS (SELECT id FROM nodes UNION ALL SELECT n.id FROM nodes n JOIN walk t ON t.id = n.parent) SELECT walk.id FROM walk"
+        );
+        // a bare column named like a table alias is the column
+        let src = "SELECT c, c.Id FROM t c";
+        assert!(rename_target(src, 7, Dialect::MsSql).is_none());
+        assert_eq!(rename(src, 10, Dialect::MsSql, "x").unwrap(), "SELECT c, x.Id FROM t x");
+        // generate_series(...) AS g: g is also the function's column
+        let src = "SELECT g FROM generate_series(1, 3) AS g WHERE g > 1";
+        assert!(rename_target(src, src.find("AS g").unwrap() + 3, Dialect::Postgres).is_none());
     }
 }

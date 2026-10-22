@@ -497,12 +497,15 @@ async fn load_mysql(conn: &mut Connection) -> Result<CatalogSnapshot> {
         } else {
             ObjectKind::Table
         };
+        // EXTRA: `auto_increment`, `VIRTUAL GENERATED` / `STORED GENERATED` for
+        // computed columns, `DEFAULT_GENERATED` for a default like CURRENT_TIMESTAMP
+        let extra = s(&r, 6).to_ascii_uppercase();
         let column = Column {
             name: s(&r, 3),
             data_type: s(&r, 4),
             nullable: b(&r, 5),
-            is_identity: s(&r, 6).contains("auto_increment"),
-            is_computed: s(&r, 6).contains("GENERATED"),
+            is_identity: extra.contains("AUTO_INCREMENT"),
+            is_computed: extra.contains("VIRTUAL GENERATED") || extra.contains("STORED GENERATED"),
             is_primary_key: s(&r, 7) == "PRI",
         };
         push_object_row(&mut cat.objects, s(&r, 0), s(&r, 1), kind, Some(column));

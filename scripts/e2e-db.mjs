@@ -229,8 +229,10 @@ if (!(await evaluate(`!!document.querySelector(".explorer-panel")`))) await pres
 for (let i = 0; i < 10; i++) {
   const own = (await tabTitles()).findIndex((t) => !before.has(t));
   if (own < 0) break;
-  await evaluate(`document.querySelectorAll(".tab")[${own}].click()`);
+  await evaluate(`document.querySelectorAll(".tab")[${own}].dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }))`);
   await sleep(200);
+  // close only the tab just selected: tabs react to mousedown, and Ctrl+W closes the active one
+  if (!(await evaluate(`!!document.querySelectorAll(".tab")[${own}]?.classList.contains("active")`))) break;
   await press("Control+W");
   await sleep(300);
 }

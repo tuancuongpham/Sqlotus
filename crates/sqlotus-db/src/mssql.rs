@@ -9,36 +9,41 @@ use tiberius::{
 use tokio::net::TcpStream;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
-use crate::{AuthKind, BatchOutput, ConnectionConfig, DbError, Limits, Result, ResultColumn, ResultSet};
+use sqlotus_core::{Dialect, TokenKind, tokenize};
+
+use crate::{AuthKind, BatchOutput, ConnectionConfig, DbError, Endpoint, Limits, Result, ResultColumn, ResultSet};
 
 pub struct MssqlConn {
     client: Client<Compat<TcpStream>>,
 }
 
-/// Split `host\instance` / `host,port`; `.` and `(local)` mean localhost.
-pub(crate) fn parse_host(raw: &str) -> (String, Option<String>, Option<u16>) {
-    let raw = raw.trim().trim_start_matches("tcp:");
-    let (rest, port) = match raw.rsplit_once(',') {
-        Some((h, p)) => (h, p.trim().parse().ok()),
-        None => (raw, None),
-    };
-    let (host, instance) = match rest.split_once('\\') {
-        Some((h, i)) => (h, Some(i.to_string())),
-        None => (rest, None),
-    };
-    let host = match host.trim() {
-        "." | "(local)" | "(localdb)" | "" => "localhost".to_string(),
-        h => h.to_string(),
-    };
-    (host, instance, port)
+/// The batch for [`MssqlConn::execute_counted`] with every row change
+/// counted: NOCOUNT, set earlier in the session or by the script, hides the
+/// counts that saving edited rows and the large-change check rely on. The
+/// setting changes only inside the call; the session keeps its own.
+fn counted_batch(sql: &str) -> String {
+    let tokens = tokenize(sql, Dialect::MsSql);
+    let words: Vec<_> = tokens.iter().filter(|t| !t.is_trivia()).collect();
+    let is = |t: &sqlotus_core::Token<'_>, w: &str| t.kind == TokenKind::Word && t.text.eq_ignore_ascii_case(w);
+    // on the first line, so error line numbers stay those of the script
+    let mut out = String::from("SET NOCOUNT OFF; ");
+    let mut at = 0;
+    for w in words.windows(3) {
+        if is(w[0], "SET") && is(w[1], "NOCOUNT") && is(w[2], "ON") {
+            out.push_str(&sql[at..w[2].start]);
+            out.push_str("OFF");
+            at = w[2].end();
+        }
+    }
+    out.push_str(&sql[at..]);
+    out
 }
 
 impl MssqlConn {
     pub async fn open(cfg: &ConnectionConfig, password: Option<&str>) -> Result<Self> {
-        let (host, instance, port) = parse_host(&cfg.host);
+        let Endpoint { host, instance, port } = cfg.endpoint();
         let mut config = Config::new();
         config.host(&host);
-        let port = cfg.port.or(port);
         if let Some(p) = port {
             config.port(p);
         }
@@ -108,7 +113,7 @@ impl MssqlConn {
     pub async fn execute_counted(&mut self, sql: &str, limits: &Limits) -> BatchOutput {
         let mut out = BatchOutput::default();
         let mut cmd = Command::new("sp_executesql");
-        cmd.bind_param("@stmt", sql.to_string());
+        cmd.bind_param("@stmt", counted_batch(sql));
         let mut stream = match cmd.exec(&mut self.client).await {
             Ok(s) => s,
             Err(e) => {
@@ -361,19 +366,6 @@ fn cell(cd: ColumnData<'static>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn host_parsing() {
-        assert_eq!(
-            parse_host(r".\SQLEXPRESS"),
-            ("localhost".into(), Some("SQLEXPRESS".into()), None)
-        );
-        assert_eq!(
-            parse_host("db.example.com,1500"),
-            ("db.example.com".into(), None, Some(1500))
-        );
-        assert_eq!(parse_host("tcp:10.0.0.5"), ("10.0.0.5".into(), None, None));
-    }
 
     #[test]
     fn fractions() {

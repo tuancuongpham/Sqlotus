@@ -1,16 +1,42 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { api, errorText } from "../api";
-import { sqlLiteral, toCsv, toHtml, toInsert, toJson, toMarkdown, toTsv } from "../export";
+import { sqlLiteral, toCsv, toHtml, toInsert, toJson, toMarkdown, toText, toTsv } from "../export";
+import { keepDraft, takeDraft } from "../editDrafts";
 import { toast, update } from "../notify";
 import { pin, unpin, usePinned } from "../pinned";
-import type { Dialect, EditContext, EditSource, ResultSet, RowEdit } from "../types";
+import { prefs } from "../prefs";
+import type { Dialect, EditContext, EditSource, ResultSet, RowEdit, RowLink } from "../types";
 import { ChartDialog } from "./ChartDialog";
 import { CompareDialog } from "./CompareDialog";
 
 const ROW_H = 24;
 const OVERSCAN = 10;
 const CHAR_W = 7.4;
+/** Line height of the text view. */
+const LINE_H = 18;
+const VIEW_KEY = "sqlotus.resultView";
+
+type View = "grid" | "text";
+
+/** Grid or text: the choice stays for later results (and the next start). */
+let shownAs: View = (() => {
+  try {
+    return localStorage.getItem(VIEW_KEY) === "text" ? "text" : "grid";
+  } catch {
+    return "grid";
+  }
+})();
+
+/** The smallest number of a set (a spread of 100,000 rows overflows the stack). */
+function smallest(set: Set<number>): number {
+  let min = Infinity;
+  for (const n of set) if (n < min) min = n;
+  return min;
+}
+
+/** The CSV formula guard of Options → Safety (on unless switched off). */
+const csvGuard = () => prefs()?.safety.csvFormulaGuard ?? true;
 
 function columnWidths(rs: ResultSet): number[] {
   const sample = rs.rows.slice(0, 200);
@@ -60,7 +86,12 @@ export function ResultGrid({
   edit?: EditContext;
 }) {
   const [dialog, setDialog] = useState<"chart" | "compare" | "script" | "production" | null>(null);
-  const [edit, setEdit] = useState<EditState | null>(null);
+  // pending edits outlive a switch to another tab and back (see editDrafts)
+  const draftTab = editContext?.tabId;
+  const [edit, setEdit] = useState<EditState | null>(() => (draftTab ? takeDraft<EditState>(draftTab, rs) : null));
+  useEffect(() => {
+    if (draftTab) keepDraft(draftTab, rs, edit);
+  }, [draftTab, rs, edit]);
   const [cellEdit, setCellEdit] = useState<{ row: Row; col: number; value: string } | null>(null);
   const [preview, setPreview] = useState<{ statements: string[]; problems: string[] } | null>(null);
   const [saving, setSaving] = useState(false);
@@ -76,6 +107,24 @@ export function ResultGrid({
   const [sort, setSort] = useState<{ col: number; desc: boolean } | null>(null);
   const [filter, setFilter] = useState("");
   const [note, setNote] = useState("");
+  const [view, setViewState] = useState<View>(shownAs);
+  const setView = (v: View) => {
+    shownAs = v;
+    try {
+      localStorage.setItem(VIEW_KEY, v);
+    } catch {
+      // storage may be unavailable; the choice still holds until restart
+    }
+    setViewState(v);
+  };
+  // one row as a form: column, type and the whole value
+  const [recordOpen, setRecordOpen] = useState(false);
+  const [recordFilter, setRecordFilter] = useState("");
+  // foreign keys the rows can be followed along
+  const [links, setLinks] = useState<RowLink[]>([]);
+  const [menu, setMenu] = useState<{ x: number; y: number; row: number; col: number } | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [textTop, setTextTop] = useState(0);
 
   // filtered + sorted view of the rows; selections index into it
   const rows: Row[] = useMemo(() => {
@@ -87,6 +136,34 @@ export function ResultGrid({
     }
     return out;
   }, [rs, filter, sort, edit]);
+
+  // the rows as text, made once per view of the rows (not on every scroll)
+  const textTable = useMemo(() => (view === "text" && !edit ? toText(rs, rows) : ""), [view, edit, rs, rows]);
+
+  useEffect(() => {
+    if (!editContext) return;
+    let current = true;
+    api
+      .resultLinks(editContext.connectionId, editContext.database, editContext.dialect, editContext.sql, rs.columns.map((c) => c.name))
+      .then((l) => current && setLinks(l))
+      .catch(() => undefined);
+    return () => {
+      current = false;
+    };
+  }, [editContext?.connectionId, editContext?.database, editContext?.dialect, editContext?.sql, rs]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!menu) return;
+    const close = (e: Event) => {
+      if (!(e.target instanceof Node && menuRef.current?.contains(e.target))) setMenu(null);
+    };
+    window.addEventListener("mousedown", close, true);
+    window.addEventListener("blur", close);
+    return () => {
+      window.removeEventListener("mousedown", close, true);
+      window.removeEventListener("blur", close);
+    };
+  }, [menu]);
 
   // -- editing ---------------------------------------------------------------
 
@@ -281,6 +358,68 @@ export function ResultGrid({
     toast.info(pending ? `${pending} change(s) discarded` : "Editing ended");
   };
 
+  // -- foreign keys -------------------------------------------------------------
+
+  /** Links from the key in column `col` to the row it references. */
+  const outgoingByColumn = useMemo(() => {
+    const byColumn = new Map<number, RowLink[]>();
+    for (const l of links) {
+      if (l.direction === "references") for (const c of l.columns) byColumn.set(c, [...(byColumn.get(c) ?? []), l]);
+    }
+    return byColumn;
+  }, [links]);
+  const outgoing = (col: number) => outgoingByColumn.get(col) ?? [];
+
+  const keyText = (link: RowLink, i: number) =>
+    link.targetColumns.map((c, k) => `${c} = ${(rows[i]?.[link.columns[k]] ?? "NULL").slice(0, 40)}`).join(", ");
+
+  const linkLabel = (link: RowLink, i: number) =>
+    link.direction === "references"
+      ? `Open the ${link.schema}.${link.table} row (${keyText(link, i)})`
+      : `Rows of ${link.schema}.${link.table} that reference it (${keyText(link, i)})`;
+
+  /** Open what a link leads to from row `i` in a new tab. */
+  const follow = async (link: RowLink, i: number) => {
+    setMenu(null);
+    const row = rows[i];
+    if (!editContext || !row) return;
+    // the values as loaded: edits not saved yet are not in the database
+    const values = link.columns.map((j) => row[j] ?? null);
+    try {
+      const sql = await api.linkQuery(editContext.connectionId, editContext.database, editContext.dialect, link, values);
+      const shown = values.map((v) => (v ?? "NULL").slice(0, 30)).join(", ");
+      editContext.openQuery(
+        link.direction === "references" ? `${link.table} (${shown})` : `${link.table} by ${link.targetColumns.join(", ")} (${shown})`,
+        sql,
+      );
+    } catch (e) {
+      toast.info("Nothing to open", errorText(e));
+    }
+  };
+
+  // -- one row as a form ----------------------------------------------------------
+
+  const recordRow = Math.min(rows.length - 1, selected?.row ?? (selRows.size > 0 ? smallest(selRows) : 0));
+
+  const showRow = (row: number) => {
+    const r = Math.max(0, Math.min(rows.length - 1, row));
+    setSelected({ row: r, col: selected?.col ?? 0 });
+    setSelRows(new Set());
+    setRangeEnd(null);
+    const el = ref.current;
+    if (el) {
+      const top = r * ROW_H;
+      if (top < el.scrollTop) el.scrollTop = top;
+      else if (top + ROW_H * 2 > el.scrollTop + el.clientHeight) el.scrollTop = top + ROW_H * 2 - el.clientHeight;
+    }
+  };
+
+  const copyText = (text: string, what: string) =>
+    void navigator.clipboard.writeText(text).then(
+      () => toast.success(what),
+      (e) => toast.error("Copy failed", String(e)),
+    );
+
   const toggleSort = (col: number) => {
     setSelRows(new Set());
     setSelected(null);
@@ -291,7 +430,7 @@ export function ResultGrid({
     try {
       const path = await save({ defaultPath: "results.csv", filters: [{ name: "CSV", extensions: ["csv"] }] });
       if (!path) return;
-      await api.saveTextFile(path, toCsv(rs, targetRows()));
+      await api.saveTextFile(path, toCsv(rs, targetRows(), csvGuard()));
       setNote(`Saved ${targetRows().length} rows`);
       toast.success(`Saved ${targetRows().length} rows as CSV`, path);
       warnCut();
@@ -310,8 +449,13 @@ export function ResultGrid({
     const id = toast.progress(open ? "Opening in Excel…" : "Saving the workbook…", `${n.toLocaleString()} row(s)`);
     try {
       const file = await api.exportXlsx(path, rs.columns, targetRows(), open);
-      update(id, "success", open ? `Opened ${n.toLocaleString()} row(s) in Excel` : `Saved ${n.toLocaleString()} row(s) as Excel`, file);
+      update(id, "success", open ? `Opened ${n.toLocaleString()} row(s) in Excel` : `Saved ${n.toLocaleString()} row(s) as Excel`, file.path);
       warnCut();
+      if (file.cut > 0)
+        toast.warning(
+          `${file.cut.toLocaleString()} value(s) cut for Excel`,
+          "An Excel cell holds at most 32,767 characters; save as CSV to keep longer values whole.",
+        );
     } catch (e) {
       update(id, "error", "Could not export to Excel", errorText(e));
     }
@@ -330,8 +474,10 @@ export function ResultGrid({
   const ref = useRef<HTMLDivElement>(null);
   const resizing = useRef<{ col: number; x: number; w: number } | null>(null);
 
+  // the body's height decides how many rows to draw (the grid and the text view alike)
+  const mainRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    const el = ref.current;
+    const el = mainRef.current;
     if (!el) return;
     const ro = new ResizeObserver(() => setHeight(el.clientHeight));
     ro.observe(el);
@@ -362,7 +508,9 @@ export function ResultGrid({
 
   const copy = (headers: boolean) => {
     let text: string;
-    if (range && selected) {
+    if (view === "text" && !edit && !range && !selected) {
+      text = toText(rs, targetRows(), 4000);
+    } else if (range && selected) {
       text = rows
         .slice(range[0], range[1] + 1)
         .map((r) => r[selected.col] ?? "NULL")
@@ -389,7 +537,8 @@ export function ResultGrid({
   const copyAs = (format: string) => {
     let text = "";
     if (format === "insert") text = toInsert(rs, targetRows(), dialect);
-    else if (format === "csv") text = toCsv(rs, targetRows());
+    else if (format === "csv") text = toCsv(rs, targetRows(), csvGuard());
+    else if (format === "text") text = toText(rs, targetRows(), 4000);
     else if (format === "markdown") text = toMarkdown(rs, targetRows());
     else if (format === "json") text = toJson(rs, targetRows());
     else if (format === "html") text = toHtml(rs, targetRows());
@@ -399,7 +548,15 @@ export function ResultGrid({
       text = `(${values.map((v) => sqlLiteral(v, rs.columns[col].typeName, dialect)).join(", ")})`;
     }
     const label =
-      { insert: "as INSERT statements", csv: "as CSV", in: "as an IN (…) list", markdown: "as a Markdown table", json: "as JSON", html: "as an HTML table" }[format] ?? "";
+      {
+        insert: "as INSERT statements",
+        csv: "as CSV",
+        in: "as an IN (…) list",
+        markdown: "as a Markdown table",
+        json: "as JSON",
+        html: "as an HTML table",
+        text: "as a text table",
+      }[format] ?? "";
     if (text)
       void navigator.clipboard.writeText(text).then(
         () => {
@@ -411,6 +568,10 @@ export function ResultGrid({
   };
 
   const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Escape" && menu) {
+      setMenu(null);
+      return;
+    }
     if (e.ctrlKey && e.key.toLowerCase() === "c") {
       e.preventDefault();
       copy(e.shiftKey);
@@ -478,7 +639,7 @@ export function ResultGrid({
     setSelRows((prev) => {
       const next = new Set(e.ctrlKey ? prev : []);
       if (e.shiftKey && prev.size > 0) {
-        const anchor = Math.min(...prev);
+        const anchor = smallest(prev);
         for (let k = Math.min(anchor, i); k <= Math.max(anchor, i); k++) next.add(k);
       } else if (next.has(i)) next.delete(i);
       else next.add(i);
@@ -545,6 +706,23 @@ export function ResultGrid({
             )}
           </>
         )}
+        {!edit && (
+          <span className="view-switch" title="Show the rows as a grid, or as fixed-width text">
+            <button className={view === "grid" ? "active" : ""} onClick={() => setView("grid")}>
+              Grid
+            </button>
+            <button className={view === "text" ? "active" : ""} onClick={() => setView("text")}>
+              Text
+            </button>
+          </span>
+        )}
+        <button
+          className={recordOpen ? "active" : ""}
+          onClick={() => setRecordOpen(!recordOpen)}
+          title="Show the selected row as a form: every column with its whole value"
+        >
+          Record
+        </button>
         <button onClick={() => copy(false)} title="Ctrl+C">Copy</button>
         <button onClick={() => copy(true)} title="Ctrl+Shift+C">Copy with headers</button>
         <select
@@ -565,6 +743,7 @@ export function ResultGrid({
           <option value="markdown">Markdown table</option>
           <option value="json">JSON</option>
           <option value="html">HTML table</option>
+          <option value="text">Text table</option>
         </select>
         <button onClick={saveCsv} title="Save the selected rows (or all rows) as a CSV file">
           Save CSV…
@@ -639,6 +818,38 @@ export function ResultGrid({
           </div>
         </div>
       )}
+      {menu && (
+        <div className="grid-menu" ref={menuRef} style={{ left: menu.x, top: menu.y }}>
+          {links.map((l, k) => (
+            <button key={k} onClick={() => void follow(l, menu.row)}>
+              {l.direction === "references" ? "→ " : "← "}
+              {linkLabel(l, menu.row)}
+            </button>
+          ))}
+          {links.length > 0 && <div className="menu-sep" />}
+          <button
+            onClick={() => {
+              setMenu(null);
+              setSelected({ row: menu.row, col: menu.col });
+              setRecordOpen(true);
+            }}
+          >
+            Show the row as a form
+          </button>
+          <button
+            onClick={() => {
+              setMenu(null);
+              copyText(rows[menu.row]?.[menu.col] ?? "NULL", "Value copied");
+            }}
+          >
+            Copy the value
+          </button>
+        </div>
+      )}
+      <div className="grid-main" ref={mainRef}>
+      {view === "text" && !edit ? (
+        <TextRows text={textTable} top={textTop} height={height} onScroll={setTextTop} onKeyDown={onKeyDown} />
+      ) : (
       <div
         className="grid"
         ref={ref}
@@ -657,6 +868,16 @@ export function ResultGrid({
               onClick={() => !edit && toggleSort(i)}
             >
               {edit && !editableCol(i) && <span className="grid-lock">🔒 </span>}
+              {outgoing(i).length > 0 && (
+                <span
+                  className="grid-link"
+                  title={`References ${outgoing(i)
+                    .map((l) => `${l.schema}.${l.table}`)
+                    .join(", ")}: Ctrl+click a value to open its row`}
+                >
+                  ↗{" "}
+                </span>
+              )}
               {c.name || <i>(No column name)</i>}
               {sort?.col === i && <span className="sort-mark">{sort.desc ? " ▼" : " ▲"}</span>}
               <span className="grid-resize" onMouseDown={(e) => startResize(e, i)} />
@@ -715,11 +936,27 @@ export function ResultGrid({
                       (selected?.row === i && selected.col === j ? " active" : "") +
                       (inRange(i, j) ? " in-range" : "") +
                       (v == null ? " null" : "") +
-                      (changed ? " cell-changed" : "")
+                      (changed ? " cell-changed" : "") +
+                      (!edit && v != null && outgoing(j).length > 0 ? " fk" : "")
                     }
                     style={{ width: widths[j] }}
                     onDoubleClick={() => edit && beginCell(i, j)}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      setSelected({ row: i, col: j });
+                      setSelRows(new Set());
+                      setMenu({ x: e.clientX, y: e.clientY, row: i, col: j });
+                    }}
                     onMouseDown={(e) => {
+                      // Ctrl+click on a foreign key value opens the row it references
+                      if (e.ctrlKey && !edit && e.button === 0) {
+                        const link = outgoing(j)[0];
+                        if (link) {
+                          e.preventDefault();
+                          void follow(link, i);
+                          return;
+                        }
+                      }
                       if (e.shiftKey && selected && selected.col === j) {
                         setRangeEnd(i);
                         return;
@@ -728,7 +965,13 @@ export function ResultGrid({
                       setSelected({ row: i, col: j });
                       setSelRows(new Set());
                     }}
-                    title={v != null && v.length > 40 ? v.slice(0, 2000) : undefined}
+                    title={
+                      !edit && v != null && outgoing(j).length > 0
+                        ? `Ctrl+click: open the ${outgoing(j)[0].table} row`
+                        : v != null && v.length > 40
+                          ? v.slice(0, 2000)
+                          : undefined
+                    }
                   >
                     {v === undefined ? <i className="cell-default">default</i> : v == null ? "NULL" : v}
                   </div>
@@ -738,6 +981,81 @@ export function ResultGrid({
             );
           })}
         </div>
+      </div>
+      )}
+      {recordOpen && rows.length > 0 && (
+        <div className="record-view">
+          <div className="record-head">
+            <button onClick={() => showRow(recordRow - 1)} disabled={recordRow <= 0} title="Previous row">
+              ‹
+            </button>
+            <b>
+              Row {(recordRow + 1).toLocaleString()} of {rows.length.toLocaleString()}
+            </b>
+            <button onClick={() => showRow(recordRow + 1)} disabled={recordRow >= rows.length - 1} title="Next row">
+              ›
+            </button>
+            <input className="record-filter" value={recordFilter} placeholder="Find a column…" onChange={(e) => setRecordFilter(e.target.value)} />
+            <button onClick={() => setRecordOpen(false)} title="Close">
+              ×
+            </button>
+          </div>
+          <div className="record-fields">
+            {rs.columns
+              .map((c, j) => ({ c, j }))
+              .filter(({ c }) => c.name.toLowerCase().includes(recordFilter.trim().toLowerCase()))
+              .map(({ c, j }) => {
+                const row = rows[recordRow];
+                const v = edit ? valueOf(row, j) : row?.[j];
+                return (
+                  <div key={j} className="record-field">
+                    <div className="record-name">
+                      {c.name || <i>(No column name)</i>} <small>{c.typeName}</small>
+                    </div>
+                    <div
+                      className={"record-value" + (v == null ? " null" : "")}
+                      title="Click to copy the value"
+                      onClick={() => copyText(v ?? "NULL", `${c.name || "Value"} copied`)}
+                    >
+                      {v === undefined ? <i>default</i> : (v ?? "NULL")}
+                    </div>
+                  </div>
+                );
+              })}
+          </div>
+        </div>
+      )}
+      </div>
+    </div>
+  );
+}
+
+/** The rows as fixed-width text, drawing only the lines in view. */
+function TextRows({
+  text,
+  top,
+  height,
+  onScroll,
+  onKeyDown,
+}: {
+  text: string;
+  top: number;
+  height: number;
+  onScroll: (top: number) => void;
+  onKeyDown: (e: React.KeyboardEvent) => void;
+}) {
+  const lines = useMemo(() => text.split("\n"), [text]);
+  const widest = useMemo(() => lines.reduce((w, l) => Math.max(w, l.length), 0), [lines]);
+  const first = Math.max(0, Math.floor(top / LINE_H) - OVERSCAN);
+  const last = Math.min(lines.length, Math.ceil((top + Math.max(height, 300)) / LINE_H) + OVERSCAN);
+  return (
+    <div className="text-view" tabIndex={0} onKeyDown={onKeyDown} onScroll={(e) => onScroll(e.currentTarget.scrollTop)}>
+      <div style={{ height: lines.length * LINE_H, width: `${widest + 2}ch`, position: "relative" }}>
+        {lines.slice(first, last).map((line, k) => (
+          <div key={first + k} className="text-line" style={{ top: (first + k) * LINE_H }}>
+            {line}
+          </div>
+        ))}
       </div>
     </div>
   );

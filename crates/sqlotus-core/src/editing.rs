@@ -9,10 +9,10 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::Dialect;
-use crate::analysis::{sig, word};
 use crate::catalog::{Catalog, ObjectKind};
-use crate::lexer::{Token, TokenKind, tokenize};
+use crate::lexer::{Token, TokenKind, significant, tokenize, word};
 use crate::scope::analyze_statement;
+use crate::sqltype::SqlType;
 use crate::statements::split_statements;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -77,7 +77,7 @@ pub fn editable_source(
         .filter(|t| t.start >= spans[0].start && t.end() <= spans[0].end)
         .copied()
         .collect();
-    let t = sig(&stmt);
+    let t = significant(&stmt);
     if word(t.first()) != "SELECT" {
         return Err("Only SELECT results can be edited.".into());
     }
@@ -122,82 +122,22 @@ pub fn editable_source(
         ));
     }
 
-    // the select list, item by item, at depth 0 between SELECT [TOP n] and FROM
-    let mut i = 1;
-    if word(t.get(i)) == "ALL" {
-        i += 1;
-    }
-    if word(t.get(i)) == "TOP" {
-        i += if t.get(i + 1).is_some_and(|x| x.kind == TokenKind::LParen) {
-            4
-        } else {
-            2
-        };
-        if word(t.get(i)) == "PERCENT" {
-            i += 1;
-        }
-    }
-    let from = t.iter().enumerate().skip(i).scan(0i32, |d, (k, x)| {
-        match x.kind {
-            TokenKind::LParen => *d += 1,
-            TokenKind::RParen => *d -= 1,
-            _ => {}
-        }
-        Some((k, *d, x))
-    });
-    let from = from
-        .filter(|(_, d, x)| *d == 0 && word(Some(x)) == "FROM")
-        .map(|(k, _, _)| k)
-        .next()
-        .ok_or("SELECT without FROM cannot be edited.")?;
-    let mut items: Vec<Vec<Token<'_>>> = vec![Vec::new()];
-    let mut d = 0i32;
-    for x in &t[i..from] {
-        match x.kind {
-            TokenKind::LParen => d += 1,
-            TokenKind::RParen => d -= 1,
-            TokenKind::Comma if d == 0 => {
-                items.push(Vec::new());
-                continue;
-            }
-            _ => {}
-        }
-        items.last_mut().expect("non-empty").push(*x);
-    }
-    let qualifier_ok = |q: &Token<'_>| r.matches_qualifier(&q.ident_value());
+    let items = select_items(&t).ok_or("SELECT without FROM cannot be edited.")?;
+    let qualifier_ok = |q: &Option<Token<'_>>| q.is_none_or(|q| r.matches_qualifier(&q.ident_value()));
     let mut sources: Vec<Option<String>> = Vec::new();
     for item in &items {
-        match item.as_slice() {
-            [star] if star.text == "*" => sources.extend(table.columns.iter().map(|c| Some(c.name.clone()))),
-            [q, dot, star] if dot.kind == TokenKind::Dot && star.text == "*" && qualifier_ok(q) => {
+        match item {
+            SelectItem::Star(q) if qualifier_ok(q) => {
                 sources.extend(table.columns.iter().map(|c| Some(c.name.clone())))
             }
-            _ => {
-                // [q.]col [[AS] alias]
-                let (col, rest) = match item.as_slice() {
-                    [q, dot, c, rest @ ..] if dot.kind == TokenKind::Dot && c.is_name() && qualifier_ok(q) => {
-                        (Some(c), rest)
-                    }
-                    [c, rest @ ..] if c.is_name() => (Some(c), rest),
-                    _ => (None, &item[..0]),
-                };
-                let plain = match rest {
-                    [] => true,
-                    [alias] => alias.is_name(),
-                    [as_, alias] => word(Some(as_)) == "AS" && alias.is_name(),
-                    _ => false,
-                };
-                let column = col
-                    .filter(|_| plain)
-                    .and_then(|c| {
-                        table
-                            .columns
-                            .iter()
-                            .find(|x| x.name.eq_ignore_ascii_case(&c.ident_value()))
-                    })
-                    .map(|c| c.name.clone());
-                sources.push(column);
-            }
+            SelectItem::Column(q, c) if qualifier_ok(q) => sources.push(
+                table
+                    .columns
+                    .iter()
+                    .find(|x| x.name.eq_ignore_ascii_case(&c.ident_value()))
+                    .map(|c| c.name.clone()),
+            ),
+            _ => sources.push(None),
         }
     }
     if sources.len() != result_columns.len() {
@@ -238,6 +178,105 @@ pub fn editable_source(
     })
 }
 
+/// What an item of a SELECT list shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SelectItem<'a> {
+    /// `*` or `q.*`.
+    Star(Option<Token<'a>>),
+    /// `[q.]col [[AS] alias]`.
+    Column(Option<Token<'a>>, Token<'a>),
+    /// Anything else.
+    Expression,
+}
+
+/// The items of a SELECT's list, between SELECT [ALL | DISTINCT] [TOP n]
+/// and FROM. `t`: the significant tokens of the statement, from SELECT on.
+/// `None` without a FROM.
+pub(crate) fn select_items<'a>(t: &[Token<'a>]) -> Option<Vec<SelectItem<'a>>> {
+    let mut i = 1;
+    match word(t.get(i)).as_str() {
+        "ALL" => i += 1,
+        "DISTINCT" => {
+            i += 1;
+            // PostgreSQL DISTINCT ON (...)
+            if word(t.get(i)) == "ON" && t.get(i + 1).is_some_and(|x| x.kind == TokenKind::LParen) {
+                i = crate::lexer::matching_paren(t, i + 1)? + 1;
+            }
+        }
+        _ => {}
+    }
+    if word(t.get(i)) == "TOP" {
+        i += if t.get(i + 1).is_some_and(|x| x.kind == TokenKind::LParen) {
+            4
+        } else {
+            2
+        };
+        if word(t.get(i)) == "PERCENT" {
+            i += 1;
+        }
+        if word(t.get(i)) == "WITH" && word(t.get(i + 1)) == "TIES" {
+            i += 2;
+        }
+    }
+    let mut depth = 0i32;
+    let mut from = None;
+    for (k, x) in t.iter().enumerate().skip(i) {
+        match x.kind {
+            TokenKind::LParen => depth += 1,
+            TokenKind::RParen => depth -= 1,
+            _ if depth == 0 && word(Some(x)) == "FROM" => {
+                from = Some(k);
+                break;
+            }
+            _ => {}
+        }
+    }
+    let mut items: Vec<Vec<Token<'a>>> = vec![Vec::new()];
+    let mut d = 0i32;
+    for x in &t[i.min(from?)..from?] {
+        match x.kind {
+            TokenKind::LParen => d += 1,
+            TokenKind::RParen => d -= 1,
+            TokenKind::Comma if d == 0 => {
+                items.push(Vec::new());
+                continue;
+            }
+            _ => {}
+        }
+        items.last_mut().expect("non-empty").push(*x);
+    }
+    Some(
+        items
+            .iter()
+            .map(|item| match item.as_slice() {
+                [star] if star.text == "*" => SelectItem::Star(None),
+                [q, dot, star] if dot.kind == TokenKind::Dot && star.text == "*" && q.is_name() => {
+                    SelectItem::Star(Some(*q))
+                }
+                _ => {
+                    let (q, col, rest) = match item.as_slice() {
+                        [q, dot, c, rest @ ..] if dot.kind == TokenKind::Dot && q.is_name() && c.is_name() => {
+                            (Some(*q), Some(*c), rest)
+                        }
+                        [c, rest @ ..] if c.is_name() => (None, Some(*c), rest),
+                        _ => (None, None, &item[..0]),
+                    };
+                    let plain = match rest {
+                        [] => true,
+                        [alias] => alias.is_name(),
+                        [as_, alias] => word(Some(as_)) == "AS" && alias.is_name(),
+                        _ => false,
+                    };
+                    match col {
+                        Some(c) if plain => SelectItem::Column(q, c),
+                        _ => SelectItem::Expression,
+                    }
+                }
+            })
+            .collect(),
+    )
+}
+
 /// One edit of a result row. Values are keyed by table column name.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -264,48 +303,12 @@ pub struct EditPlan {
     pub problems: Vec<String>,
 }
 
-fn base(t: &str) -> String {
-    t.split('(').next().unwrap_or("").trim().to_ascii_lowercase()
-}
-
-fn max_len(t: &str) -> Option<usize> {
-    t.split_once('(')?.1.split([')', ',']).next()?.trim().parse().ok()
-}
-
-const NUMERIC: &[&str] = &[
-    "int",
-    "integer",
-    "bigint",
-    "smallint",
-    "tinyint",
-    "mediumint",
-    "decimal",
-    "numeric",
-    "money",
-    "smallmoney",
-    "float",
-    "real",
-    "double",
-    "double precision",
-    "int2",
-    "int4",
-    "int8",
-    "float4",
-    "float8",
-    "serial",
-    "bigserial",
-];
-
 /// Types whose text form round-trips exactly, so WHERE col = <value seen> is reliable.
 fn comparable(t: &str) -> bool {
-    let b = base(t);
-    (NUMERIC.contains(&b.as_str())
-        && !matches!(
-            b.as_str(),
-            "float" | "real" | "double" | "double precision" | "float4" | "float8"
-        ))
+    let ty = SqlType::parse(t);
+    (ty.is_number() && !ty.is_floating())
         || matches!(
-            b.as_str(),
+            ty.base(),
             "char"
                 | "varchar"
                 | "nchar"
@@ -321,7 +324,9 @@ fn comparable(t: &str) -> bool {
         )
 }
 
-fn literal(v: &Option<String>, col: &EditColumn, dialect: Dialect, problems: &mut Vec<String>) -> String {
+/// `v` as a SQL literal for column `col`; values that do not fit it are
+/// described in `problems`.
+pub(crate) fn literal(v: &Option<String>, col: &EditColumn, dialect: Dialect, problems: &mut Vec<String>) -> String {
     let name = col.column.as_deref().unwrap_or("?");
     let Some(v) = v else {
         if !col.nullable {
@@ -329,8 +334,14 @@ fn literal(v: &Option<String>, col: &EditColumn, dialect: Dialect, problems: &mu
         }
         return "NULL".into();
     };
-    let b = base(&col.data_type);
-    if NUMERIC.contains(&b.as_str()) {
+    let ty = SqlType::parse(&col.data_type);
+    let b = ty.base();
+    // PostgreSQL shows money in the server's currency format ($1,234.56),
+    // which it also reads back
+    if dialect == Dialect::Postgres && b == "money" {
+        return dialect.string_literal(v.trim());
+    }
+    if ty.is_number() {
         let s = v.trim();
         // a plain number only: `NaN` or `inf` would reach the server as SQL text
         let plain = s
@@ -341,7 +352,43 @@ fn literal(v: &Option<String>, col: &EditColumn, dialect: Dialect, problems: &mu
         }
         return s.to_string();
     }
-    if matches!(b.as_str(), "bit" | "bool" | "boolean") {
+    // PostgreSQL bit(n) / varbit are bit strings
+    if dialect == Dialect::Postgres && matches!(b, "bit" | "varbit" | "bit varying") {
+        let s = v.trim();
+        if !s.chars().all(|c| c == '0' || c == '1') {
+            problems.push(format!("{name}: bits are written as 0 and 1, e.g. 1010."));
+        }
+        return format!("B'{s}'");
+    }
+    // MySQL BIT(n): shown as a number; 0x... and b'0101' work too
+    if dialect == Dialect::MySql && b == "bit" {
+        let s = v.trim();
+        let lower = s.to_ascii_lowercase();
+        if let Some(h) = lower.strip_prefix("0x") {
+            if h.is_empty() || !h.chars().all(|c| c.is_ascii_hexdigit()) {
+                problems.push(format!("{name}: '{v}' is not a bit value."));
+            }
+            return format!("X'{h}'");
+        }
+        if let Some(bits) = lower.strip_prefix("b'").and_then(|r| r.strip_suffix('\'')) {
+            if !bits.chars().all(|c| c == '0' || c == '1') {
+                problems.push(format!("{name}: '{v}' is not a bit value."));
+            }
+            return format!("b'{bits}'");
+        }
+        return match lower.as_str() {
+            "true" => "1".into(),
+            "false" => "0".into(),
+            _ if !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()) => s.to_string(),
+            _ => {
+                problems.push(format!(
+                    "{name}: '{v}' is not a bit value (a number, 0x..., or b'0101')."
+                ));
+                "0".into()
+            }
+        };
+    }
+    if matches!(b, "bit" | "bool" | "boolean") {
         let s = v.trim().to_ascii_lowercase();
         let on = match s.as_str() {
             "1" | "true" | "t" | "yes" => true,
@@ -360,24 +407,27 @@ fn literal(v: &Option<String>, col: &EditColumn, dialect: Dialect, problems: &mu
         }
         .into();
     }
-    if matches!(
-        b.as_str(),
-        "varbinary" | "binary" | "image" | "bytea" | "blob" | "longblob"
-    ) {
-        if !v.starts_with("0x") || !v[2..].chars().all(|c| c.is_ascii_hexdigit()) {
+    if ty.is_binary() {
+        // 0x... as shown by SQL Server and MySQL, \x... as shown by PostgreSQL
+        let h = v
+            .trim()
+            .strip_prefix("0x")
+            .or_else(|| v.trim().strip_prefix("0X"))
+            .or_else(|| v.trim().strip_prefix("\\x"))
+            .filter(|h| h.chars().all(|c| c.is_ascii_hexdigit()));
+        let Some(h) = h else {
             problems.push(format!("{name}: binary values are written as 0x…"));
-        }
+            return "NULL".into();
+        };
         return match dialect {
-            Dialect::Postgres => format!("'\\x{}'::bytea", v.get(2..).unwrap_or("")),
-            _ => v.clone(),
+            Dialect::Postgres => format!("'\\x{h}'::bytea"),
+            Dialect::MySql => format!("X'{h}'"),
+            Dialect::MsSql => format!("0x{h}"),
         };
     }
-    if let Some(n) = max_len(&col.data_type).filter(|_| {
-        matches!(
-            b.as_str(),
-            "char" | "varchar" | "nchar" | "nvarchar" | "character" | "character varying"
-        )
-    }) && v.chars().count() > n
+    if ty.is_text()
+        && let Some(n) = ty.length()
+        && v.chars().count() > n
     {
         problems.push(format!(
             "{name}: {} characters do not fit {}.",
@@ -385,12 +435,7 @@ fn literal(v: &Option<String>, col: &EditColumn, dialect: Dialect, problems: &mu
             col.data_type
         ));
     }
-    let quoted = dialect.string_literal(v);
-    if dialect == Dialect::MsSql && matches!(b.as_str(), "nchar" | "nvarchar" | "ntext") {
-        format!("N{quoted}")
-    } else {
-        quoted
-    }
+    dialect.typed_string(v, &ty)
 }
 
 /// Statements for the edits, with every value checked against its column.
@@ -713,5 +758,82 @@ mod tests {
             let plan = edit_statements(&ms, &update("Score", good), Dialect::MsSql);
             assert!(plan.problems.is_empty(), "{good:?}: {:?}", plan.problems);
         }
+    }
+
+    #[test]
+    fn literals_read_back_as_shown() {
+        let source = |types: &[&str]| EditSource {
+            schema: "dbo".into(),
+            table: "t".into(),
+            columns: std::iter::once(EditColumn {
+                column: Some("id".into()),
+                data_type: "int".into(),
+                nullable: false,
+                is_key: true,
+                read_only: false,
+            })
+            .chain(types.iter().enumerate().map(|(i, t)| EditColumn {
+                column: Some(format!("c{i}")),
+                data_type: t.to_string(),
+                nullable: true,
+                is_key: false,
+                read_only: false,
+            }))
+            .collect(),
+        };
+        // the SET part of an UPDATE of column c0 (of `ty`) to `value`
+        let set = |ty: &str, value: &str, d: Dialect| -> (String, Vec<String>) {
+            let plan = edit_statements(
+                &source(&[ty]),
+                &[RowEdit::Update {
+                    original: HashMap::from([("id".to_string(), Some("1".to_string()))]),
+                    values: HashMap::from([("c0".to_string(), Some(value.to_string()))]),
+                }],
+                d,
+            );
+            let stmt = &plan.statements[0];
+            let start = stmt.find(" SET ").unwrap() + 5;
+            let end = stmt.find(" WHERE ").unwrap();
+            (stmt[start..end].to_string(), plan.problems)
+        };
+        let (ms, pg, my) = (Dialect::MsSql, Dialect::Postgres, Dialect::MySql);
+        // SQL Server: N'...' for every type but 8-bit text, so xml and sysname keep Unicode
+        assert_eq!(set("xml", "<a>Việt</a>", ms).0, "c0 = N'<a>Việt</a>'");
+        assert_eq!(set("sysname", "Đơn", ms).0, "c0 = N'Đơn'");
+        assert_eq!(set("varchar(10)", "abc", ms).0, "c0 = 'abc'");
+        // datetime in ISO 8601: 'YYYY-MM-DD hh:mm' depends on DATEFORMAT
+        assert_eq!(
+            set("datetime", "2024-01-12 10:20:30.123", ms).0,
+            "c0 = '2024-01-12T10:20:30.123'"
+        );
+        assert_eq!(
+            set("smalldatetime", "2024-01-12 10:20:00", ms).0,
+            "c0 = '2024-01-12T10:20:00'"
+        );
+        assert_eq!(
+            set("datetime2(7)", "2024-01-12 10:20:30.1234567", ms).0,
+            "c0 = '2024-01-12 10:20:30.1234567'"
+        );
+        // MySQL 8 writes unsigned types without a width
+        assert_eq!(set("int unsigned", "42", my).0, "c0 = 42");
+        assert_eq!(set("int unsigned", "x", my).1.len(), 1);
+        assert_eq!(set("varbinary(16)", "0x", ms).0, "c0 = 0x");
+        // PostgreSQL: bit strings, bytea as shown (\x...), money in its own format
+        assert_eq!(set("bit(8)", "10101010", pg).0, "c0 = B'10101010'");
+        assert_eq!(set("bit", "1", pg).0, "c0 = B'1'");
+        assert_eq!(set("bit(4)", "12", pg).1.len(), 1);
+        assert_eq!(set("boolean", "t", pg).0, "c0 = TRUE");
+        assert_eq!(set("bytea", "\\x00ff", pg).0, "c0 = '\\x00ff'::bytea");
+        assert_eq!(set("bytea", "0x00FF", pg).0, "c0 = '\\x00FF'::bytea");
+        assert_eq!(set("money", "$1,234.56", pg).0, "c0 = '$1,234.56'");
+        // MySQL: BIT(n) shown as a number; binary as X'...'
+        assert_eq!(set("bit(8)", "170", my).0, "c0 = 170");
+        assert_eq!(set("bit(1)", "true", my).0, "c0 = 1");
+        assert_eq!(set("bit(8)", "0xAA", my).0, "c0 = X'aa'");
+        assert_eq!(set("bit(8)", "b'1010'", my).0, "c0 = b'1010'");
+        assert_eq!(set("bit(8)", "x", my).1.len(), 1);
+        assert_eq!(set("blob", "0x0102", my).0, "c0 = X'0102'");
+        assert_eq!(set("varbinary(4)", "0x", my).0, "c0 = X''");
+        assert_eq!(set("blob", "text", my).1.len(), 1);
     }
 }

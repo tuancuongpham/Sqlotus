@@ -42,10 +42,11 @@ fn tls(trust: bool) -> Result<MakeTlsConnector> {
 
 impl PgConn {
     pub async fn open(cfg: &ConnectionConfig, password: Option<&str>) -> Result<Self> {
+        let endpoint = cfg.endpoint();
         let mut config = tokio_postgres::Config::new();
         config
-            .host(cfg.host.trim())
-            .port(cfg.port.unwrap_or(5432))
+            .host(&endpoint.host)
+            .port(endpoint.port.unwrap_or(cfg.default_port()))
             .user(cfg.user.as_deref().unwrap_or("postgres"))
             .dbname(cfg.database.as_deref().filter(|d| !d.is_empty()).unwrap_or("postgres"))
             .application_name("Sqlotus")
@@ -169,7 +170,45 @@ impl PgConn {
         if let Some(rs) = current.take() {
             out.result_sets.push(rs);
         }
+        self.add_types(sql, &mut out).await;
         out
+    }
+
+    /// The simple protocol returns text without column types; for a single
+    /// statement, describe it (prepare, never run) to name them, so exports
+    /// keep numbers as numbers and quote the rest.
+    async fn add_types(&self, sql: &str, out: &mut BatchOutput) {
+        if out.failed || out.result_sets.len() != 1 {
+            return;
+        }
+        let pg = sqlotus_core::Dialect::Postgres;
+        if sqlotus_core::statements::split_statements(sql, pg).len() != 1 {
+            return;
+        }
+        // only statements that read: a failed describe inside the user's
+        // transaction would abort it, and these described fine a moment ago
+        let words: Vec<String> = sqlotus_core::tokenize(sql, pg)
+            .iter()
+            .filter(|t| t.kind == sqlotus_core::TokenKind::Word)
+            .map(|t| t.upper())
+            .collect();
+        let reads = words
+            .first()
+            .is_some_and(|w| matches!(w.as_str(), "SELECT" | "WITH" | "VALUES" | "TABLE" | "SHOW" | "EXPLAIN"));
+        if !reads && !words.iter().any(|w| w == "RETURNING") {
+            return;
+        }
+        let Ok(stmt) = self.client.prepare(sql).await else {
+            return;
+        };
+        let rs = &mut out.result_sets[0];
+        let cols = stmt.columns();
+        if cols.len() != rs.columns.len() || cols.iter().zip(&rs.columns).any(|(c, r)| c.name() != r.name) {
+            return;
+        }
+        for (c, r) in cols.iter().zip(rs.columns.iter_mut()) {
+            r.type_name = c.type_().name().to_string();
+        }
     }
 }
 

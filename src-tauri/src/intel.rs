@@ -9,6 +9,7 @@ use sqlotus_core::analysis::{self, Fix, ObjectAt, Severity, SignatureInfo};
 use sqlotus_core::catalog::DbObject;
 use sqlotus_core::format::KeywordCase;
 use sqlotus_core::lint::{self, RULES, Rule};
+use sqlotus_core::safety::ScriptRun;
 use sqlotus_core::{Dialect, byte_to_utf16, refactor, script, utf16_to_byte};
 use sqlotus_db::CatalogSnapshot;
 use tauri::State;
@@ -108,7 +109,7 @@ pub fn analysis_rules() -> Vec<Rule> {
 
 #[tauri::command]
 pub async fn execution_warnings(text: String, dialect: Dialect) -> CmdResult<Vec<String>> {
-    no_panic("execution warnings", || analysis::execution_warnings(&text, dialect))
+    no_panic("execution warnings", || ScriptRun::new(&text, dialect).warnings())
 }
 
 #[derive(Serialize)]

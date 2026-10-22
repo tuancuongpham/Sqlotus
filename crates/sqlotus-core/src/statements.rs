@@ -2,8 +2,10 @@
 
 use serde::Serialize;
 
+use std::ops::Range;
+
 use crate::Dialect;
-use crate::lexer::{Token, TokenKind, tokenize};
+use crate::lexer::{Token, TokenKind, significant, tokenize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Span {
@@ -30,7 +32,7 @@ pub struct Batch {
 
 /// Index of every `GO` separator token, with its repeat count and the byte
 /// offset where its line ends.
-fn go_lines(tokens: &[Token<'_>]) -> Vec<(usize, u32, usize)> {
+pub(crate) fn go_lines(tokens: &[Token<'_>]) -> Vec<(usize, u32, usize)> {
     let mut found = Vec::new();
     for (i, t) in tokens.iter().enumerate() {
         if t.kind != TokenKind::Word || !t.text.eq_ignore_ascii_case("GO") {
@@ -67,17 +69,17 @@ fn go_lines(tokens: &[Token<'_>]) -> Vec<(usize, u32, usize)> {
 
 /// A stretch of a MySQL script between `DELIMITER` lines, with the statement
 /// terminator in force there.
-struct Region<'a> {
-    start: usize,
-    end: usize,
-    delimiter: &'a str,
+pub(crate) struct Region<'a> {
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    pub(crate) delimiter: &'a str,
 }
 
 /// MySQL client `DELIMITER x` lines (dumps, procedure and trigger scripts).
 /// The server does not know them, so the script is cut there. `None` when
 /// the script has none. `DELIMITER` counts only at the start of a line that
 /// follows a finished statement, so a column named `delimiter` stays a column.
-fn delimiter_regions<'a>(src: &'a str, tokens: &[Token<'a>]) -> Option<Vec<Region<'a>>> {
+pub(crate) fn delimiter_regions<'a>(src: &'a str, tokens: &[Token<'a>]) -> Option<Vec<Region<'a>>> {
     let mut regions = Vec::new();
     let mut start = 0;
     let mut delimiter = ";";
@@ -119,7 +121,7 @@ fn delimiter_regions<'a>(src: &'a str, tokens: &[Token<'a>]) -> Option<Vec<Regio
 /// The statements of a region whose terminator is not `;`: cut at each
 /// terminator outside strings, quoted names and comments (the terminator is
 /// left out, as the client does).
-fn region_pieces(src: &str, tokens: &[Token<'_>], r: &Region<'_>) -> Vec<Span> {
+pub(crate) fn region_pieces(src: &str, tokens: &[Token<'_>], r: &Region<'_>) -> Vec<Span> {
     let mut out = Vec::new();
     let mut piece = r.start;
     let mut from = r.start;
@@ -145,10 +147,26 @@ fn region_pieces(src: &str, tokens: &[Token<'_>], r: &Region<'_>) -> Vec<Span> {
     out
 }
 
+/// Whether `text` holds anything but whitespace and comments: a batch or
+/// statement of comments alone is not sent (MySQL calls it an empty query).
+/// MySQL runs `/*!50003 CREATE */` comments (dumps), so they are code.
+fn has_code(text: &str, dialect: Dialect) -> bool {
+    tokenize(text, dialect).iter().any(|t| {
+        !t.is_trivia() || (dialect == Dialect::MySql && t.kind == TokenKind::BlockComment && t.text.starts_with("/*!"))
+    })
+}
+
 /// Split a script into batches. T-SQL splits on `GO`; a MySQL script with
 /// `DELIMITER` lines runs each custom-terminated statement on its own; other
-/// scripts are one multi-statement batch.
+/// scripts are one multi-statement batch. Batches of comments alone are left
+/// out.
 pub fn split_batches(src: &str, dialect: Dialect) -> Vec<Batch> {
+    let mut batches = all_batches(src, dialect);
+    batches.retain(|b| has_code(b.span.text(src), dialect));
+    batches
+}
+
+fn all_batches(src: &str, dialect: Dialect) -> Vec<Batch> {
     let mut batches = Vec::new();
     let mut start = 0;
     if dialect == Dialect::MySql {
@@ -204,8 +222,14 @@ const STATEMENT_STARTS: &[&str] = &[
 
 /// Split into statements: on `;`, on `GO` lines, and where a blank line is
 /// followed by a statement keyword outside parentheses (T-SQL scripts often
-/// omit semicolons).
+/// omit semicolons). Comments alone are not a statement.
 pub fn split_statements(src: &str, dialect: Dialect) -> Vec<Span> {
+    let mut spans = all_statements(src, dialect);
+    spans.retain(|s| has_code(s.text(src), dialect));
+    spans
+}
+
+fn all_statements(src: &str, dialect: Dialect) -> Vec<Span> {
     let tokens = tokenize(src, dialect);
     if dialect == Dialect::MySql
         && let Some(regions) = delimiter_regions(src, &tokens)
@@ -288,6 +312,255 @@ pub fn statement_at(src: &str, dialect: Dialect, offset: usize) -> Option<Span> 
         .find(|s| s.contains(offset))
         .or_else(|| spans.iter().rev().find(|s| s.end <= offset))
         .copied()
+}
+
+/// Kinds of object whose definition carries a body that the server stores
+/// rather than runs.
+const MODULE_KINDS: &[&str] = &["PROCEDURE", "PROC", "FUNCTION", "TRIGGER", "VIEW", "EVENT", "RULE"];
+
+/// Whether the significant tokens `t` start a routine, trigger or view
+/// definition: CREATE or ALTER, modifiers such as `OR ALTER`, `OR REPLACE`,
+/// `DEFINER = u@h`, `ALGORITHM = x`, `SQL SECURITY x`, `CONSTRAINT` or
+/// `TEMP`, then the kind of object (so `ALTER TABLE t DISABLE TRIGGER` is not
+/// one).
+pub(crate) fn defines_module(t: &[Token<'_>]) -> bool {
+    let word = |i: usize| {
+        t.get(i)
+            .filter(|x| x.kind == TokenKind::Word)
+            .map(Token::upper)
+            .unwrap_or_default()
+    };
+    if !matches!(word(0).as_str(), "CREATE" | "ALTER") {
+        return false;
+    }
+    let reach = t.len().min(32);
+    let mut i = 1;
+    while i < reach {
+        match word(i).as_str() {
+            k if MODULE_KINDS.contains(&k) => return true,
+            "OR" if matches!(word(i + 1).as_str(), "ALTER" | "REPLACE") => i += 2,
+            "ALGORITHM" => i += 3,
+            "SQL" if word(i + 1) == "SECURITY" => i += 3,
+            "AGGREGATE" | "CONSTRAINT" | "TEMP" | "TEMPORARY" | "RECURSIVE" | "MATERIALIZED" => i += 1,
+            // DEFINER = user@host or CURRENT_USER: up to the next keyword
+            "DEFINER" => {
+                i += 1;
+                while i < reach
+                    && !matches!(word(i).as_str(), k if MODULE_KINDS.contains(&k) || k == "ALGORITHM" || k == "SQL")
+                {
+                    i += 1;
+                }
+            }
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// BEGIN ... END nesting in procedural code. CASE ... END expressions and
+/// MySQL's END IF / LOOP / WHILE / REPEAT / CASE close no block; T-SQL BEGIN
+/// TRAN / DIALOG / CONVERSATION, MySQL BEGIN WORK and PostgreSQL BEGIN (a
+/// transaction, unlike BEGIN ATOMIC) open none.
+#[derive(Debug, Default)]
+pub(crate) struct Blocks {
+    pub(crate) depth: i32,
+    cases: i32,
+}
+
+impl Blocks {
+    /// Take in the significant token `t[k]`.
+    pub(crate) fn read(&mut self, dialect: Dialect, t: &[Token<'_>], k: usize) {
+        if t[k].kind != TokenKind::Word {
+            return;
+        }
+        let key = |i: Option<usize>| {
+            i.and_then(|i| t.get(i)).map_or(String::new(), |x| {
+                if x.kind == TokenKind::Word {
+                    x.upper()
+                } else {
+                    x.text.to_string()
+                }
+            })
+        };
+        let (prev, next) = (key(k.checked_sub(1)), key(Some(k + 1)));
+        match t[k].upper().as_str() {
+            "CASE" if prev != "END" => self.cases += 1,
+            "BEGIN" if Self::opens(dialect, &next) => self.depth += 1,
+            "END" if dialect == Dialect::MySql && matches!(next.as_str(), "IF" | "LOOP" | "WHILE" | "REPEAT") => {}
+            "END" if self.cases > 0 => self.cases -= 1,
+            "END" if next != "CONVERSATION" => self.depth = (self.depth - 1).max(0),
+            _ => {}
+        }
+    }
+
+    fn opens(dialect: Dialect, next: &str) -> bool {
+        match dialect {
+            Dialect::Postgres => next == "ATOMIC",
+            Dialect::MsSql => !matches!(
+                next,
+                "TRAN" | "TRANSACTION" | "DISTRIBUTED" | "DIALOG" | "CONVERSATION" | ";"
+            ),
+            Dialect::MySql => !matches!(next, "WORK" | ";"),
+        }
+    }
+}
+
+/// The tokens of `tokens` (in source order, with or without trivia) that lie
+/// inside `span`, found by binary search: callers going through every
+/// statement or batch of a long script stay linear.
+pub(crate) fn tokens_in<'t, 'a>(tokens: &'t [Token<'a>], span: &Span) -> &'t [Token<'a>] {
+    let from = tokens.partition_point(|t| t.start < span.start);
+    let to = tokens.partition_point(|t| t.end() <= span.end).max(from);
+    &tokens[from..to]
+}
+
+/// Token ranges of routine, trigger and view definitions in the significant
+/// tokens `t`, given its batches and its statement starts (sorted). A T-SQL
+/// definition must start its batch and takes the rest of it; elsewhere a
+/// definition ends with the END of its BEGIN ... END body, or at its `;`
+/// when it has none.
+pub(crate) fn definition_ranges(
+    t: &[Token<'_>],
+    batches: &[Range<usize>],
+    starts: &[usize],
+    dialect: Dialect,
+) -> Vec<Range<usize>> {
+    let mut out: Vec<Range<usize>> = Vec::new();
+    for b in batches {
+        let first = starts.partition_point(|&s| s < b.start);
+        let in_batch = &starts[first..starts.partition_point(|&s| s < b.end)];
+        for (k, &s) in in_batch.iter().enumerate() {
+            if out.last().is_some_and(|r| s < r.end) {
+                continue;
+            }
+            if defines_module(&t[s..b.end]) {
+                // never shorter than its statement: between two MySQL
+                // DELIMITER lines the whole piece is one, `;` or not
+                let statement_end = in_batch.get(k + 1).copied().unwrap_or(b.end);
+                let end = match dialect {
+                    Dialect::MsSql => b.end,
+                    _ => (s + body_end(&t[s..b.end], dialect)).max(statement_end),
+                };
+                out.push(s..end);
+            }
+            if dialect == Dialect::MsSql {
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// Where the definition that starts `t` ends (exclusive): after the END
+/// that closes its body, or after its `;` when it has no BEGIN ... END.
+fn body_end(t: &[Token<'_>], dialect: Dialect) -> usize {
+    let mut blocks = Blocks::default();
+    let mut parens = 0i32;
+    for k in 0..t.len() {
+        match t[k].kind {
+            TokenKind::LParen => parens += 1,
+            TokenKind::RParen => parens -= 1,
+            TokenKind::Semicolon if blocks.depth == 0 && parens <= 0 => return k + 1,
+            TokenKind::Word => {
+                let open = blocks.depth > 0;
+                blocks.read(dialect, t, k);
+                if open && blocks.depth == 0 {
+                    return k + 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    t.len()
+}
+
+/// What "execute current statement" runs: [`statement_at`], widened to the
+/// whole T-SQL batch for CREATE / ALTER PROCEDURE, FUNCTION, TRIGGER and
+/// VIEW (the rest of the batch is their body), to the whole MySQL routine,
+/// trigger or event (a statement of its body would run on its own), and to
+/// the whole block for a statement inside BEGIN ... END, TRY / CATCH,
+/// IF / ELSE or WHILE (PostgreSQL: BEGIN ATOMIC ... END).
+pub fn executable_statement_at(src: &str, dialect: Dialect, offset: usize) -> Option<Span> {
+    let span = statement_at(src, dialect, offset)?;
+    if dialect == Dialect::MySql {
+        return Some(mysql_definition_around(src, span).unwrap_or(span));
+    }
+    let tokens: Vec<Token<'_>> = tokenize(src, dialect).into_iter().filter(|t| !t.is_trivia()).collect();
+    let batch = split_batches(src, dialect)
+        .into_iter()
+        .map(|b| b.span)
+        .find(|b| b.start <= span.start && span.end <= b.end)
+        .unwrap_or(Span {
+            start: 0,
+            end: src.len(),
+        });
+    let statements: Vec<Span> = split_statements(src, dialect)
+        .into_iter()
+        .filter(|s| batch.start <= s.start && s.end <= batch.end)
+        .collect();
+    // a module definition takes the rest of its batch
+    if dialect == Dialect::MsSql
+        && statements
+            .first()
+            .is_some_and(|s| defines_module(tokens_in(&tokens, s)))
+    {
+        return Some(batch);
+    }
+    // statements joined into top-level units: a block stays together, ELSE
+    // continues an IF and BEGIN CATCH continues a TRY
+    let mut units: Vec<Span> = Vec::new();
+    let mut blocks = Blocks::default();
+    for s in &statements {
+        let t = tokens_in(&tokens, s);
+        let word = |i: usize| t.get(i).filter(|x| x.kind == TokenKind::Word).map(Token::upper);
+        let continues = word(0).as_deref() == Some("ELSE")
+            || (word(0).as_deref() == Some("BEGIN") && word(1).as_deref() == Some("CATCH"));
+        match units.last_mut() {
+            Some(u) if blocks.depth > 0 || continues => u.end = s.end,
+            _ => units.push(*s),
+        }
+        for k in 0..t.len() {
+            blocks.read(dialect, t, k);
+        }
+    }
+    units
+        .into_iter()
+        .find(|u| u.start <= span.start && span.end <= u.end)
+        .or(Some(span))
+}
+
+/// The MySQL routine, trigger or event definition that statement `span`
+/// belongs to: from the start of the statement holding its first token to
+/// the end of the statement holding its last (comments around it included).
+fn mysql_definition_around(src: &str, span: Span) -> Option<Span> {
+    let dialect = Dialect::MySql;
+    let t = significant(&tokenize(src, dialect));
+    let index = |offset: usize| t.partition_point(|x| x.start < offset);
+    let statements = split_statements(src, dialect);
+    let starts: Vec<usize> = statements.iter().map(|s| index(s.start)).collect();
+    let batches: Vec<Range<usize>> = split_batches(src, dialect)
+        .iter()
+        .map(|b| index(b.span.start)..index(b.span.end))
+        .collect();
+    let at = index(span.start);
+    let def = definition_ranges(&t, &batches, &starts, dialect)
+        .into_iter()
+        .find(|r| r.start <= at && at < r.end)?;
+    let statement_of = |token: &Token<'_>| {
+        statements
+            .iter()
+            .find(|s| s.start <= token.start && token.start < s.end)
+    };
+    // the `;` after END belongs to the definition
+    let last = match t.get(def.end) {
+        Some(x) if x.kind == TokenKind::Semicolon => x,
+        _ => &t[def.end - 1],
+    };
+    let first = &t[def.start];
+    Some(Span {
+        start: statement_of(first).map_or(first.start, |s| s.start.min(first.start)),
+        end: statement_of(last).map_or(last.end(), |s| s.end.max(last.end())),
+    })
 }
 
 #[cfg(test)]
@@ -421,5 +694,156 @@ mod tests {
         let src = "select 1;\nselect a from t;";
         let at = statement_at(src, Dialect::MsSql, 15).unwrap();
         assert_eq!(at.text(src), "select a from t;");
+    }
+
+    #[test]
+    fn execute_current_statement_takes_whole_blocks() {
+        let src = "CREATE PROCEDURE dbo.p AS\nBEGIN\n    SELECT 1;\n    SELECT 2;\nEND\nGO\n\
+                   BEGIN TRY\n    SELECT 1/0;\nEND TRY\nBEGIN CATCH\n    SELECT ERROR_MESSAGE();\nEND CATCH\nGO\n\
+                   IF 1 = 1\nBEGIN\n    PRINT 'a';\n    PRINT CASE WHEN 1 = 1 THEN 'b' END;\nEND\nELSE\n    PRINT 'c';\n\
+                   SELECT 3;\nGO\nCREATE OR ALTER PROC dbo.q AS SELECT 1; SELECT 2;\nGO\nBEGIN TRAN;\nUPDATE t SET a = 1;";
+        let run = |needle: &str| {
+            let at = src.find(needle).unwrap() + 1;
+            executable_statement_at(src, Dialect::MsSql, at)
+                .unwrap()
+                .text(src)
+                .to_string()
+        };
+        let proc = "CREATE PROCEDURE dbo.p AS\nBEGIN\n    SELECT 1;\n    SELECT 2;\nEND";
+        assert_eq!(run("CREATE PROCEDURE"), proc);
+        assert_eq!(run("SELECT 2"), proc);
+        let try_catch = "BEGIN TRY\n    SELECT 1/0;\nEND TRY\nBEGIN CATCH\n    SELECT ERROR_MESSAGE();\nEND CATCH";
+        assert_eq!(run("SELECT 1/0"), try_catch);
+        assert_eq!(run("ERROR_MESSAGE"), try_catch);
+        let if_else =
+            "IF 1 = 1\nBEGIN\n    PRINT 'a';\n    PRINT CASE WHEN 1 = 1 THEN 'b' END;\nEND\nELSE\n    PRINT 'c';";
+        assert_eq!(run("PRINT 'a'"), if_else);
+        assert_eq!(run("PRINT 'c'"), if_else);
+        assert_eq!(run("SELECT 3"), "SELECT 3;");
+        // a module without BEGIN ... END: the rest of the batch is its body
+        assert_eq!(
+            run("CREATE OR ALTER PROC"),
+            "CREATE OR ALTER PROC dbo.q AS SELECT 1; SELECT 2;"
+        );
+        // BEGIN TRAN is not a block
+        assert_eq!(run("UPDATE t"), "UPDATE t SET a = 1;");
+        // PostgreSQL: BEGIN ATOMIC bodies, while BEGIN; is a transaction
+        let pg = "BEGIN;\nCREATE FUNCTION f() RETURNS int LANGUAGE sql BEGIN ATOMIC SELECT 1; SELECT 2; END;\nCOMMIT;";
+        let at = pg.find("SELECT 2").unwrap();
+        assert_eq!(
+            executable_statement_at(pg, Dialect::Postgres, at).unwrap().text(pg),
+            "CREATE FUNCTION f() RETURNS int LANGUAGE sql BEGIN ATOMIC SELECT 1; SELECT 2; END;"
+        );
+        assert_eq!(
+            executable_statement_at(pg, Dialect::Postgres, 2).unwrap().text(pg),
+            "BEGIN;"
+        );
+    }
+
+    fn sig(src: &str, d: Dialect) -> Vec<Token<'_>> {
+        tokenize(src, d).into_iter().filter(|t| !t.is_trivia()).collect()
+    }
+
+    #[test]
+    fn execute_current_statement_takes_whole_mysql_routines() {
+        let my = Dialect::MySql;
+        let src = "SELECT 1;\nCREATE PROCEDURE clear_staging()\nBEGIN\n  DELETE FROM staging;\n  IF 1 THEN\n    INSERT INTO log VALUES (1);\n  END IF;\nEND;\nSELECT 2;";
+        let proc = "CREATE PROCEDURE clear_staging()\nBEGIN\n  DELETE FROM staging;\n  IF 1 THEN\n    INSERT INTO log VALUES (1);\n  END IF;\nEND;";
+        let run = |needle: &str| {
+            let at = src.find(needle).unwrap() + 1;
+            executable_statement_at(src, my, at).unwrap().text(src).to_string()
+        };
+        // a statement of the body never runs on its own
+        for needle in ["CREATE", "DELETE", "INSERT", "END IF", "END;\nSELECT"] {
+            assert_eq!(run(needle), proc, "{needle}");
+        }
+        assert_eq!(run("SELECT 1"), "SELECT 1;");
+        assert_eq!(run("SELECT 2"), "SELECT 2;");
+        let trigger = "CREATE TRIGGER t BEFORE DELETE ON orders FOR EACH ROW BEGIN DELETE FROM audit; END";
+        let at = trigger.find("FROM audit").unwrap();
+        assert_eq!(executable_statement_at(trigger, my, at).unwrap().text(trigger), trigger);
+        // with DELIMITER the client already keeps the routine whole
+        let delimited = "DELIMITER //\nCREATE PROCEDURE p() BEGIN SELECT 1; SELECT 2; END //\nDELIMITER ;";
+        let at = delimited.find("SELECT 2").unwrap();
+        assert_eq!(
+            executable_statement_at(delimited, my, at).unwrap().text(delimited),
+            "CREATE PROCEDURE p() BEGIN SELECT 1; SELECT 2; END"
+        );
+        // ... also with no BEGIN, where `;` ends the routine's single statement
+        let piece = "DELIMITER //\nCREATE PROCEDURE p() SELECT 1; SELECT 2 //\nDELIMITER ;";
+        let at = piece.find("SELECT 1").unwrap();
+        assert_eq!(
+            executable_statement_at(piece, my, at).unwrap().text(piece),
+            "CREATE PROCEDURE p() SELECT 1; SELECT 2"
+        );
+        // a comment ending the routine's last statement stays with it, as it does
+        // with the statement under the cursor
+        let open = "CREATE PROCEDURE p()\nBEGIN\n  SELECT 1;\n  SELECT 2 # last";
+        let at = open.find("SELECT 2").unwrap();
+        assert_eq!(executable_statement_at(open, my, at).unwrap().text(open), open);
+    }
+
+    #[test]
+    fn module_definitions_are_recognised() {
+        let (ms, pg, my) = (Dialect::MsSql, Dialect::Postgres, Dialect::MySql);
+        for (src, d) in [
+            ("CREATE PROCEDURE dbo.p AS SELECT 1", ms),
+            ("create or alter proc p as select 1", ms),
+            ("ALTER TRIGGER dbo.t ON dbo.x AFTER INSERT AS SELECT 1", ms),
+            (
+                "CREATE OR REPLACE FUNCTION f() RETURNS int AS $$ SELECT 1 $$ LANGUAGE sql",
+                pg,
+            ),
+            (
+                "CREATE CONSTRAINT TRIGGER t AFTER INSERT ON x FOR EACH ROW EXECUTE FUNCTION f()",
+                pg,
+            ),
+            ("CREATE OR REPLACE TEMP VIEW v AS SELECT 1", pg),
+            ("CREATE DEFINER=`root`@`%` PROCEDURE p() BEGIN SELECT 1; END", my),
+            (
+                "CREATE DEFINER = CURRENT_USER TRIGGER t BEFORE INSERT ON x FOR EACH ROW SET NEW.a = 1",
+                my,
+            ),
+            ("CREATE ALGORITHM=MERGE SQL SECURITY INVOKER VIEW v AS SELECT 1", my),
+            ("CREATE EVENT e ON SCHEDULE EVERY 1 DAY DO DELETE FROM log", my),
+        ] {
+            assert!(defines_module(&sig(src, d)), "{src}");
+        }
+        for (src, d) in [
+            ("ALTER TABLE dbo.t DISABLE TRIGGER ALL", ms),
+            ("CREATE TABLE trigger_log (a int)", ms),
+            ("CREATE UNIQUE INDEX ix ON t (a)", ms),
+            ("DROP PROCEDURE dbo.p", ms),
+            ("CREATE TEMPORARY TABLE w (a int)", my),
+            ("SELECT 'CREATE PROCEDURE'", pg),
+        ] {
+            assert!(!defines_module(&sig(src, d)), "{src}");
+        }
+    }
+
+    #[test]
+    fn blocks_follow_begin_and_end() {
+        let depth_after = |src: &str, d: Dialect| {
+            let t = sig(src, d);
+            let mut b = Blocks::default();
+            (0..t.len()).for_each(|k| b.read(d, &t, k));
+            b.depth
+        };
+        let (ms, pg, my) = (Dialect::MsSql, Dialect::Postgres, Dialect::MySql);
+        assert_eq!(depth_after("BEGIN SELECT CASE WHEN 1 = 1 THEN 2 END", ms), 1);
+        assert_eq!(depth_after("BEGIN TRY SELECT 1 END TRY BEGIN CATCH", ms), 1);
+        assert_eq!(depth_after("BEGIN TRAN; BEGIN DIALOG @h", ms), 0);
+        assert_eq!(depth_after("BEGIN END CONVERSATION @h", ms), 1);
+        // MySQL: END IF / END CASE close no block
+        assert_eq!(
+            depth_after(
+                "BEGIN IF a THEN CASE b WHEN 1 THEN SET c = 1; END CASE; END IF; WHILE x DO SET y = 1; END WHILE;",
+                my
+            ),
+            1
+        );
+        assert_eq!(depth_after("BEGIN WORK;", my), 0);
+        assert_eq!(depth_after("BEGIN; SELECT 1;", pg), 0);
+        assert_eq!(depth_after("BEGIN ATOMIC SELECT 1;", pg), 1);
     }
 }

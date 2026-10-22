@@ -59,9 +59,9 @@ Run the newer installer. Connections, saved passwords, history and settings are 
 | **Write SQL fast** | context-aware completion, foreign-key joins, `INSERT`/`EXEC` generation, wildcard expansion, snippets |
 | **Format and refactor** | configurable formatter, qualify names, rename variables and aliases, go to definition |
 | **Stay safe** | analysis while you type with a Problems list and quick fixes, confirmations for risky statements, read-only and production connections, open-transaction reminders |
-| **Understand the database** | Object Search, Object Explorer, ER diagram, Used by, index health, activity monitor, schema compare |
+| **Understand the database** | Object Search, Object Explorer, find a value in every column, ER diagram, Used by, index health, activity monitor, schema compare, backup and restore scripts |
 | **Work as a team** | the schema in a git repository (commit, get latest, conflicts), the same analysis in CI with `sqlotus-lint` |
-| **Work with results** | virtualized grid, edit rows, copy as INSERT/CSV/JSON/Markdown, Excel, charts, result compare, estimated plans |
+| **Work with results** | virtualized grid or text, a row as a form, follow foreign keys, edit rows, copy as INSERT/CSV/JSON/Markdown, Excel, charts, result compare, estimated plans |
 | **Never lose a query** | every tab versioned automatically, full-text history, closed tabs reopened, tabs restored on restart |
 
 Click a group for the details.
@@ -117,13 +117,19 @@ Click a group for the details.
 - **Read-only connections**: block INSERT/UPDATE/DELETE/MERGE/DDL/GRANT/KILL on a connection (e.g. production)
   while still running queries; such tabs show a 🔒. On PostgreSQL and MySQL the session is read-only on the
   server too, so procedures and functions cannot write either. SQL Server has no read-only session: procedures
-  called on it are not checked, so use a login with read-only permissions where it matters.
+  called on it are not checked, so use a login with read-only permissions where it matters. Temp tables and table
+  variables stay usable.
 - **Open transaction reminder**: when a run leaves a transaction open (SQL Server, PostgreSQL, MySQL) the tab
   shows **TRAN**, the toolbar shows **Commit** / **Roll back**, and closing the tab asks what to do.
 - **Confirm large changes**: scripts that only insert, update or delete rows run inside a transaction; if they
   change more rows than a limit (1,000 by default, Options → Safety) or fail half-way, Sqlotus asks whether to
   commit or roll back. Smaller changes are committed automatically and the row count is reported.
-- **Manual commit** per connection: every change starts a transaction that stays open until you commit.
+- **Procedure calls** (Options → Safety, off by default): Sqlotus cannot count the rows a procedure changes, so
+  with this on, scripts that call procedures (`EXEC`, `CALL`) run in a transaction and you commit or roll back what
+  they did. A procedure that changed nothing is committed without a question.
+- **Manual commit** per connection: every change, and every procedure call, starts a transaction that stays open
+  until you commit. Statements the server refuses inside a transaction (BACKUP, RESTORE, CREATE DATABASE …) run
+  on their own, and the notification says so.
 - **Undeclared variables**: running `… WHERE Id = @Id` without a `DECLARE` asks for the value (and type) and
   declares it for you; values are remembered.
 - **Find invalid objects**: views, procedures, functions and triggers that reference missing tables or columns.
@@ -164,9 +170,20 @@ Click a group for the details.
   with a highlighted preview.
 - **Query History** (Ctrl+Shift+H): every tab is versioned automatically (periodically and on each execute),
   full-text search, reopen closed tabs (Ctrl+Shift+T), diff against the previous version or the current tab.
-  Open tabs are restored on restart.
+  Open tabs are restored on restart. Keep history for a number of days if you like (Options → Editor).
 - **Object Explorer** (F8, open by default): filter objects and columns, Select top 100, script
-  SELECT/INSERT/UPDATE/DELETE/EXEC/CREATE/ALTER.
+  SELECT/INSERT/UPDATE/DELETE/EXEC/CREATE/ALTER. Objects reload by themselves after a script creates, alters or
+  drops something (once its transaction ends), so completion, analysis and the explorer know the new table.
+- **Data as INSERT** (a table in the explorer): its rows as INSERT statements — all or the first N, optionally only
+  those matching a condition — with identity values kept and computed and row-version columns left out. The
+  script opens in a new tab.
+- **Find value** (explorer toolbar): a script that looks for a text in every text column of every table and lists
+  table, column, how many rows and an example. It only reads; it opens for review, since it reads each column in
+  full.
+- **Backup** (SQL Server, explorer toolbar): full, differential or log backups with copy-only, compression,
+  checksums and a check that the file can be restored; restore a backup file, also as a copy next to the original
+  (the files go to the server's data and log folders). The dialog writes the script and opens it in a tab: nothing
+  runs until you run it.
 - **ER diagram**: tables and foreign keys of a database, or one table and its related tables, laid out
   automatically; drag, zoom, highlight relations, copy as image or save as SVG.
 - **Used by**: views, procedures, functions, triggers and foreign keys that use a table, a column or a module,
@@ -211,16 +228,28 @@ Keep a database's schema in a folder — usually a git repository shared with yo
 <details>
 <summary><b>Running queries</b></summary>
 
-- F5 / Ctrl+E runs the selection or the tab, Shift+F5 the statement at the cursor; `GO` / `GO n` batches;
-  MySQL scripts with `DELIMITER` lines (dumps, procedures, triggers) run as the mysql client runs them; cancel;
-  multiple result sets.
+- F5 / Ctrl+E runs the selection or the tab, Shift+F5 the statement at the cursor (or F5 too, with Options →
+  Editor → "Execute runs the statement at the cursor"); `GO` / `GO n` batches; MySQL scripts with `DELIMITER` lines
+  (dumps, procedures, triggers) run as the mysql client runs them; cancel; multiple result sets.
+- **SQLCMD variables** (SQL Server): `:setvar Schema "dbo"` defines a variable that `$(Schema)` stands for anywhere
+  below it, and `:on error exit` stops at the first batch that fails. A selection or the statement at the cursor
+  keeps the variables defined above it. Other SQLCMD commands are refused instead of being sent to the server.
 - **Run on multiple databases** (Ctrl+Shift+F5): every row gets a `Database` column; results with the same
   shape are combined.
 - Virtualized result grid: sort by column, filter, copy (with headers), **copy as INSERT statements / CSV /
   IN (…) list**, save as CSV. Shift+click a range in a column to see Count / Sum / Avg / Min / Max.
+- **Grid or Text**: the rows as a fixed-width text table, as a terminal client prints them (the choice stays for
+  later results); **Copy as → Text table** too.
+- **Record**: the selected row as a form — every column with its type and whole value, filter the columns, move
+  row by row; click a value to copy it.
+- **Follow foreign keys**: in a result traced to its tables (joins too), key columns are marked ↗. Ctrl+click a
+  value to open the row it references in a new tab; right-click a row for the rows that reference it.
+- CSV files get a `'` before text starting with `=`, `+`, `-` or `@`, so a spreadsheet shows it instead of running
+  it as a formula (numbers stay as they are; Options → Safety).
 - Values longer than 65,535 characters are shown cut: the grid says how many, copies and exports warn that they
   hold the cut text, and such a result cannot be edited. Query a long value on its own when you need all of it.
-- **Excel**: open the result in Excel or save it as .xlsx (numbers stay numbers, header row, filters).
+- **Excel**: open the result in Excel or save it as .xlsx (numbers stay numbers, header row, filters; a cell holds
+  at most 32,767 characters, longer values are cut with a warning).
 - **Chart**: bar, line or pie chart of a result; copy it as an image.
 - **Compare results**: pin a result, run again (or another query), then compare — added, removed and changed
   rows matched on the key columns you choose.
@@ -236,7 +265,11 @@ Keep a database's schema in a folder — usually a git repository shared with yo
 - **Environments**: mark connections Development / Test / Staging / Production. Production gets a red tab, a PROD
   badge, manual commit, and a confirmation naming the server before every statement that changes data or schema
   and before every procedure call (`EXEC` / `CALL`) — also on multiple databases and when saving edited rows.
+- **Folders** for connections (a customer, a project): connections of a folder are listed together, folders fold,
+  and a filter finds a connection by name, server, database or folder.
 - Per-connection tab colours. Passwords are stored in the Windows Credential Manager.
+- **Theme**: dark, light, or following Windows as it switches. **Ctrl+mouse wheel** (or Ctrl+= / Ctrl+-) changes
+  the editor's font size, Ctrl+0 resets it.
 
 </details>
 
@@ -263,6 +296,8 @@ Keep a database's schema in a folder — usually a git repository shared with yo
 | Ctrl+N / Ctrl+W / Ctrl+Tab | New / close / next tab |
 | Ctrl+Shift+T | Reopen closed tab |
 | Ctrl+R | Toggle results |
+| Ctrl+wheel, Ctrl+= / Ctrl+- / Ctrl+0 | Editor font size |
+| Ctrl+click a key value | Open the row it references |
 
 </details>
 
@@ -389,8 +424,12 @@ Yes. **Options → Snippets → Import snippets…** reads a folder of `.json` f
   (the tiberius driver does not expose them for other batches).
 - Schema compare treats a renamed column or table as drop + add, and leaves identity / computed column changes
   to be done by hand. Source control works the same way: use `Scripts/pre-deploy.sql` for renames and data moves.
+- Schema compare does not create user-defined types (PostgreSQL enums and domains, SQL Server alias and table
+  types): create them in the target first.
 - Source control keeps the schema, not table data, and compares its snapshot: change the database and commit,
   rather than editing the `.sql` files by hand.
+- SQLCMD: `:setvar` and `:on error` only (`:r`, `:connect` and the other commands are refused).
+- Find value reads every text column of every table in full: run it when the database can take it.
 - Windows only for now.
 - Named-pipe connections (LocalDB) are not supported; use TCP.
 - Test data does not read CHECK or UNIQUE constraints: a value may break a CHECK rule or repeat in a UNIQUE column

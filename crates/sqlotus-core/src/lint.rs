@@ -22,6 +22,7 @@ use crate::Dialect;
 use crate::analysis::{Diagnostic, Fix, Severity, diagnostics};
 use crate::catalog::Catalog;
 use crate::lexer::{Token, TokenKind, tokenize};
+use crate::text::apply_edits;
 
 const DISABLE_LINE: &str = "sqlotus-disable-line";
 const DISABLE_NEXT_LINE: &str = "sqlotus-disable-next-line";
@@ -111,22 +112,13 @@ pub fn lint(src: &str, dialect: Dialect, catalog: Option<&Catalog>, options: &Li
 /// Apply the quick fixes of `found` that do not overlap each other.
 /// Returns the new text and how many fixes were applied.
 pub fn apply_fixes(src: &str, found: &[Diagnostic]) -> (String, usize) {
-    let mut fixes: Vec<_> = found.iter().filter_map(|d| d.fix.as_ref()).collect();
-    fixes.sort_by_key(|f| (f.start, f.end));
-    let mut out = String::with_capacity(src.len());
-    let mut at = 0;
-    let mut applied = 0;
-    for f in fixes {
-        if f.start < at || f.end > src.len() {
-            continue;
-        }
-        out.push_str(&src[at..f.start]);
-        out.push_str(&f.text);
-        at = f.end;
-        applied += 1;
-    }
-    out.push_str(&src[at..]);
-    (out, applied)
+    apply_edits(
+        src,
+        found
+            .iter()
+            .filter_map(|d| d.fix.as_ref())
+            .map(|f| (f.start, f.end, f.text.as_str())),
+    )
 }
 
 /// Lines (byte range) where some or all codes are off.
@@ -267,67 +259,116 @@ fn suppressions(src: &str, dialect: Dialect) -> Vec<Suppression> {
 /// a new line above. `None` when no comment can go there without changing
 /// a string, or the rule is already off.
 pub fn ignore_edits(src: &str, dialect: Dialect, found: &[Diagnostic]) -> Vec<Option<Fix>> {
-    let tokens = tokenize(src, dialect);
-    found.iter().map(|d| ignore_edit(src, &tokens, d)).collect()
+    let doc = Document::new(src, dialect);
+    found.iter().map(|d| doc.ignore_edit(d)).collect()
 }
 
-fn ignore_edit(src: &str, tokens: &[Token<'_>], d: &Diagnostic) -> Option<Fix> {
-    let at = d.start.min(src.len());
-    let start = line_start(src, at);
-    let mut end = src[at..].find('\n').map_or(src.len(), |i| at + i);
-    if end > at && src.as_bytes()[end - 1] == b'\r' {
-        end -= 1;
-    }
-    let code = d.code.as_str();
-    let insert = |at: usize, text: String| {
-        Some(Fix {
-            title: format!("Ignore {code} on this line"),
-            start: at,
-            end: at,
-            text,
-        })
-    };
-    // the code joins a directive that already covers the line
-    let add_code = |dir: Directive| {
-        let off = dir.codes.is_empty() || dir.codes.iter().any(|c| c.eq_ignore_ascii_case(code));
-        if off { None } else { insert(dir.end, format!(" {code}")) }
-    };
-    let on_line = |t: &&Token<'_>| (start..end).contains(&t.start);
-    if let Some(dir) = tokens
-        .iter()
-        .filter(on_line)
-        .filter_map(|t| directive(t))
-        .find(|x| x.name == DISABLE_LINE)
-    {
-        return add_code(dir);
-    }
-    // inside a string, quoted name or block comment that goes on past `at`
-    let inside = |at: usize| {
-        tokens
-            .iter()
-            .any(|t| t.kind != TokenKind::Whitespace && t.start < at && at < t.end())
-    };
-    if !inside(end) {
-        if let Some(c) = tokens.iter().filter(on_line).find(|t| t.kind == TokenKind::LineComment) {
-            // a comment ends the line: ours goes before it, which stays as it is
-            return insert(c.start, format!("/* {DISABLE_LINE} {code} */ "));
+/// A document read once for the "Ignore on this line" edits of all its
+/// problems: each one only looks at the tokens around its own line.
+struct Document<'a> {
+    src: &'a str,
+    dialect: Dialect,
+    tokens: Vec<Token<'a>>,
+    eol: &'static str,
+}
+
+impl<'a> Document<'a> {
+    fn new(src: &'a str, dialect: Dialect) -> Self {
+        Self {
+            src,
+            dialect,
+            tokens: tokenize(src, dialect),
+            eol: if src.contains("\r\n") { "\r\n" } else { "\n" },
         }
-        let code_end = start + src[start..end].trim_end().len();
-        return insert(code_end, format!(" -- {DISABLE_LINE} {code}"));
     }
-    if inside(start) {
-        return None;
+
+    /// Tokens that start in `from..to`.
+    fn starting_in(&self, from: usize, to: usize) -> &[Token<'a>] {
+        let a = self.tokens.partition_point(|t| t.start < from);
+        let b = self.tokens.partition_point(|t| t.start < to).max(a);
+        &self.tokens[a..b]
     }
-    // the line ends in a string or comment: a directive on the line above
-    if let Some(dir) = tokens
-        .iter()
-        .find_map(|t| directive(t).filter(|x| x.name == DISABLE_NEXT_LINE && next_line(src, t.end()) == start))
-    {
-        return add_code(dir);
+
+    /// Whether text added at `at` would become part of a string, quoted
+    /// name or block comment: `at` inside one, or at the end of the text
+    /// right after one left open (a string still being typed).
+    fn inside(&self, at: usize) -> bool {
+        let k = self.tokens.partition_point(|t| t.end() <= at);
+        if self
+            .tokens
+            .get(k)
+            .is_some_and(|t| t.kind != TokenKind::Whitespace && t.start < at)
+        {
+            return true;
+        }
+        at == self.src.len() && self.tokens.last().is_some_and(|t| self.left_open(t))
     }
-    let indent: String = src[start..].chars().take_while(|c| *c == ' ' || *c == '\t').collect();
-    let eol = if src.contains("\r\n") { "\r\n" } else { "\n" };
-    insert(start, format!("{indent}-- {DISABLE_NEXT_LINE} {code}{eol}"))
+
+    /// Whether `t` would take in more text: one more character joins it.
+    fn left_open(&self, t: &Token<'_>) -> bool {
+        if matches!(t.kind, TokenKind::Whitespace | TokenKind::LineComment) {
+            return false;
+        }
+        let probe = format!("{} x", t.text);
+        tokenize(&probe, self.dialect)
+            .first()
+            .is_some_and(|x| x.text.len() > t.text.len())
+    }
+
+    /// A `sqlotus-disable-next-line` directive on the line above `start`.
+    fn directive_above(&self, start: usize) -> Option<Directive> {
+        let above = line_start(self.src, start.checked_sub(1)?);
+        let a = self.tokens.partition_point(|t| t.end() < above);
+        let b = self.tokens.partition_point(|t| t.end() < start);
+        self.tokens[a..b]
+            .iter()
+            .find_map(|t| directive(t).filter(|x| x.name == DISABLE_NEXT_LINE && next_line(self.src, t.end()) == start))
+    }
+
+    fn ignore_edit(&self, d: &Diagnostic) -> Option<Fix> {
+        let src = self.src;
+        let at = d.start.min(src.len());
+        let start = line_start(src, at);
+        let mut end = src[at..].find('\n').map_or(src.len(), |i| at + i);
+        if end > at && src.as_bytes()[end - 1] == b'\r' {
+            end -= 1;
+        }
+        let code = d.code.as_str();
+        let insert = |at: usize, text: String| {
+            Some(Fix {
+                title: format!("Ignore {code} on this line"),
+                start: at,
+                end: at,
+                text,
+            })
+        };
+        // the code joins a directive that already covers the line
+        let add_code = |dir: Directive| {
+            let off = dir.codes.is_empty() || dir.codes.iter().any(|c| c.eq_ignore_ascii_case(code));
+            if off { None } else { insert(dir.end, format!(" {code}")) }
+        };
+        let on_line = self.starting_in(start, end);
+        if let Some(dir) = on_line.iter().filter_map(directive).find(|x| x.name == DISABLE_LINE) {
+            return add_code(dir);
+        }
+        if !self.inside(end) {
+            if let Some(c) = on_line.iter().find(|t| t.kind == TokenKind::LineComment) {
+                // a comment ends the line: ours goes before it, which stays as it is
+                return insert(c.start, format!("/* {DISABLE_LINE} {code} */ "));
+            }
+            let code_end = start + src[start..end].trim_end().len();
+            return insert(code_end, format!(" -- {DISABLE_LINE} {code}"));
+        }
+        if self.inside(start) {
+            return None;
+        }
+        // the line ends in a string or comment: a directive on the line above
+        if let Some(dir) = self.directive_above(start) {
+            return add_code(dir);
+        }
+        let indent: String = src[start..].chars().take_while(|c| *c == ' ' || *c == '\t').collect();
+        insert(start, format!("{indent}-- {DISABLE_NEXT_LINE} {code}{}", self.eol))
+    }
 }
 
 #[cfg(test)]
@@ -481,6 +522,19 @@ mod tests {
                 "SQ002"
             ),
             some("-- sqlotus-disable-next-line SQ003 SQ002\nSELECT * FROM t WHERE a = NULL AND b = 'x\ny'")
+        );
+        // a string still being typed takes in whatever is written after it
+        assert_eq!(
+            ignored(ms, "UPDATE t SET a = 'x", "SQ001"),
+            some("-- sqlotus-disable-next-line SQ001\nUPDATE t SET a = 'x")
+        );
+        assert_eq!(
+            ignored(
+                Dialect::Postgres,
+                "SELECT 1;\nDELETE FROM t; SELECT $$ still open",
+                "SQ001"
+            ),
+            some("SELECT 1;\n-- sqlotus-disable-next-line SQ001\nDELETE FROM t; SELECT $$ still open")
         );
         // starts and ends inside strings: no safe place
         assert_eq!(

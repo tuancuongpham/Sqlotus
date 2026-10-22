@@ -8,11 +8,10 @@ use std::collections::HashSet;
 use serde::Serialize;
 
 use crate::Dialect;
-use crate::analysis::{sig, word};
 use crate::catalog::{Catalog, ObjectDefinition, ObjectKind};
-use crate::lexer::{Token, TokenKind, tokenize};
+use crate::lexer::{TokenKind, significant, tokenize, word};
 use crate::scope::{TableRef, analyze_statement};
-use crate::statements::split_statements;
+use crate::statements::{split_statements, tokens_in};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -83,18 +82,14 @@ pub fn find_references(
         let src = d.definition.as_str();
         let tokens = tokenize(src, dialect);
         for span in split_statements(src, dialect) {
-            let stmt: Vec<Token<'_>> = tokens
-                .iter()
-                .filter(|t| t.start >= span.start && t.end() <= span.end)
-                .copied()
-                .collect();
-            let scope = analyze_statement(&stmt, dialect);
+            let stmt = tokens_in(&tokens, &span);
+            let scope = analyze_statement(stmt, dialect);
             let refs: Vec<&TableRef> = scope
                 .tables
                 .iter()
                 .filter(|r| is_target(r, catalog, schema, name))
                 .collect();
-            let t = sig(&stmt);
+            let t = significant(stmt);
             match column {
                 None => {
                     for r in &refs {

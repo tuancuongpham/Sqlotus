@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use sqlotus_core::Dialect;
-use sqlotus_db::{AuthKind, Connection, ConnectionConfig};
+use sqlotus_db::{AuthKind, Connection, ConnectionConfig, Endpoint};
 
 use crate::commands::CmdResult;
 
@@ -188,18 +188,6 @@ pub fn classify(error: &str) -> Cause {
 }
 
 /// `host\instance,port` split, SQL Server style.
-fn split_host(raw: &str) -> (String, Option<String>, Option<u16>) {
-    let raw = raw.trim().trim_start_matches("tcp:");
-    let (rest, port) = match raw.rsplit_once(',') {
-        Some((h, p)) => (h, p.trim().parse().ok()),
-        None => (raw, None),
-    };
-    match rest.split_once('\\') {
-        Some((h, i)) => (h.trim().to_string(), Some(i.trim().to_string()), port),
-        None => (rest.trim().to_string(), None, port),
-    }
-}
-
 fn is_local(host: &str) -> bool {
     let h = host.to_lowercase();
     let machine = std::env::var("COMPUTERNAME").unwrap_or_default().to_lowercase();
@@ -402,12 +390,7 @@ fn login_failure_findings(user: &str, reason: &str, local_windows: bool) -> Vec<
 }
 
 fn port_open(host: &str, port: u16) -> bool {
-    let target = if host.is_empty() || host == "." || host == "(local)" {
-        "127.0.0.1"
-    } else {
-        host
-    };
-    match (target, port).to_socket_addrs() {
+    match (host, port).to_socket_addrs() {
         Ok(addrs) => addrs
             .into_iter()
             .any(|a| std::net::TcpStream::connect_timeout(&a, Duration::from_millis(1500)).is_ok()),
@@ -420,8 +403,7 @@ fn port_open(host: &str, port: u16) -> bool {
 // ---------------------------------------------------------------------------
 
 fn diagnose_sqlserver(cfg: &ConnectionConfig, cause: Cause, findings: &mut Vec<Finding>) {
-    let (host, instance, port) = split_host(&cfg.host);
-    let port = cfg.port.or(port);
+    let Endpoint { host, instance, port } = cfg.endpoint();
     let local = is_local(&host);
 
     if !local {
@@ -634,8 +616,9 @@ fn diagnose_service_based(cfg: &ConnectionConfig, cause: Cause, findings: &mut V
         Dialect::Postgres => ("postgresql*", 5432, "PostgreSQL"),
         _ => ("MySQL*", 3306, "MySQL"),
     };
-    let host = cfg.host.trim();
-    let port = cfg.port.unwrap_or(default_port);
+    let endpoint = cfg.endpoint();
+    let host = endpoint.host.as_str();
+    let port = endpoint.port.unwrap_or(default_port);
     if matches!(cause, Cause::Refused | Cause::Timeout) {
         if is_local(host) {
             let mut services = services_like(pattern);
@@ -698,7 +681,7 @@ pub fn diagnose(cfg: &ConnectionConfig, error: &str) -> Diagnosis {
     };
     let mut findings = Vec::new();
 
-    let host_only = split_host(&cfg.host).0;
+    let host_only = cfg.endpoint().host;
     if cause == Cause::UnknownHost || (!is_local(&host_only) && (host_only.as_str(), 1).to_socket_addrs().is_err()) {
         findings.push(Finding::new(
             Level::Error,
@@ -930,11 +913,7 @@ mod tests {
     }
 
     #[test]
-    fn host_parsing_and_locality() {
-        assert_eq!(
-            split_host(r".\SQLEXPRESS,1500"),
-            (".".into(), Some("SQLEXPRESS".into()), Some(1500))
-        );
+    fn locality() {
         assert!(is_local("localhost") && is_local(".") && is_local("127.0.0.1"));
         assert!(!is_local("db.example.com"));
     }

@@ -2,76 +2,15 @@
 //! multi-byte text: run each one on every prefix of tricky inputs, at every
 //! cursor position, in every dialect. Any panic fails the test.
 
-use sqlotus_core::catalog::{Catalog, Column, DbObject, ForeignKey, ObjectKind, Param};
+mod support;
+
+use support::catalog;
+
 use sqlotus_core::format::KeywordCase;
 use sqlotus_core::{
-    CompletionOptions, Dialect, FormatOptions, analysis, complete, format_sql, plan, refactor, rename, statements,
-    utf16_to_byte, variables,
+    CompletionOptions, Dialect, FormatOptions, analysis, complete, format_sql, plan, refactor, rename, safety,
+    statements, utf16_to_byte, variables,
 };
-
-fn col(name: &str, ty: &str, nullable: bool) -> Column {
-    Column {
-        name: name.into(),
-        data_type: ty.into(),
-        nullable,
-        is_primary_key: name == "Id",
-        is_identity: name == "Id",
-        is_computed: false,
-    }
-}
-
-fn catalog() -> Catalog {
-    Catalog {
-        database: "Shop".into(),
-        default_schema: "dbo".into(),
-        schemas: vec!["dbo".into()],
-        objects: vec![
-            DbObject {
-                schema: "dbo".into(),
-                name: "Customers".into(),
-                kind: ObjectKind::Table,
-                columns: vec![
-                    col("Id", "int", false),
-                    col("Code", "varchar(10)", true),
-                    col("Tên", "nvarchar(50)", true),
-                ],
-                params: vec![],
-            },
-            DbObject {
-                schema: "dbo".into(),
-                name: "Orders".into(),
-                kind: ObjectKind::Table,
-                columns: vec![
-                    col("Id", "int", false),
-                    col("CustomerId", "int", false),
-                    col("NgàyĐặt", "datetime2", false),
-                ],
-                params: vec![],
-            },
-            DbObject {
-                schema: "dbo".into(),
-                name: "GetOrders".into(),
-                kind: ObjectKind::Procedure,
-                columns: vec![],
-                params: vec![Param {
-                    name: "@CustomerId".into(),
-                    data_type: "int".into(),
-                    is_output: false,
-                    has_default: false,
-                }],
-            },
-        ],
-        foreign_keys: vec![ForeignKey {
-            name: "FK_Orders_Customers".into(),
-            from_schema: "dbo".into(),
-            from_table: "Orders".into(),
-            from_columns: vec!["CustomerId".into()],
-            to_schema: "dbo".into(),
-            to_table: "Customers".into(),
-            to_columns: vec!["Id".into()],
-        }],
-    }
-}
 
 const INPUTS: &[&str] = &[
     "SELECT c.Id, c.[Tên] FROM dbo.Customers c JOIN dbo.Orders o ON o.CustomerId = c.Id WHERE YEAR(o.NgàyĐặt) = 2024 AND c.Code = N'Á'",
@@ -101,9 +40,8 @@ fn editor_functions_never_panic_on_partial_text() {
             for d in [Dialect::MsSql, Dialect::Postgres, Dialect::MySql] {
                 let _ = analysis::diagnostics(text, d, Some(&cat));
                 let _ = analysis::diagnostics(text, d, None);
-                let _ = analysis::execution_warnings(text, d);
-                let _ = analysis::modifying_statements(text, d);
-                let _ = analysis::row_changes_only(text, d);
+                let run = safety::ScriptRun::new(text, d);
+                let _ = (run.warnings(), run.changes(), run.calls(), run.row_changes_only());
                 let _ = variables::undeclared_variables(text, d);
                 let _ = variables::prelude(
                     text,
@@ -185,4 +123,32 @@ fn plan_parsers_reject_garbage_without_panicking() {
         let _ = plan::parse_mysql_tree("x", junk);
     }
     let _ = plan::parse_mysql_table("x", &[], &[vec![None]]);
+}
+
+/// Analysis runs on worker threads with small stacks. Subqueries nested a
+/// few thousand levels deep (a pasted, generated query) used to overflow the
+/// stack, which closes the whole application with every unsaved tab.
+#[test]
+fn deep_nesting_does_not_overflow_the_stack() {
+    const DEPTH: usize = 3000;
+    let nested = format!(
+        "SELECT * FROM {} t {}",
+        "(SELECT * FROM ".repeat(DEPTH),
+        ") x".repeat(DEPTH)
+    );
+    let cat = catalog();
+    std::thread::Builder::new()
+        .stack_size(2 << 20)
+        .spawn(move || {
+            let d = Dialect::MsSql;
+            let mid = nested.len() / 2;
+            let _ = analysis::diagnostics(&nested, d, Some(&cat));
+            let _ = complete(&nested, mid, d, Some(&cat), &[], &CompletionOptions::default());
+            let _ = analysis::hover(&nested, mid, d, Some(&cat));
+            let _ = refactor::expand_wildcards(&nested, d, Some(&cat));
+            let _ = rename::rename_target(&nested, mid, d);
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }

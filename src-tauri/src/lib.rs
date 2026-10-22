@@ -1,4 +1,5 @@
 mod activity;
+mod backup;
 mod commands;
 mod compare;
 mod doctor;
@@ -60,6 +61,8 @@ pub fn run() {
             if let Ok(mut n) = state.startup_notice.lock() {
                 *n = notice;
             }
+            // query history kept for a limited time (Options → Editor)
+            let _ = commands::prune_history(&state);
             app.manage(state);
             app.manage(compare::CompareStore::default());
             app.manage(source_control::SourceControlStore::default());
@@ -95,6 +98,7 @@ pub fn run() {
             commands::history_mark_closed,
             commands::history_recently_closed,
             commands::history_delete,
+            commands::history_prune,
             intel::diagnostics,
             intel::analysis_rules,
             intel::execution_warnings,
@@ -121,6 +125,15 @@ pub fn run() {
             tools::editable_source,
             tools::edit_preview,
             tools::apply_edits,
+            tools::result_links,
+            tools::link_query,
+            tools::table_data_script,
+            tools::find_value_script,
+            backup::backup_info,
+            backup::backup_contents,
+            backup::restore_moves,
+            backup::backup_script,
+            backup::restore_script,
             health::index_health,
             activity::server_activity,
             activity::kill_session,

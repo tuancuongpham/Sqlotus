@@ -1,11 +1,17 @@
-//! Database tools beyond the editor: the ER diagram model and test data.
+//! Database tools beyond the editor: the ER diagram model, test data,
+//! editing results and following their foreign keys, and scripts made from
+//! the data (rows as INSERT, finding a value).
 
 use std::sync::Arc;
 
 use serde::Serialize;
 use sqlotus_core::Dialect;
 use sqlotus_core::catalog::{DbObject, ForeignKey, ObjectKind};
+use sqlotus_core::datascript::{self, DataScript, DataScriptOptions};
 use sqlotus_core::editing::{EditPlan, EditSource, RowEdit};
+use sqlotus_core::findvalue::FindValueOptions;
+use sqlotus_core::links::RowLink;
+use sqlotus_core::safety::ScriptRun;
 use sqlotus_core::testdata::{self, ColumnPlan, DataContext, Generator, TestDataOptions};
 use sqlotus_db::CatalogSnapshot;
 use tauri::State;
@@ -214,11 +220,12 @@ pub async fn object_references(
 
 /// Statements that change or may change data or schema (for the production
 /// confirmation): modifying statements plus procedure calls.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn modifying_statements(text: String, dialect: Dialect) -> CmdResult<Vec<String>> {
     no_panic("analysis", || {
-        let mut out = sqlotus_core::analysis::modifying_statements(&text, dialect);
-        out.extend(sqlotus_core::analysis::routine_calls(&text, dialect));
+        let run = ScriptRun::new(&text, dialect);
+        let mut out = run.changes();
+        out.extend(run.calls());
         out
     })
 }
@@ -244,7 +251,7 @@ pub async fn editable_source(
 }
 
 /// The statements that saving the edits would run, and any invalid values.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn edit_preview(source: EditSource, edits: Vec<RowEdit>, dialect: Dialect) -> CmdResult<EditPlan> {
     no_panic("editing", || {
         sqlotus_core::editing::edit_statements(&source, &edits, dialect)
@@ -288,20 +295,13 @@ pub async fn apply_edits(
         return Err("Could not start a transaction; nothing was saved.".into());
     }
     for (i, stmt) in plan.statements.iter().enumerate() {
-        let out = conn.execute_counted(stmt, &limits).await;
-        let problem = if out.failed {
-            Some(
-                out.messages
-                    .iter()
-                    .filter(|m| m.kind == sqlotus_db::MessageKind::Error)
-                    .map(|m| m.text.clone())
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            )
-        } else if out.rows_affected == 0 {
-            Some("the row was changed or deleted by someone else since it was loaded (0 rows matched)".to_string())
-        } else {
-            None
+        let problem = match conn.rows_changed(stmt, &limits).await {
+            Ok(1) => None,
+            Ok(0) => {
+                Some("the row was changed or deleted by someone else since it was loaded (0 rows matched)".to_string())
+            }
+            Ok(n) => Some(format!("{n} rows matched instead of one")),
+            Err(e) => Some(e),
         };
         if let Some(p) = problem {
             if !was_open {
@@ -344,4 +344,95 @@ pub async fn apply_edits(
             format!("{n} change(s) applied inside the open transaction; Commit to keep them.")
         },
     })
+}
+
+// ---------------------------------------------------------------------------
+// following foreign keys from a result
+// ---------------------------------------------------------------------------
+
+/// The foreign keys the rows of a result can be followed along (empty when
+/// the result cannot be traced to table columns, or objects are not loaded).
+#[tauri::command]
+pub async fn result_links(
+    state: State<'_, AppState>,
+    connection_id: String,
+    database: String,
+    dialect: Dialect,
+    sql: String,
+    result_columns: Vec<String>,
+) -> CmdResult<Vec<RowLink>> {
+    let Some(snap) = state.cached_catalog(&connection_id, &database) else {
+        return Ok(Vec::new());
+    };
+    no_panic("foreign keys", || {
+        sqlotus_core::links::result_links(&sql, dialect, &snap.catalog, &result_columns)
+    })
+}
+
+/// The query that opens the row (or rows) a link leads to from one row.
+#[tauri::command]
+pub async fn link_query(
+    state: State<'_, AppState>,
+    connection_id: String,
+    database: String,
+    dialect: Dialect,
+    link: RowLink,
+    values: Vec<Option<String>>,
+) -> CmdResult<String> {
+    let snap = snapshot(&state, &connection_id, &database).await?;
+    no_panic("foreign keys", || {
+        sqlotus_core::links::link_query(&link, &values, &snap.catalog, dialect)
+    })?
+}
+
+// ---------------------------------------------------------------------------
+// scripts made from the data
+// ---------------------------------------------------------------------------
+
+/// A table's rows as INSERT statements (read on a connection of its own).
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn table_data_script(
+    state: State<'_, AppState>,
+    connection_id: String,
+    database: String,
+    schema: String,
+    name: String,
+    dialect: Dialect,
+    options: DataScriptOptions,
+) -> CmdResult<DataScript> {
+    let snap = snapshot(&state, &connection_id, &database).await?;
+    let table = snap
+        .catalog
+        .find(Some(&schema), &name)
+        .filter(|o| o.kind == ObjectKind::Table)
+        .ok_or_else(|| format!("{schema}.{name} is not a table in the loaded objects (reload objects if it is new)."))?
+        .clone();
+    let options = DataScriptOptions {
+        max_rows: options.max_rows.clamp(1, 1_000_000),
+        ..options
+    };
+    let sql = no_panic("data script", || datascript::data_query(&table, dialect, &options))??;
+    let mut conn = open_database(&state, &connection_id, &database).await?;
+    let rows = conn.query_strings(&sql).await.map_err(crate::commands::err);
+    conn.close().await;
+    let rows = rows?;
+    no_panic("data script", || {
+        datascript::data_script(&table, dialect, &rows, options.max_rows)
+    })
+}
+
+/// The script that finds a value in every text column (to review and run).
+#[tauri::command]
+pub async fn find_value_script(
+    state: State<'_, AppState>,
+    connection_id: String,
+    database: String,
+    dialect: Dialect,
+    options: FindValueOptions,
+) -> CmdResult<String> {
+    let snap = snapshot(&state, &connection_id, &database).await?;
+    no_panic("find value", || {
+        sqlotus_core::findvalue::find_value_script(&snap.catalog, dialect, &options)
+    })?
 }

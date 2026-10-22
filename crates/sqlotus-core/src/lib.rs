@@ -4,27 +4,35 @@
 //! [`catalog::Catalog`], which the `sqlotus-db` crate fills.
 
 pub mod analysis;
+pub mod backup;
 pub mod catalog;
 pub mod completion;
+pub mod datascript;
 pub mod deps;
 pub mod editing;
+pub mod findvalue;
 pub mod format;
 pub mod indexes;
 pub mod keywords;
 pub mod lexer;
+pub mod links;
 pub mod lint;
 pub mod plan;
 pub mod refactor;
 pub mod rename;
 pub mod rules;
+pub mod safety;
 pub mod schemadiff;
 pub mod schemafolder;
 pub mod scope;
 pub mod script;
 pub mod search;
 pub mod snippet;
+pub mod sqlcmd;
+pub mod sqltype;
 pub mod statements;
 pub mod testdata;
+mod text;
 pub mod variables;
 
 use serde::{Deserialize, Serialize};

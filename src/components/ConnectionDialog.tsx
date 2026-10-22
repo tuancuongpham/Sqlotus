@@ -28,6 +28,46 @@ const ENVIRONMENTS: { value: Environment; label: string; color: string }[] = [
 ];
 const ENV_ORDER = ["prod", "staging", "test", "dev", ""];
 
+const FOLDED_KEY = "sqlotus.foldedConnectionFolders";
+
+/** The folder a filter names exactly, for a new connection made while filtering. */
+function filterFolder(folders: string[], filter: string): string | null {
+  return folders.find((f) => f.toLowerCase() === filter.trim().toLowerCase()) ?? null;
+}
+
+/** Folders the user folded in the connection list (kept between starts). */
+function readFolded(): Set<string> {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(FOLDED_KEY) ?? "[]") as string[]);
+  } catch {
+    return new Set();
+  }
+}
+
+/**
+ * The connection list in groups: by the user's folders when any connection
+ * has one (folders by name, then those without), else by environment.
+ */
+function groupConnections(list: SavedConnection[]): { key: string; label: string | null; env?: string; items: SavedConnection[] }[] {
+  const folder = (c: SavedConnection) => (c.group ?? "").trim();
+  if (list.some((c) => folder(c))) {
+    const names = [...new Set(list.map(folder).filter(Boolean))].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+    const byEnv = (a: SavedConnection, b: SavedConnection) =>
+      ENV_ORDER.indexOf(a.environment ?? "") - ENV_ORDER.indexOf(b.environment ?? "");
+    return [
+      ...names.map((n) => ({ key: `folder:${n}`, label: n, items: list.filter((c) => folder(c) === n).sort(byEnv) })),
+      { key: "folder:", label: "No folder", items: list.filter((c) => !folder(c)).sort(byEnv) },
+    ].filter((g) => g.items.length > 0);
+  }
+  const envs = list.some((c) => c.environment);
+  return ENV_ORDER.map((env) => ({
+    key: `env:${env}`,
+    label: envs ? (ENVIRONMENTS.find((e) => e.value === env)?.label ?? "Other") : null,
+    env,
+    items: list.filter((c) => (c.environment ?? "") === env),
+  })).filter((g) => g.items.length > 0);
+}
+
 interface Props {
   onClose: () => void;
   /** Connect the current tab with this connection. */
@@ -41,6 +81,19 @@ export function ConnectionDialog({ onClose, onConnect }: Props) {
   const [savePassword, setSavePassword] = useState(true);
   const [status, setStatus] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [filter, setFilter] = useState("");
+  const [folded, setFolded] = useState(readFolded);
+  const fold = (key: string) => {
+    const next = new Set(folded);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    setFolded(next);
+    try {
+      localStorage.setItem(FOLDED_KEY, JSON.stringify([...next]));
+    } catch {
+      // the folding is only a convenience
+    }
+  };
 
   const reload = async () => setList(await api.listConnections());
   useEffect(() => {
@@ -57,6 +110,7 @@ export function ConnectionDialog({ onClose, onConnect }: Props) {
 
   const normalized = (): ConnectionConfig => ({
     ...cfg,
+    group: cfg.group?.trim() || null,
     name: cfg.name.trim() || `${cfg.host}${cfg.database ? ` / ${cfg.database}` : ""}`,
     port: cfg.port ? Number(cfg.port) : null,
     auth: cfg.dialect === "mssql" ? cfg.auth : "sql",
@@ -128,6 +182,11 @@ export function ConnectionDialog({ onClose, onConnect }: Props) {
 
   const isSaved = list.some((x) => x.id === cfg.id);
   const hasStoredPassword = list.find((x) => x.id === cfg.id)?.hasPassword ?? false;
+  const folders = [...new Set(list.map((c) => (c.group ?? "").trim()).filter(Boolean))].sort();
+  const words = filter.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const shown = words.length
+    ? list.filter((c) => words.every((w) => `${c.name} ${c.host} ${c.database ?? ""} ${c.group ?? ""}`.toLowerCase().includes(w)))
+    : list;
 
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
@@ -135,42 +194,70 @@ export function ConnectionDialog({ onClose, onConnect }: Props) {
         <div className="modal-title">Connect to server</div>
         <div className="conn-body">
           <div className="conn-list">
-            <button className="conn-new" onClick={() => select({ ...empty(), hasPassword: false })}>
+            <button className="conn-new" onClick={() => select({ ...empty(), hasPassword: false, group: filterFolder(folders, filter) })}>
               + New connection
             </button>
-            {ENV_ORDER.map((env) => {
-              const group = list.filter((c) => (c.environment ?? "") === env);
-              if (group.length === 0) return null;
-              const label = ENVIRONMENTS.find((e) => e.value === env)?.label;
+            {list.length > 6 && (
+              <input className="conn-filter" value={filter} placeholder="Filter connections…" onChange={(e) => setFilter(e.target.value)} />
+            )}
+            {groupConnections(shown).map((g) => {
+              // a filter shows every match, folded or not
+              const open = words.length > 0 || !folded.has(g.key);
+              const byFolder = g.key.startsWith("folder:");
               return (
-                <div key={env || "none"}>
-                  {label && list.some((c) => c.environment) && <div className={`conn-group env-${env}`}>{label}</div>}
-                  {!label && list.some((c) => c.environment) && <div className="conn-group">Other</div>}
-                  {group.map((c) => (
+                <div key={g.key}>
+                  {g.label && (
                     <div
-                      key={c.id}
-                      className={"conn-item" + (c.id === cfg.id ? " active" : "")}
-                      onClick={() => select(c)}
-                      onDoubleClick={() => onConnect(c, null)}
+                      className={`conn-group${g.env ? ` env-${g.env}` : ""}${byFolder ? " conn-folder" : ""}`}
+                      onClick={() => byFolder && fold(g.key)}
+                      title={byFolder ? (open ? "Fold" : "Unfold") : undefined}
                     >
-                      <span className="dot" style={{ background: c.color || "transparent" }} />
-                      <div>
-                        <div>{c.name}</div>
-                        <small>
-                          {c.dialect} · {c.host}
-                        </small>
-                      </div>
+                      {byFolder && (open ? "▾ " : "▸ ")}
+                      {g.label}
+                      {byFolder && <small> ({g.items.length})</small>}
                     </div>
-                  ))}
+                  )}
+                  {open &&
+                    g.items.map((c) => (
+                      <div
+                        key={c.id}
+                        className={"conn-item" + (c.id === cfg.id ? " active" : "")}
+                        onClick={() => select(c)}
+                        onDoubleClick={() => onConnect(c, null)}
+                      >
+                        <span className="dot" style={{ background: c.color || "transparent" }} />
+                        <div>
+                          <div>
+                            {c.name}
+                            {byFolder && c.environment && <small className={`env-tag env-${c.environment}`}>{c.environment}</small>}
+                          </div>
+                          <small>
+                            {c.dialect} · {c.host}
+                          </small>
+                        </div>
+                      </div>
+                    ))}
                 </div>
               );
             })}
+            {shown.length === 0 && list.length > 0 && <div className="panel-empty">No connection matches</div>}
           </div>
           <div className="conn-form">
-            <label>
-              Name
-              <input value={cfg.name} placeholder="(host / database)" onChange={(e) => set("name", e.target.value)} />
-            </label>
+            <div className="row2">
+              <label>
+                Name
+                <input value={cfg.name} placeholder="(host / database)" onChange={(e) => set("name", e.target.value)} />
+              </label>
+              <label title="Connections with the same folder are listed together (a customer, a project)">
+                Folder
+                <input className="conn-group-input" list="conn-folders" value={cfg.group ?? ""} placeholder="(none)" onChange={(e) => set("group", e.target.value)} />
+                <datalist id="conn-folders">
+                  {folders.map((f) => (
+                    <option key={f} value={f} />
+                  ))}
+                </datalist>
+              </label>
+            </div>
             <label>
               Server type
               <select value={cfg.dialect} onChange={(e) => set("dialect", e.target.value as Dialect)}>
@@ -184,7 +271,7 @@ export function ConnectionDialog({ onClose, onConnect }: Props) {
                 Server
                 <input
                   value={cfg.host}
-                  placeholder={cfg.dialect === "mssql" ? "host\\instance or host,port" : "host"}
+                  placeholder={cfg.dialect === "mssql" ? "host\\instance or host,port" : "host or host:port"}
                   onChange={(e) => set("host", e.target.value)}
                 />
               </label>

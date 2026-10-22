@@ -7,28 +7,15 @@ use std::collections::HashSet;
 
 use crate::catalog::{Catalog, ObjectKind};
 use crate::format::KeywordCase;
-use crate::lexer::{Token, TokenKind, tokenize, unquote};
+use crate::lexer::{Token, TokenKind, significant, tokenize, unquote};
 use crate::scope::analyze_statement;
-use crate::statements::split_statements;
+use crate::statements::{split_statements, tokens_in};
+use crate::text::apply_edits;
 use crate::{Dialect, keywords};
 
 /// (start, end, replacement) byte edits, applied back to front.
-fn apply(src: &str, mut edits: Vec<(usize, usize, String)>) -> String {
-    edits.sort_by_key(|e| std::cmp::Reverse(e.0));
-    let mut out = src.to_string();
-    let mut last_start = usize::MAX;
-    for (s, e, text) in edits {
-        if e > last_start {
-            continue; // overlapping edit
-        }
-        out.replace_range(s..e, &text);
-        last_start = s;
-    }
-    out
-}
-
-fn sig<'a>(tokens: &[Token<'a>]) -> Vec<Token<'a>> {
-    tokens.iter().filter(|t| !t.is_trivia()).copied().collect()
+fn apply(src: &str, edits: Vec<(usize, usize, String)>) -> String {
+    apply_edits(src, edits).0
 }
 
 /// Paren depth before each token.
@@ -70,13 +57,9 @@ pub fn expand_wildcards(src: &str, dialect: Dialect, catalog: Option<&Catalog>) 
     let tokens = tokenize(src, dialect);
     let mut edits = Vec::new();
     for span in split_statements(src, dialect) {
-        let stmt: Vec<Token<'_>> = tokens
-            .iter()
-            .filter(|t| t.start >= span.start && t.end() <= span.end)
-            .copied()
-            .collect();
-        let scope = analyze_statement(&stmt, dialect);
-        let t = sig(&stmt);
+        let stmt = tokens_in(&tokens, &span);
+        let scope = analyze_statement(stmt, dialect);
+        let t = significant(stmt);
         let depth = depths(&t);
         let cols_of = |r: &crate::scope::TableRef| -> Option<Vec<String>> {
             if !r.columns.is_empty() {
@@ -164,12 +147,8 @@ pub fn qualify_object_names(src: &str, dialect: Dialect, catalog: &Catalog) -> S
     let mut edits = Vec::new();
     let mut seen = HashSet::new();
     for span in split_statements(src, dialect) {
-        let stmt: Vec<Token<'_>> = tokens
-            .iter()
-            .filter(|t| t.start >= span.start && t.end() <= span.end)
-            .copied()
-            .collect();
-        let scope = analyze_statement(&stmt, dialect);
+        let stmt = tokens_in(&tokens, &span);
+        let scope = analyze_statement(stmt, dialect);
         let aliases: HashSet<String> = scope
             .tables
             .iter()
@@ -193,7 +172,7 @@ pub fn qualify_object_names(src: &str, dialect: Dialect, catalog: &Catalog) -> S
                 ));
             }
         }
-        let t = sig(&stmt);
+        let t = significant(stmt);
         for (i, tok) in t.iter().enumerate() {
             if !matches!(tok.upper().as_str(), "EXEC" | "EXECUTE" | "CALL") {
                 continue;
@@ -221,10 +200,9 @@ pub fn insert_semicolons(src: &str, dialect: Dialect) -> String {
     let tokens = tokenize(src, dialect);
     let mut edits = Vec::new();
     for span in split_statements(src, dialect) {
-        let last = tokens
-            .iter()
-            .rfind(|t| t.start >= span.start && t.end() <= span.end && !t.is_trivia());
-        let Some(last) = last else { continue };
+        let Some(last) = tokens_in(&tokens, &span).iter().rfind(|t| !t.is_trivia()) else {
+            continue;
+        };
         let skip = match last.kind {
             TokenKind::Semicolon | TokenKind::Comma | TokenKind::LParen | TokenKind::Operator | TokenKind::Dot => true,
             TokenKind::Word => matches!(

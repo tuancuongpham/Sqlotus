@@ -8,6 +8,7 @@ const PLAN = -2;
 const MESSAGES = -1;
 
 export function ResultsPanel({
+  tabId,
   result,
   plan,
   showPlan,
@@ -16,6 +17,8 @@ export function ResultsPanel({
   editContext,
   problems,
 }: {
+  /** The tab the results belong to: a grid is never reused for another tab. */
+  tabId?: string;
   result?: ExecuteResult;
   plan?: ExplainOutput;
   /** Show the plan tab (after Explain) instead of the results. */
@@ -93,7 +96,7 @@ export function ResultsPanel({
           <PlanView explain={plan} />
         ) : active >= 0 && sets[active] ? (
           <ResultGrid
-            key={`${result?.batches.length}-${active}-${elapsed}`}
+            key={`${tabId}-${result?.batches.length}-${active}-${elapsed}`}
             rs={sets[active]}
             dialect={dialect}
             edit={sets.length === 1 ? editContext : undefined}

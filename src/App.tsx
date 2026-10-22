@@ -10,24 +10,17 @@ import { dismiss, toast, update } from "./notify";
 import { ExplorerPanel } from "./components/ExplorerPanel";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { MultiDbDialog } from "./components/MultiDbDialog";
+import { usePrompts } from "./components/Prompts";
 import { ProblemsView } from "./components/ProblemsView";
 import { ResultsPanel } from "./components/ResultsPanel";
 import { SearchPanel } from "./components/SearchPanel";
 import { SettingsDialog } from "./components/SettingsDialog";
-import { VariablesDialog } from "./components/VariablesDialog";
-import {
-  applyFixes,
-  bindModelContext,
-  diagnosticsOf,
-  editorArgs,
-  expandWildcard,
-  languageFor,
-  monaco,
-  registerProviders,
-  unbindModelContext,
-  updateDiagnostics,
-} from "./monaco";
+import { EditorDocuments } from "./documents";
+import { dropDraft } from "./editDrafts";
+import { applyFixes, diagnosticsOf, editorArgs, expandWildcard, languageFor, monaco, registerProviders, updateDiagnostics } from "./monaco";
+import { setPrefs } from "./prefs";
 import { problemsMarkdown, type Problem } from "./problems";
+import { withSqlcmdContext } from "./sqlcmd";
 import type {
   ConnectionConfig,
   Dialect,
@@ -57,24 +50,6 @@ const PANEL_TITLE: Record<Exclude<Panel, null>, string> = {
   explorer: "Object Explorer",
 };
 
-interface ConfirmState {
-  messages: string[];
-  resolve: (ok: boolean) => void;
-}
-
-interface ChoiceState {
-  title: string;
-  message: string;
-  options: { label: string; value: string; kind?: "primary" | "danger" }[];
-  resolve: (value: string) => void;
-}
-
-interface VariablesState {
-  names: string[];
-  dialect: Dialect;
-  resolve: (values: VariableValue[] | null) => void;
-}
-
 interface DoctorState {
   config: ConnectionConfig;
   password: string | null;
@@ -94,6 +69,9 @@ const REFACTOR_DONE: Record<RefactorAction, string> = {
 let untitled = 0;
 const nextTitle = () => `SQLQuery${++untitled}.sql`;
 
+/** One database of one saved connection (catalogs are per database). */
+const catalogKey = (t: Pick<Tab, "connectionId" | "database">) => `${t.connectionId}\u0001${(t.database ?? "").toLowerCase()}`;
+
 export default function App() {
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [activeId, setActiveId] = useState<string>("");
@@ -108,27 +86,24 @@ export default function App() {
   const [status, setStatus] = useState("");
   const [problems, setProblems] = useState<Problem[]>([]);
   const [catalogVersion, setCatalogVersion] = useState(0);
-  const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
-  const [choice, setChoice] = useState<ChoiceState | null>(null);
   const [doctor, setDoctor] = useState<DoctorState | null>(null);
-  const [variables, setVariables] = useState<VariablesState | null>(null);
+  const { askChoice, confirmWarnings, askVariables, prompts } = usePrompts();
   const settingsRef = useRef<Settings | null>(null);
   /** "Transaction still open" notification per tab, closed once it ends. */
   const txReminders = useRef(new Map<string, number>());
+  /** The last session's tabs are back: only then may the session be saved (an empty start must not overwrite it). */
+  const restored = useRef(false);
+  /** Tabs being closed: their last version is still being written to history. */
+  const closeWrites = useRef(Promise.resolve());
+  /** Databases whose objects a script changed: reloaded once no transaction holds the change. */
+  const staleCatalogs = useRef(new Set<string>());
+  /** Background reloads after schema changes, per database: true when another is wanted after it. */
+  const reloading = useRef(new Map<string, boolean>());
+  /** Windows is in dark mode (for the "system" theme). */
+  const [systemDark, setSystemDark] = useState(() => window.matchMedia("(prefers-color-scheme: dark)").matches);
+  const zoomSave = useRef<number | undefined>(undefined);
   settingsRef.current = settings;
 
-  const askChoice = (title: string, message: string, options: ChoiceState["options"]) =>
-    new Promise<string>((resolve) =>
-      setChoice({
-        title,
-        message,
-        options,
-        resolve: (v) => {
-          setChoice(null);
-          resolve(v);
-        },
-      }),
-    );
   /**
    * Production connections confirm every change and procedure call, naming
    * the server and the database(s). Fails closed: a script that cannot be
@@ -153,9 +128,7 @@ export default function App() {
 
   const editorEl = useRef<HTMLDivElement>(null);
   const editor = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
-  const models = useRef(new Map<string, monaco.editor.ITextModel>());
-  const viewStates = useRef(new Map<string, monaco.editor.ICodeEditorViewState | null>());
-  const lastSaved = useRef(new Map<string, string>());
+  const [documents] = useState(() => new EditorDocuments());
   const tabsRef = useRef<Tab[]>([]);
   const activeRef = useRef("");
   const connectionsRef = useRef<SavedConnection[]>([]);
@@ -189,10 +162,7 @@ export default function App() {
     (init: Partial<SessionTab> & { text?: string } = {}) => {
       const id = init.id ?? newId();
       const dialect: Dialect = init.dialect ?? "mssql";
-      const model = monaco.editor.createModel(init.text ?? "", languageFor[dialect]);
-      models.current.set(id, model);
-      lastSaved.current.set(id, init.text ?? "");
-      bindModelContext(model, () => {
+      documents.open(id, init.text ?? "", dialect, () => {
         const t = tabsRef.current.find((x) => x.id === id);
         const c = connectionsRef.current.find((x) => x.id === t?.connectionId);
         return {
@@ -220,15 +190,15 @@ export default function App() {
     [],
   );
 
-  const recordHistory = useCallback((id: string, kind: "autosave" | "execute") => {
+  /** Write the tab's text to history; resolves once it is stored (never rejects). */
+  const recordHistory = useCallback((id: string, kind: "autosave" | "execute"): Promise<void> => {
     const t = tabsRef.current.find((x) => x.id === id);
-    const model = models.current.get(id);
-    if (!t || !model) return;
+    const model = documents.get(id);
+    if (!t || !model) return Promise.resolve();
     const text = model.getValue();
-    if (kind === "autosave" && lastSaved.current.get(id) === text) return;
-    lastSaved.current.set(id, text);
+    if (!documents.noteSaved(id, text) && kind === "autosave") return Promise.resolve();
     const c = connectionsRef.current.find((x) => x.id === t.connectionId);
-    api
+    return api
       .historyRecord({
         tabId: id,
         title: t.title,
@@ -238,7 +208,10 @@ export default function App() {
         text,
         kind,
       })
-      .catch(() => undefined);
+      .then(
+        () => undefined,
+        () => undefined,
+      );
   }, []);
 
   const closeTab = useCallback(
@@ -266,16 +239,15 @@ export default function App() {
           return;
         }
       }
-      recordHistory(id, "autosave");
-      api.historyMarkClosed(id).catch(() => undefined);
+      // the last version is stored before the tab is marked closed (Ctrl+Shift+T reopens it)
+      // (the text is read now, before the editor document goes away below)
+      const recorded = recordHistory(id, "autosave");
+      closeWrites.current = Promise.all([closeWrites.current, recorded]).then(() =>
+        api.historyMarkClosed(id).catch(() => undefined),
+      );
       api.disconnectTab(id).catch(() => undefined);
-      const model = models.current.get(id);
-      if (model) {
-        unbindModelContext(model);
-        model.dispose();
-      }
-      models.current.delete(id);
-      viewStates.current.delete(id);
+      documents.close(id);
+      dropDraft(id);
       const remaining = tabsRef.current.filter((t) => t.id !== id);
       setTabs(remaining);
       if (activeRef.current === id) {
@@ -291,22 +263,15 @@ export default function App() {
   // swap the editor model when the active tab changes
   useEffect(() => {
     const ed = editor.current;
-    const model = models.current.get(activeId);
-    if (!ed || !model) return;
-    const current = ed.getModel();
-    if (current === model) return;
-    const prevId = [...models.current.entries()].find(([, m]) => m === current)?.[0];
-    if (prevId) viewStates.current.set(prevId, ed.saveViewState());
-    ed.setModel(model);
-    const vs = viewStates.current.get(activeId);
-    if (vs) ed.restoreViewState(vs);
-    ed.focus();
+    if (ed && documents.show(ed, activeId)) ed.focus();
   }, [activeId, tabs.length]);
 
   // -- connections ----------------------------------------------------------
 
   const loadCatalog = useCallback(async (tab: Tab, refresh = false) => {
     if (!tab.connectionId || !tab.database) return;
+    // a script changed these objects since they were loaded
+    if (staleCatalogs.current.delete(catalogKey(tab))) refresh = true;
     const name = connectionsRef.current.find((c) => c.id === tab.connectionId)?.name ?? "";
     const where = `${name} / ${tab.database}`;
     setStatus(`${where}: ${refresh ? "refreshing" : "loading"} objects…`);
@@ -322,6 +287,34 @@ export default function App() {
       if (progress) update(progress, "error", "Could not load objects", `${errorText(e)}\n${msg}`);
       else toast.warning(`Could not load objects of ${where}`, msg, [{ label: "Retry", run: () => void loadCatalog(tab, true) }]);
     }
+  }, []);
+
+  /** Reload a database's objects quietly after a script changed them (one reload at a time). */
+  const reloadAfterSchemaChange = useCallback((tab: Tab) => {
+    if (!tab.connectionId || !tab.database) return;
+    const key = catalogKey(tab);
+    if (reloading.current.has(key)) {
+      reloading.current.set(key, true);
+      return;
+    }
+    reloading.current.set(key, false);
+    const name = connectionsRef.current.find((c) => c.id === tab.connectionId)?.name ?? "";
+    const where = `${name} / ${tab.database}`;
+    const run = async (): Promise<void> => {
+      try {
+        const info = await api.loadCatalog(tab.connectionId!, tab.database!, true);
+        setCatalogVersion((v) => v + 1);
+        setStatus(`${where}: objects reloaded after the schema change (${info.objects})`);
+      } catch (e) {
+        setStatus(`${where}: could not reload objects: ${errorText(e)}`);
+      }
+      if (reloading.current.get(key)) {
+        reloading.current.set(key, false);
+        return run();
+      }
+      reloading.current.delete(key);
+    };
+    void run();
   }, []);
 
   const connectTab = useCallback(
@@ -340,7 +333,7 @@ export default function App() {
           dialect: r.dialect,
         });
         patchTab(id, tab);
-        const model = models.current.get(id);
+        const model = documents.get(id);
         if (model) monaco.editor.setModelLanguage(model, languageFor[r.dialect]);
         setStatus(`Connected to ${conn.name}`);
         if (progress) update(progress, "success", `Connected to ${conn.name}`, `Database: ${r.database}${conn.readOnly ? " · read-only" : ""}`);
@@ -395,6 +388,9 @@ ${r.notice}` : failure.text);
           dismiss(reminder);
           txReminders.current.delete(tabId);
         }
+        // schema changes the transaction held are now final (or undone)
+        const tab = tabsRef.current.find((t) => t.id === tabId);
+        if (tab && !r.openTransactions && staleCatalogs.current.delete(catalogKey(tab))) reloadAfterSchemaChange(tab);
         toast.success(sql === "COMMIT" ? "Transaction committed" : "Transaction rolled back", sql === "COMMIT" ? "The changes are saved." : "The changes were undone.");
       } catch (e) {
         toast.error(`${sql} failed`, errorText(e));
@@ -403,7 +399,7 @@ ${r.notice}` : failure.text);
         if (r) patchTab(tabId, { openTransactions: r.openTransactions ?? 0 });
       }
     },
-    [patchTab],
+    [patchTab, reloadAfterSchemaChange],
   );
 
   /** Toast after a run: rows / errors / open transaction / commit decision. */
@@ -438,11 +434,14 @@ ${r.notice}` : failure.text);
     };
     const pending = result.pendingCommit;
     if (pending) {
+      const calls = pending.calls ?? [];
       const message = pending.failed
         ? `Some statements failed. The changes made so far${pending.rows != null ? ` (${pending.rows.toLocaleString()} row(s))` : ""} are kept in an open transaction.`
-        : pending.rows == null
-          ? "SQL Server did not report how many rows changed (the script uses SET NOCOUNT ON or USE), so Sqlotus cannot tell whether it is within your limit. The changes are kept in an open transaction."
-          : `This run changed ${pending.rows.toLocaleString()} rows — more than your limit of ${pending.limit.toLocaleString()} (Options → Safety). The changes are kept in an open transaction.`;
+        : calls.length > 0
+          ? `This script calls ${calls.slice(0, 3).join(", ")}${calls.length > 3 ? ", …" : ""}. Sqlotus cannot count the rows procedures change, so their changes are kept in an open transaction (Options → Safety).`
+          : pending.rows == null
+            ? "SQL Server did not report how many rows changed (the script uses SET NOCOUNT ON or USE), so Sqlotus cannot tell whether it is within your limit. The changes are kept in an open transaction."
+            : `This run changed ${pending.rows.toLocaleString()} rows — more than your limit of ${pending.limit.toLocaleString()} (Options → Safety). The changes are kept in an open transaction.`;
       void askChoice("Commit these changes?", message, [
         { label: "Commit", value: "COMMIT", kind: "primary" },
         { label: "Roll back", value: "ROLLBACK", kind: "danger" },
@@ -461,7 +460,7 @@ ${r.notice}` : failure.text);
       const id = activeRef.current;
       const tab = tabsRef.current.find((t) => t.id === id);
       const ed = editor.current;
-      const model = models.current.get(id);
+      const model = documents.get(id);
       if (!tab || !ed || !model) return;
       if (!tab.connected) {
         toast.info("Connect first", "Choose a server for this tab, then run the query again.");
@@ -474,9 +473,13 @@ ${r.notice}` : failure.text);
       }
       let sql = "";
       const sel = ed.getSelection();
-      if (mode === "auto" && sel && !sel.isEmpty()) {
+      const selected = !!sel && !sel.isEmpty();
+      // F5 runs the statement at the cursor when that option is on and nothing is selected
+      const statement = mode === "statement" || (!selected && !!settingsRef.current?.editor.f5RunsStatement);
+      if (mode === "auto" && sel && selected) {
         sql = model.getValueInRange(sel);
-      } else if (mode === "statement") {
+        if (tab.dialect === "mssql") sql = withSqlcmdContext(model.getValue(), model.getOffsetAt(sel.getStartPosition()), sql);
+      } else if (statement) {
         const pos = ed.getPosition();
         const text = model.getValue();
         const r = pos ? await api.statementAt(text, tab.dialect, model.getOffsetAt(pos)) : null;
@@ -485,6 +488,7 @@ ${r.notice}` : failure.text);
           return;
         }
         sql = text.slice(r.start, r.end);
+        if (tab.dialect === "mssql") sql = withSqlcmdContext(text, r.start, sql);
         const s = model.getPositionAt(r.start);
         const e = model.getPositionAt(r.end);
         ed.setSelection(new monaco.Selection(s.lineNumber, s.column, e.lineNumber, e.column));
@@ -498,9 +502,7 @@ ${r.notice}` : failure.text);
       // execution warnings: confirm destructive statements
       const warnings = await api.executionWarnings(sql, tab.dialect).catch(() => [] as string[]);
       if (warnings.length > 0) {
-        const ok = await new Promise<boolean>((resolve) => setConfirmState({ messages: warnings, resolve }));
-        setConfirmState(null);
-        if (!ok) {
+        if (!(await confirmWarnings(warnings))) {
           toast.info("Execution cancelled", "Nothing was run.");
           return;
         }
@@ -515,15 +517,14 @@ ${r.notice}` : failure.text);
       if (settingsRef.current?.safety?.promptVariables ?? true) {
         const names = await api.undeclaredVariables(sql, tab.dialect).catch(() => [] as string[]);
         if (names.length > 0) {
-          values = await new Promise<VariableValue[] | null>((resolve) => setVariables({ names, dialect: tab.dialect, resolve }));
-          setVariables(null);
+          values = await askVariables(names, tab.dialect);
           if (!values) {
             toast.info("Execution cancelled", "Nothing was run.");
             return;
           }
         }
       }
-      recordHistory(id, "execute");
+      void recordHistory(id, "execute");
       patchTab(id, { running: true, view: "results" });
       setResultsVisible(true);
       try {
@@ -536,8 +537,18 @@ ${r.notice}` : failure.text);
           database: result.database || tab.database,
           openTransactions: result.openTransactions ?? 0,
         });
-        if (result.database && result.database !== tab.database) {
-          void loadCatalog({ ...tab, database: result.database });
+        const here = { ...tab, database: result.database || tab.database };
+        if (result.schemaChanged) {
+          staleCatalogs.current.add(catalogKey(tab));
+          staleCatalogs.current.add(catalogKey(here));
+        }
+        // a change still inside an open transaction is reloaded when it ends
+        // (reading the objects meanwhile would wait for the transaction)
+        const open = (result.openTransactions ?? 0) > 0;
+        if (!open && staleCatalogs.current.delete(catalogKey(here))) {
+          reloadAfterSchemaChange(here);
+        } else if (here.database !== tab.database && !staleCatalogs.current.has(catalogKey(here))) {
+          void loadCatalog(here);
         }
         reportExecution(result, tab.title, id);
       } catch (e) {
@@ -552,7 +563,7 @@ ${r.notice}` : failure.text);
         });
       }
     },
-    [patchTab, recordHistory, loadCatalog],
+    [patchTab, recordHistory, loadCatalog, reloadAfterSchemaChange],
   );
 
   /** Run the last query of a tab again (after its rows were edited). */
@@ -575,7 +586,7 @@ ${r.notice}` : failure.text);
     const id = activeRef.current;
     const tab = tabsRef.current.find((t) => t.id === id);
     const ed = editor.current;
-    const model = models.current.get(id);
+    const model = documents.get(id);
     if (!tab || !ed || !model) return;
     if (!tab.connected) {
       toast.info("Connect first", "The plan comes from the server.");
@@ -608,17 +619,14 @@ ${r.notice}` : failure.text);
       const id = activeRef.current;
       const tab = tabsRef.current.find((t) => t.id === id);
       const ed = editor.current;
-      const model = models.current.get(id);
+      const model = documents.get(id);
       if (!tab || !ed || !model || !tab.connected || tab.running) return;
       const sel = ed.getSelection();
       const sql = sel && !sel.isEmpty() ? model.getValueInRange(sel) : model.getValue();
       if (!sql.trim()) return;
       const warnings = await api.executionWarnings(sql, tab.dialect).catch(() => [] as string[]);
       if (warnings.length > 0) {
-        const msgs = [...warnings, `This will run on ${databases.length} database(s).`];
-        const ok = await new Promise<boolean>((resolve) => setConfirmState({ messages: msgs, resolve }));
-        setConfirmState(null);
-        if (!ok) return;
+        if (!(await confirmWarnings([...warnings, `This will run on ${databases.length} database(s).`]))) return;
       }
       // a production connection confirms here too: the run reaches every chosen database
       const where = databases.length > 3 ? `${databases.slice(0, 3).join(", ")} and ${databases.length - 3} more` : databases.join(", ");
@@ -626,7 +634,7 @@ ${r.notice}` : failure.text);
         toast.info("Execution cancelled", "Nothing was run.");
         return;
       }
-      recordHistory(id, "execute");
+      void recordHistory(id, "execute");
       patchTab(id, { running: true });
       setResultsVisible(true);
       try {
@@ -654,6 +662,20 @@ ${r.notice}` : failure.text);
     }
     toast.info("Cancelling the query…", "The server is asked to stop; the connection is reset if it does not.");
     void api.cancelQuery(id);
+  }, []);
+
+  /** Ctrl+wheel, Ctrl+= and Ctrl+-: the editor's font size, kept in the settings. */
+  const zoom = useCallback((step: number | "reset") => {
+    const s = settingsRef.current;
+    if (!s) return;
+    const size = step === "reset" ? 14 : Math.max(9, Math.min(28, s.editor.fontSize + step));
+    if (size === s.editor.fontSize) return;
+    const next = { ...s, editor: { ...s.editor, fontSize: size } };
+    settingsRef.current = next;
+    setSettings(next);
+    setStatus(`Editor font size ${size}`);
+    window.clearTimeout(zoomSave.current);
+    zoomSave.current = window.setTimeout(() => void api.saveSettings(next).catch(() => undefined), 500);
   }, []);
 
   const format = useCallback(() => {
@@ -748,6 +770,7 @@ ${r.notice}` : failure.text);
   };
 
   const reopenClosed = useCallback(async () => {
+    await closeWrites.current;
     const [last] = await api.historyRecentlyClosed(1);
     if (!last) {
       toast.info("No recently closed tab to reopen");
@@ -778,8 +801,8 @@ ${r.notice}` : failure.text);
     setDialog("multi");
   }, []);
 
-  const actions = useRef({ execute, cancel, format, closeTab, createTab, reopenClosed, refactor, goToDefinition, openMulti, explain });
-  actions.current = { execute, cancel, format, closeTab, createTab, reopenClosed, refactor, goToDefinition, openMulti, explain };
+  const actions = useRef({ execute, cancel, format, closeTab, createTab, reopenClosed, refactor, goToDefinition, openMulti, explain, zoom });
+  actions.current = { execute, cancel, format, closeTab, createTab, reopenClosed, refactor, goToDefinition, openMulti, explain, zoom };
 
   // -- startup ----------------------------------------------------------------
 
@@ -813,6 +836,20 @@ ${r.notice}` : failure.text);
     ed.addCommand(KM.Alt | KC.PauseBreak, () => actions.current.cancel());
     ed.addCommand(KM.CtrlCmd | KC.KeyR, () => setResultsVisible((v) => !v));
     ed.addCommand(KM.CtrlCmd | KC.KeyL, () => void actions.current.explain());
+    ed.addCommand(KM.CtrlCmd | KC.Equal, () => actions.current.zoom(1));
+    ed.addCommand(KM.CtrlCmd | KC.Minus, () => actions.current.zoom(-1));
+    ed.addCommand(KM.CtrlCmd | KC.Digit0, () => actions.current.zoom("reset"));
+    // Ctrl+wheel zooms the editor instead of scrolling it
+    editorEl.current!.addEventListener(
+      "wheel",
+      (e) => {
+        if (!e.ctrlKey) return;
+        e.preventDefault();
+        e.stopPropagation();
+        actions.current.zoom(e.deltaY < 0 ? 1 : -1);
+      },
+      { capture: true, passive: false },
+    );
     ed.addCommand(
       KC.Tab,
       () => {
@@ -897,10 +934,11 @@ ${r.notice}` : failure.text);
       setSettings(s);
       setConnections(conns);
       connectionsRef.current = conns;
-      const session = (await api.loadSession().catch(() => null)) as { tabs: SessionTab[]; active?: string } | null;
+      const session = (await api.loadSession()) as { tabs: SessionTab[]; active?: string } | null;
       const saved = session?.tabs ?? [];
       const notice = await api.takeStartupNotice().catch(() => null);
       if (notice) toast.success("Welcome to Sqlotus", notice);
+      restored.current = true;
       if (saved.length === 0) {
         createTab();
         return;
@@ -919,17 +957,31 @@ ${r.notice}` : failure.text);
           connectTab(t.id, conn, null, t.database).catch(() => undefined);
         }
       }
-    })();
+    })().catch((e) => {
+      // the last session stays saved for the next start; work goes on in a new tab
+      createTab();
+      toast.error("Could not restore the last session", errorText(e));
+    });
     return () => ed.dispose();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // the "system" theme follows Windows as it switches between light and dark
+  useEffect(() => {
+    const dark = window.matchMedia("(prefers-color-scheme: dark)");
+    const follow = (e: MediaQueryListEvent) => setSystemDark(e.matches);
+    dark.addEventListener("change", follow);
+    return () => dark.removeEventListener("change", follow);
+  }, []);
 
   // apply editor settings
   useEffect(() => {
     if (!settings) return;
+    setPrefs(settings);
     editor.current?.updateOptions({ fontSize: settings.editor.fontSize });
-    monaco.editor.setTheme(settings.editor.theme === "light" ? "vs" : "vs-dark");
-    document.documentElement.dataset.theme = settings.editor.theme;
-  }, [settings]);
+    const theme = settings.editor.theme === "system" ? (systemDark ? "dark" : "light") : settings.editor.theme;
+    monaco.editor.setTheme(theme === "light" ? "vs" : "vs-dark");
+    document.documentElement.dataset.theme = theme;
+  }, [settings, systemDark]);
 
   // re-run code analysis when objects were (re)loaded
   useEffect(() => {
@@ -944,9 +996,12 @@ ${r.notice}` : failure.text);
     return () => clearInterval(timer);
   }, [settings, recordHistory]);
 
-  // persist open tabs (text included) so a restart restores the workspace
+  // persist open tabs (text included) so a restart restores the workspace;
+  // only when something changed: a big tab is not written every few seconds
   useEffect(() => {
+    let last = "";
     const save = () => {
+      if (!restored.current) return;
       const data = {
         active: activeRef.current,
         tabs: tabsRef.current.map<SessionTab>((t) => ({
@@ -955,10 +1010,15 @@ ${r.notice}` : failure.text);
           dialect: t.dialect,
           connectionId: t.connectionId,
           database: t.database,
-          text: models.current.get(t.id)?.getValue() ?? "",
+          text: documents.text(t.id),
         })),
       };
-      api.saveSession(data).catch(() => undefined);
+      const json = JSON.stringify(data);
+      if (json === last) return;
+      last = json;
+      api.saveSession(data).catch(() => {
+        last = "";
+      });
     };
     const timer = setInterval(save, 3000);
     window.addEventListener("beforeunload", save);
@@ -1193,6 +1253,7 @@ ${r.notice}` : failure.text);
               <div className="splitter-h" onMouseDown={dragResults} />
               <div className="results-pane" style={{ height: resultsHeight }}>
                 <ResultsPanel
+                  tabId={activeTab?.id}
                   editContext={
                     activeTab?.connected && activeTab.lastSql && conn
                       ? {
@@ -1204,6 +1265,8 @@ ${r.notice}` : failure.text);
                           readOnly: !!conn.readOnly,
                           production: conn.environment === "prod" ? { name: conn.name, host: conn.host } : undefined,
                           onSaved: () => void refreshResult(activeTab.id),
+                          openQuery: (title, sql) =>
+                            void openText(title, sql, true, { connectionId: conn.id, database: activeTab.database ?? "" }),
                         }
                       : undefined
                   }
@@ -1347,24 +1410,6 @@ ${r.notice}` : failure.text);
           }}
         />
       )}
-      {choice && (
-        <div className="modal-backdrop">
-          <div className="modal confirm-modal" onKeyDown={(e) => e.key === "Escape" && choice.resolve("")}>
-            <div className="modal-title">{choice.title}</div>
-            <div className="confirm-body">
-              <p>{choice.message}</p>
-            </div>
-            <div className="modal-actions">
-              <span className="spacer" />
-              {choice.options.map((o) => (
-                <button key={o.label} className={o.kind ?? ""} autoFocus={o.value === ""} onClick={() => choice.resolve(o.value)}>
-                  {o.label}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
       {dialog === "compare" && (
         <SchemaCompareDialog
           connections={connections}
@@ -1393,37 +1438,7 @@ ${r.notice}` : failure.text);
           onClose={() => setDialog(null)}
         />
       )}
-      {variables && (
-        <VariablesDialog
-          names={variables.names}
-          dialect={variables.dialect}
-          onRun={(v) => variables.resolve(v)}
-          onCancel={() => variables.resolve(null)}
-        />
-      )}
       <Toaster />
-      {confirmState && (
-        <div className="modal-backdrop">
-          <div className="modal confirm-modal" onKeyDown={(e) => e.key === "Escape" && confirmState.resolve(false)}>
-            <div className="modal-title">⚠ Execution warning</div>
-            <div className="confirm-body">
-              {confirmState.messages.map((m, i) => (
-                <div key={i}>{m}</div>
-              ))}
-              <p>Do you want to run it anyway?</p>
-            </div>
-            <div className="modal-actions">
-              <span className="spacer" />
-              <button className="danger" onClick={() => confirmState.resolve(true)}>
-                Execute anyway
-              </button>
-              <button className="primary" autoFocus onClick={() => confirmState.resolve(false)}>
-                Cancel
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
       {dialog === "multi" && activeTab && (
         <MultiDbDialog
           databases={activeTab.databases}
@@ -1441,6 +1456,13 @@ ${r.notice}` : failure.text);
           dialect={activeTab?.dialect ?? "mssql"}
           onClose={() => setDialog(null)}
           onSaved={(s) => {
+            const days = s.editor.historyDays ?? 0;
+            if (days > 0 && days !== (settings.editor.historyDays ?? 0)) {
+              void api
+                .historyPrune()
+                .then((n) => n > 0 && toast.info(`${n.toLocaleString()} old history version(s) deleted`, `Query history keeps the last ${days} day(s).`))
+                .catch((e) => toast.error("Could not delete old history", errorText(e)));
+            }
             setSettings(s);
             // analysis rules may have changed
             const model = editor.current?.getModel();
@@ -1449,6 +1471,7 @@ ${r.notice}` : failure.text);
           }}
         />
       )}
+      {prompts}
     </div>
   );
 }

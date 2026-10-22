@@ -94,6 +94,39 @@ const MULTI_OPS: &[&str] = &[
     "/=", "%=", "&=", "|=", "^=", ":=", "=>", "<<", ">>", "&&", "!~", "~*", "?|", "?&",
 ];
 
+/// Characters PostgreSQL builds operators from.
+const PG_OPERATOR_CHARS: &str = "+-*/<>=~!@#%^&|`?";
+
+/// The tokens without whitespace and comments.
+pub(crate) fn significant<'a>(tokens: &[Token<'a>]) -> Vec<Token<'a>> {
+    tokens.iter().filter(|t| !t.is_trivia()).copied().collect()
+}
+
+/// The upper-case text of a word token; empty for anything else.
+pub(crate) fn word(t: Option<&Token<'_>>) -> String {
+    t.filter(|t| t.kind == TokenKind::Word)
+        .map(|t| t.upper())
+        .unwrap_or_default()
+}
+
+/// Index of the `)` matching the `(` at `open` in `t`, if it is closed.
+pub(crate) fn matching_paren(t: &[Token<'_>], open: usize) -> Option<usize> {
+    let mut depth = 0i32;
+    for (k, x) in t.iter().enumerate().skip(open) {
+        match x.kind {
+            TokenKind::LParen => depth += 1,
+            TokenKind::RParen => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(k);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 pub fn tokenize(src: &str, dialect: Dialect) -> Vec<Token<'_>> {
     let mut lx = Lexer { src, pos: 0, dialect };
     let mut out = Vec::new();
@@ -160,6 +193,13 @@ impl Lexer<'_> {
                 self.line_comment()
             }
             '#' if self.dialect == Dialect::MySql => self.line_comment(),
+            // a SQLCMD command line (`:setvar x 1`): run by the client, not the server
+            ':' if self.dialect == Dialect::MsSql
+                && next.is_some_and(|n| n.is_ascii_alphabetic())
+                && self.at_line_start() =>
+            {
+                self.line_comment()
+            }
             '/' if next == Some('*') => self.block_comment(),
             '\'' => {
                 self.bump();
@@ -190,6 +230,11 @@ impl Lexer<'_> {
                 TokenKind::QuotedIdent
             }
             '$' if self.dialect == Dialect::Postgres => self.dollar(),
+            // a SQLCMD variable, `$(name)`: part of a name (`dbo.Orders_$(Env)`)
+            '$' if self.dialect == Dialect::MsSql && sqlcmd_variable_len(self.rest()).is_some() => {
+                self.word_rest();
+                TokenKind::Word
+            }
             '@' if self.dialect != Dialect::Postgres && next.is_some_and(is_ident_char_or_at) => {
                 self.bump();
                 self.eat_while(is_ident_char_or_at);
@@ -203,7 +248,11 @@ impl Lexer<'_> {
             c if c.is_ascii_digit() => self.number(),
             '.' if next.is_some_and(|n| n.is_ascii_digit()) => self.number(),
             c if is_ident_start(c) => {
-                self.eat_while(is_ident_char);
+                if self.dialect == Dialect::MsSql {
+                    self.word_rest();
+                } else {
+                    self.eat_while(is_ident_char);
+                }
                 TokenKind::Word
             }
             ',' => self.single(TokenKind::Comma),
@@ -211,7 +260,15 @@ impl Lexer<'_> {
             '(' => self.single(TokenKind::LParen),
             ')' => self.single(TokenKind::RParen),
             '.' => self.single(TokenKind::Dot),
-            '?' if !matches!(next, Some('|' | '&')) => self.single(TokenKind::Param),
+            '?' if !matches!(next, Some('|' | '&'))
+                && !(self.dialect == Dialect::Postgres && next.is_some_and(|n| PG_OPERATOR_CHARS.contains(n))) =>
+            {
+                self.single(TokenKind::Param)
+            }
+            c if self.dialect == Dialect::Postgres && PG_OPERATOR_CHARS.contains(c) => {
+                self.pg_operator();
+                TokenKind::Operator
+            }
             _ => {
                 let rest = self.rest();
                 if let Some(op) = MULTI_OPS.iter().find(|op| rest.starts_with(**op)) {
@@ -227,6 +284,53 @@ impl Lexer<'_> {
     fn single(&mut self, kind: TokenKind) -> TokenKind {
         self.bump();
         kind
+    }
+
+    /// Whether only whitespace precedes the current position on its line.
+    fn at_line_start(&self) -> bool {
+        let before = &self.src[..self.pos];
+        let line = before.rfind(['\n', '\r']).map_or(0, |i| i + 1);
+        before[line..].trim().is_empty()
+    }
+
+    /// The rest of a T-SQL word: identifier characters and SQLCMD `$(name)`
+    /// variables.
+    fn word_rest(&mut self) {
+        loop {
+            if let Some(n) = sqlcmd_variable_len(self.rest()) {
+                self.pos += n;
+            } else if self.peek().is_some_and(is_ident_char) {
+                // `$` is an identifier character, but `$(` starts a variable
+                self.bump();
+                continue;
+            } else {
+                return;
+            }
+        }
+    }
+
+    /// A PostgreSQL operator: the longest run of operator characters (`<->`,
+    /// `!~*`, `@@`, `#>>`), without `--` or `/*`, which start comments; a
+    /// longer operator ends in `+` or `-` only with one of `~!@#%^&|`?` in it,
+    /// so `a<-1` is `a < -1`.
+    fn pg_operator(&mut self) {
+        let rest = self.rest();
+        let mut len = 0;
+        for (i, c) in rest.char_indices() {
+            if !PG_OPERATOR_CHARS.contains(c) {
+                break;
+            }
+            if i > 0 && ((c == '-' && rest[..i].ends_with('-')) || (c == '*' && rest[..i].ends_with('/'))) {
+                len = i - 1;
+                break;
+            }
+            len = i + c.len_utf8();
+        }
+        let mut op = &rest[..len.max(1)];
+        while op.len() > 1 && op.ends_with(['+', '-']) && !op.contains(|c| "~!@#%^&|`?".contains(c)) {
+            op = &op[..op.len() - 1];
+        }
+        self.pos += op.len();
     }
 
     fn line_comment(&mut self) -> TokenKind {
@@ -339,6 +443,14 @@ fn is_ident_char_or_at(c: char) -> bool {
     is_ident_char(c) || c == '@' || c == '#'
 }
 
+/// Length of a SQLCMD variable, `$(name)`, at the start of `s`.
+pub(crate) fn sqlcmd_variable_len(s: &str) -> Option<usize> {
+    let name = s.strip_prefix("$(")?;
+    let len = name.find(')')?;
+    let valid = len > 0 && name[..len].chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-');
+    valid.then_some(len + 3)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -381,6 +493,45 @@ mod tests {
                 (Number, "1"),
             ]
         );
+    }
+
+    #[test]
+    fn sqlcmd_lines_and_variables() {
+        use TokenKind::*;
+        let src = ":setvar Env \"Test\"\n  :on error exit\nSELECT * FROM dbo.Orders_$(Env) o, $(Schema).T, x$y\nWHERE a = $5 AND b::c = 1";
+        let all = tokenize(src, Dialect::MsSql);
+        let comments: Vec<&str> = all.iter().filter(|t| t.kind == LineComment).map(|t| t.text).collect();
+        assert_eq!(comments, vec![":setvar Env \"Test\"", ":on error exit"]);
+        let words: Vec<&str> = all.iter().filter(|t| t.kind == Word).map(|t| t.text).collect();
+        assert_eq!(
+            words,
+            vec![
+                "SELECT",
+                "FROM",
+                "dbo",
+                "Orders_$(Env)",
+                "o",
+                "$(Schema)",
+                "T",
+                "x$y",
+                "WHERE",
+                "a",
+                "AND",
+                "b",
+                "c"
+            ]
+        );
+        // `:` elsewhere on a line, `::`, and other servers are untouched
+        assert_eq!(kinds("SELECT 1 :x", Dialect::MsSql).last(), Some(&(Word, "x")));
+        assert_eq!(kinds("::dbo", Dialect::MsSql)[0], (Operator, "::"));
+        assert!(
+            kinds(":setvar x 1", Dialect::Postgres)
+                .iter()
+                .all(|(k, _)| *k != LineComment)
+        );
+        assert_eq!(kinds("SELECT $(x)", Dialect::MySql).len(), 5);
+        // `$(` without a name is not a variable
+        assert_eq!(kinds("SELECT $()", Dialect::MsSql)[1], (Operator, "$"));
     }
 
     #[test]

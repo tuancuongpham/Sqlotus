@@ -465,6 +465,7 @@ async fn mysql_delimiter_script() {
                   DELIMITER //\n\
                   CREATE PROCEDURE sqlotus_delim_p(IN n int)\nBEGIN\n  INSERT INTO sqlotus_delim_t VALUES (n);\n  SELECT COUNT(*) AS c FROM sqlotus_delim_t;\nEND //\n\
                   CREATE TRIGGER sqlotus_delim_tr BEFORE INSERT ON sqlotus_delim_t FOR EACH ROW BEGIN SET NEW.a = NEW.a * 10; END//\n\
+                  -- a comment after the last statement is not sent on its own (an empty query)\n\
                   DELIMITER ;\n\
                   CALL sqlotus_delim_p(4);\n\
                   SELECT a FROM sqlotus_delim_t;";
@@ -548,4 +549,102 @@ async fn postgres_long_values_are_counted() {
 #[tokio::test]
 async fn mysql_long_values_are_counted() {
     long_values_are_counted("SQLOTUS_TEST_MYSQL", "SELECT REPEAT('a', 70000) AS v, 'short' AS s").await;
+}
+
+/// Saving edited rows and the large-change check count changed rows; NOCOUNT,
+/// set by the session or by the script, must not hide them (0 rows would
+/// read as "changed by someone else", or skip the confirmation).
+#[tokio::test]
+async fn mssql_changes_are_counted_despite_nocount() {
+    let Some(e) = env("SQLOTUS_TEST_MSSQL") else {
+        return;
+    };
+    let mut c = connect(&e).await;
+    let l = Limits::default();
+    c.execute("CREATE TABLE #t (id int); INSERT #t VALUES (1), (2), (3);", &l)
+        .await;
+    let a = c.execute_counted("UPDATE #t SET id = id WHERE id <= 2", &l).await;
+    assert_eq!(a.rows_affected, 2);
+    let b = c
+        .execute_counted(
+            "SET NOCOUNT ON; UPDATE #t SET id = id WHERE id <= 2; set   nocount  on\nDELETE #t WHERE id = 3",
+            &l,
+        )
+        .await;
+    assert_eq!(b.rows_affected, 3, "{b:?}");
+    c.execute("SET NOCOUNT ON", &l).await;
+    let d = c.execute_counted("UPDATE #t SET id = id WHERE id <= 2", &l).await;
+    assert_eq!(d.rows_affected, 2);
+    // the session keeps its own setting
+    let rows = c.query_strings("SELECT CAST(@@OPTIONS & 512 AS int)").await.unwrap();
+    assert_eq!(rows[0][0].as_deref(), Some("512"), "NOCOUNT is still on in the session");
+}
+
+/// A port typed into the host field (`host:port`, `[::1]:port`) connects
+/// like the Port field; it used to be looked up as a server name.
+async fn port_in_host_field(var: &str) {
+    let Some(e) = env(var) else {
+        return;
+    };
+    let port = e.config.port.unwrap_or(e.config.default_port());
+    let host = e.config.endpoint().host;
+    let host = if host == "localhost" {
+        "127.0.0.1".to_string()
+    } else {
+        host
+    };
+    for typed in [format!("{host}:{port}"), format!("[::1]:{port}")] {
+        if typed.starts_with('[') && host != "127.0.0.1" {
+            continue;
+        }
+        let mut cfg = e.config.clone();
+        cfg.host = typed.clone();
+        cfg.port = None;
+        let mut c = Connection::open(&cfg, e.password.as_deref())
+            .await
+            .unwrap_or_else(|err| panic!("{typed}: {err}"));
+        let rows = c.query_strings("SELECT 1").await.unwrap();
+        assert_eq!(rows[0][0].as_deref(), Some("1"), "{typed}");
+        c.close().await;
+    }
+}
+
+#[tokio::test]
+async fn postgres_port_in_host_field() {
+    port_in_host_field("SQLOTUS_TEST_PG").await;
+}
+
+#[tokio::test]
+async fn mysql_port_in_host_field() {
+    port_in_host_field("SQLOTUS_TEST_MYSQL").await;
+}
+
+/// Execute current statement (Shift+F5) inside a MySQL procedure written
+/// without DELIMITER: the whole definition is sent, so the procedure is
+/// created and no statement of its body runs on its own.
+#[tokio::test]
+async fn mysql_current_statement_inside_a_procedure() {
+    let Some(e) = env("SQLOTUS_TEST_MYSQL") else {
+        return;
+    };
+    let mut c = connect(&e).await;
+    let l = Limits::default();
+    let setup = "DROP PROCEDURE IF EXISTS sqlotus_clear_staging; DROP TABLE IF EXISTS sqlotus_staging; \
+                 CREATE TABLE sqlotus_staging (id int); INSERT INTO sqlotus_staging VALUES (1), (2);";
+    assert!(!c.execute(setup, &l).await.failed);
+    // the DELETE is the body's second statement: on its own it would empty the table
+    let script = "SELECT 1;\nCREATE PROCEDURE sqlotus_clear_staging()\nBEGIN\n  SELECT 'clearing';\n  DELETE FROM sqlotus_staging;\nEND;\nSELECT 2;";
+    let at = script.find("DELETE").unwrap() + 2;
+    let span = sqlotus_core::statements::executable_statement_at(script, sqlotus_core::Dialect::MySql, at).unwrap();
+    let out = c.execute(span.text(script), &l).await;
+    assert!(!out.failed, "{:?}", out.messages);
+    let rows = c.query_strings("SELECT COUNT(*) FROM sqlotus_staging").await.unwrap();
+    assert_eq!(rows[0][0].as_deref(), Some("2"), "the body did not run");
+    let exists = c
+        .query_strings("SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_NAME = 'sqlotus_clear_staging'")
+        .await
+        .unwrap();
+    assert_eq!(exists[0][0].as_deref(), Some("1"));
+    c.execute("DROP PROCEDURE sqlotus_clear_staging; DROP TABLE sqlotus_staging;", &l)
+        .await;
 }

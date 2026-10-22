@@ -1,5 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  BackupContents,
+  BackupFile,
+  BackupInfo,
+  BackupOptions,
+  DataScript,
+  FindValueOptions,
+  RestoreMove,
+  RestoreOptions,
+  RowLink,
   CatalogInfo,
   ColumnPlan,
   DbObject,
@@ -63,7 +72,7 @@ export const api = {
   undeclaredVariables: (text: string, dialect: Dialect) => invoke<string[]>("undeclared_variables", { text, dialect }),
   /** Write an .xlsx (to `path`, or a temp file) and optionally open it. Returns the path. */
   exportXlsx: (path: string | null, columns: ResultColumn[], rows: (string | null)[][], open: boolean) =>
-    invoke<string>("export_xlsx", { path, columns, rows, open }),
+    invoke<{ path: string; cut: number }>("export_xlsx", { path, columns, rows, open }),
   cancelQuery: (tabId: string) => invoke<void>("cancel_query", { tabId }),
 
   loadCatalog: (connectionId: string, database: string, refresh: boolean) =>
@@ -104,6 +113,8 @@ export const api = {
   historyMarkClosed: (tabId: string) => invoke<void>("history_mark_closed", { tabId }),
   historyRecentlyClosed: (limit = 20) => invoke<HistoryEntry[]>("history_recently_closed", { limit }),
   historyDelete: (id: number) => invoke<void>("history_delete", { id }),
+  /** Delete history older than the days the settings keep it; returns how many versions went. */
+  historyPrune: () => invoke<number>("history_prune"),
 
   diagnostics: (args: EditorArgs) => invoke<Diagnostic[]>("diagnostics", { args }),
   analysisRules: () => invoke<AnalysisRule[]>("analysis_rules"),
@@ -162,6 +173,27 @@ export const api = {
   schemaSyncScript: (id: string, selected: string[]) =>
     invoke<{ script: string; warnings: string[]; statements: number }>("schema_sync_script", { id, selected }),
   takeStartupNotice: () => invoke<string | null>("take_startup_notice"),
+  resultLinks: (connectionId: string, database: string, dialect: Dialect, sql: string, resultColumns: string[]) =>
+    invoke<RowLink[]>("result_links", { connectionId, database, dialect, sql, resultColumns }),
+  linkQuery: (connectionId: string, database: string, dialect: Dialect, link: RowLink, values: (string | null)[]) =>
+    invoke<string>("link_query", { connectionId, database, dialect, link, values }),
+  tableDataScript: (
+    connectionId: string,
+    database: string,
+    schema: string,
+    name: string,
+    dialect: Dialect,
+    options: { maxRows: number; filter: string },
+  ) => invoke<DataScript>("table_data_script", { connectionId, database, schema, name, dialect, options }),
+  findValueScript: (connectionId: string, database: string, dialect: Dialect, options: FindValueOptions) =>
+    invoke<string>("find_value_script", { connectionId, database, dialect, options }),
+  backupInfo: (connectionId: string, database: string) => invoke<BackupInfo>("backup_info", { connectionId, database }),
+  backupContents: (connectionId: string, database: string, path: string, fileNumber: number) =>
+    invoke<BackupContents>("backup_contents", { connectionId, database, path, fileNumber }),
+  restoreMoves: (files: BackupFile[], database: string, dataDir: string, logDir: string) =>
+    invoke<RestoreMove[]>("restore_moves", { files, database, dataDir, logDir }),
+  backupScript: (options: BackupOptions) => invoke<string>("backup_script", { options }),
+  restoreScript: (options: RestoreOptions) => invoke<string>("restore_script", { options }),
   diagnoseConnection: (config: ConnectionConfig, error: string) => invoke<Diagnosis>("diagnose_connection", { config, error }),
   applyFix: (fix: Fix, config: ConnectionConfig, password: string | null) =>
     invoke<string>("apply_fix", { fix, config, password }),

@@ -46,9 +46,10 @@ impl MySqlConn {
     }
 
     pub async fn open(cfg: &ConnectionConfig, password: Option<&str>) -> Result<Self> {
+        let endpoint = cfg.endpoint();
         let mut b = OptsBuilder::default()
-            .ip_or_hostname(cfg.host.trim())
-            .tcp_port(cfg.port.unwrap_or(3306))
+            .ip_or_hostname(endpoint.host)
+            .tcp_port(endpoint.port.unwrap_or(cfg.default_port()))
             .user(cfg.user.clone())
             .pass(password.map(str::to_string))
             // report rows matched, like SQL Server and Postgres, not only rows whose value changed
@@ -93,12 +94,13 @@ impl MySqlConn {
             let columns = result.columns();
             match columns {
                 Some(cols) if !cols.is_empty() => {
+                    let shapes: Vec<Shape> = cols.iter().map(shape).collect();
                     let mut rs = ResultSet {
                         columns: cols
                             .iter()
                             .map(|c| ResultColumn {
                                 name: c.name_str().to_string(),
-                                type_name: format!("{:?}", c.column_type()),
+                                type_name: type_name(c).into(),
                             })
                             .collect(),
                         rows: Vec::new(),
@@ -112,7 +114,8 @@ impl MySqlConn {
                                     rs.truncated = true;
                                     continue;
                                 }
-                                rs.push_cells(row.unwrap().into_iter().map(value), limits.max_cell_chars);
+                                let cells = row.unwrap().into_iter().zip(&shapes).map(|(v, s)| value(v, *s));
+                                rs.push_cells(cells, limits.max_cell_chars);
                             }
                             Ok(None) => break,
                             Err(e) => {
@@ -144,17 +147,96 @@ impl MySqlConn {
     }
 }
 
-fn value(v: Value) -> Option<String> {
+/// How a column's values are shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Shape {
+    Text,
+    /// BINARY, VARBINARY, BLOB, GEOMETRY: always `0x...`, even when the
+    /// bytes happen to be valid UTF-8.
+    Binary,
+    /// BIT(n): the number (`b'1'` is 1, `b'10101010'` is 170), which is
+    /// also what an edit writes back.
+    Bit,
+}
+
+fn shape(c: &mysql_async::Column) -> Shape {
+    use mysql_async::consts::ColumnType as T;
+    match c.column_type() {
+        T::MYSQL_TYPE_BIT => Shape::Bit,
+        // charset 63 is "binary"; text columns carry the connection's charset
+        T::MYSQL_TYPE_STRING
+        | T::MYSQL_TYPE_VAR_STRING
+        | T::MYSQL_TYPE_VARCHAR
+        | T::MYSQL_TYPE_BLOB
+        | T::MYSQL_TYPE_TINY_BLOB
+        | T::MYSQL_TYPE_MEDIUM_BLOB
+        | T::MYSQL_TYPE_LONG_BLOB
+        | T::MYSQL_TYPE_GEOMETRY
+            if c.character_set() == 63 =>
+        {
+            Shape::Binary
+        }
+        _ => Shape::Text,
+    }
+}
+
+/// The SQL name of a column's type, as SQL Server and PostgreSQL results
+/// give it (exports decide numbers and binary values by it).
+fn type_name(c: &mysql_async::Column) -> &'static str {
+    use mysql_async::consts::ColumnType as T;
+    let binary = c.character_set() == 63;
+    match c.column_type() {
+        T::MYSQL_TYPE_TINY => "tinyint",
+        T::MYSQL_TYPE_SHORT => "smallint",
+        T::MYSQL_TYPE_INT24 => "mediumint",
+        T::MYSQL_TYPE_LONG => "int",
+        T::MYSQL_TYPE_LONGLONG => "bigint",
+        T::MYSQL_TYPE_DECIMAL | T::MYSQL_TYPE_NEWDECIMAL => "decimal",
+        T::MYSQL_TYPE_FLOAT => "float",
+        T::MYSQL_TYPE_DOUBLE => "double",
+        T::MYSQL_TYPE_BIT => "bit",
+        T::MYSQL_TYPE_YEAR => "year",
+        T::MYSQL_TYPE_DATE | T::MYSQL_TYPE_NEWDATE => "date",
+        T::MYSQL_TYPE_TIME | T::MYSQL_TYPE_TIME2 => "time",
+        T::MYSQL_TYPE_DATETIME | T::MYSQL_TYPE_DATETIME2 => "datetime",
+        T::MYSQL_TYPE_TIMESTAMP | T::MYSQL_TYPE_TIMESTAMP2 => "timestamp",
+        T::MYSQL_TYPE_JSON => "json",
+        T::MYSQL_TYPE_ENUM => "enum",
+        T::MYSQL_TYPE_SET => "set",
+        T::MYSQL_TYPE_GEOMETRY => "geometry",
+        T::MYSQL_TYPE_VECTOR => "vector",
+        T::MYSQL_TYPE_NULL => "null",
+        T::MYSQL_TYPE_STRING if binary => "binary",
+        T::MYSQL_TYPE_STRING => "char",
+        T::MYSQL_TYPE_VAR_STRING | T::MYSQL_TYPE_VARCHAR if binary => "varbinary",
+        T::MYSQL_TYPE_VAR_STRING | T::MYSQL_TYPE_VARCHAR => "varchar",
+        T::MYSQL_TYPE_TINY_BLOB | T::MYSQL_TYPE_BLOB | T::MYSQL_TYPE_MEDIUM_BLOB | T::MYSQL_TYPE_LONG_BLOB
+            if binary =>
+        {
+            "blob"
+        }
+        T::MYSQL_TYPE_TINY_BLOB | T::MYSQL_TYPE_BLOB | T::MYSQL_TYPE_MEDIUM_BLOB | T::MYSQL_TYPE_LONG_BLOB => "text",
+        _ => "",
+    }
+}
+
+fn hex(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(2 + bytes.len() * 2);
+    s.push_str("0x");
+    for x in bytes {
+        s.push_str(&format!("{x:02X}"));
+    }
+    s
+}
+
+fn value(v: Value, shape: Shape) -> Option<String> {
     Some(match v {
         Value::NULL => return None,
-        Value::Bytes(b) => String::from_utf8(b).unwrap_or_else(|e| {
-            let bytes = e.into_bytes();
-            let mut s = String::from("0x");
-            for x in bytes {
-                s.push_str(&format!("{x:02X}"));
-            }
-            s
-        }),
+        Value::Bytes(b) if shape == Shape::Binary => hex(&b),
+        Value::Bytes(b) if shape == Shape::Bit && b.len() <= 8 => {
+            b.iter().fold(0u64, |n, x| (n << 8) | u64::from(*x)).to_string()
+        }
+        Value::Bytes(b) => String::from_utf8(b).unwrap_or_else(|e| hex(e.as_bytes())),
         Value::Int(i) => i.to_string(),
         Value::UInt(u) => u.to_string(),
         Value::Float(f) => f.to_string(),

@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use sqlotus_core::catalog::ObjectKind;
+use sqlotus_core::safety::ScriptRun;
 use sqlotus_core::search::{SearchHit, SearchOptions};
 use sqlotus_core::snippet::Snippet;
 use sqlotus_core::variables::VariableValue;
@@ -50,18 +51,33 @@ pub fn save_settings(state: State<'_, AppState>, settings: Settings) -> CmdResul
     state.store.set_setting("settings", &settings).map_err(err)
 }
 
+/// Delete query history older than the days the settings keep it (at
+/// start, and when the Options dialog closes: not while the number is
+/// being typed). Returns how many versions were deleted.
+pub(crate) fn prune_history(state: &AppState) -> CmdResult<usize> {
+    match state.settings().editor.history_days {
+        0 => Ok(0),
+        days => state.store.prune_history(days).map_err(err),
+    }
+}
+
+#[tauri::command(async)]
+pub fn history_prune(state: State<'_, AppState>) -> CmdResult<usize> {
+    prune_history(&state)
+}
+
 /// A one-time message for the first window, if any.
 #[tauri::command]
 pub fn take_startup_notice(state: State<'_, AppState>) -> Option<String> {
     state.startup_notice.lock().ok()?.take()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn load_session(state: State<'_, AppState>) -> CmdResult<Option<serde_json::Value>> {
     state.store.get_setting("session").map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_session(state: State<'_, AppState>, session: serde_json::Value) -> CmdResult<()> {
     state.store.set_setting("session", &session).map_err(err)
 }
@@ -264,6 +280,9 @@ pub struct PendingCommit {
     pub(crate) limit: u64,
     /// Some statements failed, so the changes may be incomplete.
     pub(crate) failed: bool,
+    /// Procedures the script called (`EXEC dbo.p`): what they changed
+    /// cannot be counted.
+    pub(crate) calls: Vec<String>,
 }
 
 #[derive(Serialize, Default)]
@@ -280,6 +299,8 @@ pub struct ExecuteResult {
     pub(crate) pending_commit: Option<PendingCommit>,
     /// How Sqlotus handled the transaction, for the notification.
     pub(crate) notice: Option<String>,
+    /// The script creates, alters or drops objects: loaded objects are stale.
+    pub(crate) schema_changed: bool,
 }
 
 /// How a run was wrapped in a transaction by Sqlotus.
@@ -309,7 +330,8 @@ pub async fn execute(
 ) -> CmdResult<ExecuteResult> {
     let session = state.session(&tab_id).ok_or("tab is not connected")?;
     let dialect = session.config.dialect;
-    let changes = sqlotus_core::analysis::modifying_statements(&sql, dialect);
+    let run = ScriptRun::new(&sql, dialect);
+    let changes = run.changes();
     if session.config.read_only && !changes.is_empty() {
         return Err(format!(
             "This connection is read-only, so the script was not run. It contains: {}. \
@@ -323,10 +345,26 @@ pub async fn execute(
         ..Limits::default()
     };
     let row_limit = settings.safety.confirm_rows_over;
-    let rows_only = sqlotus_core::analysis::row_changes_only(&sql, dialect);
-    let tx_control = sqlotus_core::analysis::has_transaction_control(&sql, dialect);
-    let manual = session.config.manual_commit && !changes.is_empty() && !tx_control;
-    let guard_wanted = !manual && row_limit > 0 && rows_only;
+    let rows_only = run.row_changes_only();
+    let tx_control = run.controls_transactions();
+    let calls = run.calls();
+    let schema_changed = run.changes_schema();
+    // BACKUP, RESTORE, CREATE DATABASE ... are refused inside a transaction
+    let refused = run.refuses_transaction();
+    let unwrapped_note = (session.config.manual_commit && !refused.is_empty()).then(|| {
+        format!(
+            "Manual commit is on, but {} cannot run inside a transaction, so the script ran without one.",
+            refused[0]
+        )
+    });
+    // procedures change rows too: manual commit keeps their changes as well
+    let manual =
+        session.config.manual_commit && !(changes.is_empty() && calls.is_empty()) && !tx_control && refused.is_empty();
+    let guard_rows = !manual && row_limit > 0 && rows_only;
+    // what procedures change cannot be counted: ask before committing it
+    let guard_calls =
+        !manual && settings.safety.confirm_procedure_calls && !calls.is_empty() && run.fits_in_transaction();
+    let guard_wanted = guard_rows || guard_calls;
     let options = ScriptOptions {
         variables: variables.unwrap_or_default(),
         // SQL Server reports changed rows only through sp_executesql, whose
@@ -386,16 +424,21 @@ pub async fn execute(
                 notice = Some("The script failed, so PostgreSQL rolled back all of its changes (a failed transaction cannot be committed).".into());
             }
             Wrapped::Guard if open > 0 => {
-                if !count_reliable || rows > row_limit || failed {
+                let over = guard_rows && count_reliable && rows > row_limit;
+                // an unknown count matters only if the transaction wrote something
+                let unknown = (guard_rows && !count_reliable) || guard_calls;
+                let ask = failed || over || (unknown && conn.transaction_wrote().await != Some(false));
+                if ask {
                     pending = Some(PendingCommit {
                         rows: count_reliable.then_some(rows),
                         limit: row_limit,
                         failed,
+                        calls: if guard_calls { calls.clone() } else { Vec::new() },
                     });
                 } else {
                     let commit = conn.execute("COMMIT", &limits).await;
-                    notice = Some(if commit.failed {
-                        format!(
+                    notice = if commit.failed {
+                        Some(format!(
                             "COMMIT failed: {}",
                             commit
                                 .messages
@@ -403,17 +446,28 @@ pub async fn execute(
                                 .map(|m| m.text.as_str())
                                 .collect::<Vec<_>>()
                                 .join(" ")
-                        )
+                        ))
+                    } else if guard_rows {
+                        Some(format!("{rows} row(s) changed and committed."))
                     } else {
-                        format!("{rows} row(s) changed and committed.")
-                    });
+                        // procedures that changed nothing: nothing to tell
+                        None
+                    };
                     open = conn.open_transactions().await.unwrap_or(0);
                 }
+            }
+            // a transaction that wrote nothing (a procedure that only reads) has nothing to keep
+            Wrapped::Manual if open > 0 && !failed && conn.transaction_wrote().await == Some(false) => {
+                let _ = conn.execute("COMMIT", &limits).await;
+                open = conn.open_transactions().await.unwrap_or(0);
             }
             Wrapped::Manual => {
                 notice = Some("Manual commit is on for this connection: the changes stay in an open transaction until you commit or roll back.".into());
             }
             _ => {}
+        }
+        if notice.is_none() {
+            notice = unwrapped_note;
         }
         // after an error, check the connection is still alive (the server may
         // have ended the session): a dead one is dropped so the next run reconnects
@@ -470,6 +524,7 @@ pub async fn execute(
                 rows_affected,
                 pending_commit,
                 notice,
+                schema_changed,
             })
         }
         Ok(Err(e)) => Err(e),
@@ -496,7 +551,7 @@ pub async fn explain(state: State<'_, AppState>, tab_id: String, sql: String) ->
 }
 
 /// Variables `sql` uses without declaring them (to ask for their values).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn undeclared_variables(text: String, dialect: Dialect) -> CmdResult<Vec<String>> {
     no_panic("variables", || {
         sqlotus_core::variables::undeclared_variables(&text, dialect)
@@ -705,7 +760,7 @@ pub async fn complete(state: State<'_, AppState>, args: CompleteArgs) -> CmdResu
     Ok(r)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn format_sql(state: State<'_, AppState>, text: String, dialect: Dialect) -> CmdResult<String> {
     let opts = state.settings().format;
     no_panic("formatter", || sqlotus_core::format_sql(&text, dialect, &opts))
@@ -717,11 +772,12 @@ pub struct Range {
     end: usize,
 }
 
-/// The statement around `offset` (for "execute current statement").
-#[tauri::command]
+/// The statement around `offset` for "execute current statement": whole
+/// blocks and module definitions (see `executable_statement_at`).
+#[tauri::command(async)]
 pub fn statement_at(text: String, dialect: Dialect, offset: usize) -> CmdResult<Option<Range>> {
     let span = no_panic("statement split", || {
-        sqlotus_core::statements::statement_at(&text, dialect, utf16_to_byte(&text, offset))
+        sqlotus_core::statements::executable_statement_at(&text, dialect, utf16_to_byte(&text, offset))
     })?;
     Ok(span.map(|span| Range {
         start: byte_to_utf16(&text, span.start),
@@ -762,7 +818,7 @@ pub async fn search_objects(
 
 /// Script of an object: stored definition, or a CREATE TABLE built from
 /// the catalog for tables.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn object_script(
     state: State<'_, AppState>,
     connection_id: String,
@@ -805,7 +861,7 @@ pub fn delete_snippet(state: State<'_, AppState>, id: String) -> CmdResult<()> {
 }
 
 /// Import the `*.json` snippet files of a folder the user picked.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn import_snippets(state: State<'_, AppState>, dir: String) -> CmdResult<usize> {
     state.store.import_snippets(&PathBuf::from(dir)).map_err(err)
 }
@@ -814,17 +870,17 @@ pub fn import_snippets(state: State<'_, AppState>, dir: String) -> CmdResult<usi
 // history
 // ---------------------------------------------------------------------------
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn history_record(state: State<'_, AppState>, entry: NewHistory) -> CmdResult<i64> {
     state.store.record_history(&entry).map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn history_search(state: State<'_, AppState>, query: String, limit: Option<usize>) -> CmdResult<Vec<HistoryEntry>> {
     state.store.search_history(&query, limit.unwrap_or(200)).map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn history_tab(state: State<'_, AppState>, tab_id: String) -> CmdResult<Vec<HistoryEntry>> {
     state.store.tab_history(&tab_id).map_err(err)
 }
@@ -834,7 +890,7 @@ pub fn history_mark_closed(state: State<'_, AppState>, tab_id: String) -> CmdRes
     state.store.mark_tab_closed(&tab_id).map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn history_recently_closed(state: State<'_, AppState>, limit: Option<usize>) -> CmdResult<Vec<HistoryEntry>> {
     state.store.recently_closed(limit.unwrap_or(20)).map_err(err)
 }

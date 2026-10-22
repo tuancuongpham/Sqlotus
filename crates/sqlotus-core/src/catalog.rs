@@ -91,6 +91,18 @@ pub struct ForeignKey {
     pub to_columns: Vec<String>,
 }
 
+impl ForeignKey {
+    /// Whether the key is on table `t` (its columns are in `t`).
+    pub fn is_from(&self, t: &DbObject) -> bool {
+        self.from_schema.eq_ignore_ascii_case(&t.schema) && self.from_table.eq_ignore_ascii_case(&t.name)
+    }
+
+    /// Whether the key points at table `t`.
+    pub fn is_to(&self, t: &DbObject) -> bool {
+        self.to_schema.eq_ignore_ascii_case(&t.schema) && self.to_table.eq_ignore_ascii_case(&t.name)
+    }
+}
+
 /// Source text of a programmable object (view, procedure, function, trigger).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -138,12 +150,13 @@ impl Catalog {
         a: &'a DbObject,
         b: &'a DbObject,
     ) -> impl Iterator<Item = &'a ForeignKey> {
-        self.foreign_keys.iter().filter(move |fk| {
-            let from_a = fk.from_schema.eq_ignore_ascii_case(&a.schema) && fk.from_table.eq_ignore_ascii_case(&a.name);
-            let to_a = fk.to_schema.eq_ignore_ascii_case(&a.schema) && fk.to_table.eq_ignore_ascii_case(&a.name);
-            let from_b = fk.from_schema.eq_ignore_ascii_case(&b.schema) && fk.from_table.eq_ignore_ascii_case(&b.name);
-            let to_b = fk.to_schema.eq_ignore_ascii_case(&b.schema) && fk.to_table.eq_ignore_ascii_case(&b.name);
-            (from_a && to_b) || (from_b && to_a)
-        })
+        self.foreign_keys
+            .iter()
+            .filter(move |fk| (fk.is_from(a) && fk.is_to(b)) || (fk.is_from(b) && fk.is_to(a)))
+    }
+
+    /// Foreign keys on table `t` or pointing at it.
+    pub fn foreign_keys_of<'a>(&'a self, t: &'a DbObject) -> impl Iterator<Item = &'a ForeignKey> {
+        self.foreign_keys.iter().filter(move |fk| fk.is_from(t) || fk.is_to(t))
     }
 }

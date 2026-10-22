@@ -1172,3 +1172,10 @@ pub fn functions() -> &'static [&'static str] {
 pub fn data_types() -> &'static [&'static str] {
     DATA_TYPES
 }
+
+/// Statement keywords that end the reach of a preceding UPDATE / DELETE
+/// (T-SQL scripts often leave out semicolons).
+pub(crate) const STATEMENT_KEYWORDS: &[&str] = &[
+    "SELECT", "INSERT", "UPDATE", "DELETE", "MERGE", "IF", "WHILE", "DECLARE", "SET", "EXEC", "EXECUTE", "BEGIN",
+    "END", "RETURN", "PRINT", "CREATE", "ALTER", "DROP", "TRUNCATE", "GO",
+];

@@ -3,7 +3,8 @@
 //! script that makes the target match the source. The script is for review:
 //! operations that can lose data are listed as warnings at the top.
 
-use std::collections::{BTreeMap, HashSet};
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -204,7 +205,7 @@ fn norm_type(t: &str) -> String {
     t.to_ascii_lowercase().chars().filter(|c| !c.is_whitespace()).collect()
 }
 
-/// `((0))` → `0`, `(getdate())` → `getdate()`: SQL Server wraps defaults.
+/// `((0))` â†’ `0`, `(getdate())` â†’ `getdate()`: SQL Server wraps defaults.
 fn norm_default(d: &Option<String>) -> Option<String> {
     let mut s: String = d
         .as_ref()?
@@ -288,6 +289,29 @@ fn strip_leading_comments(s: &str) -> &str {
             return rest;
         }
     }
+}
+
+/// Parts of a table that are matched by name between two databases.
+trait Named {
+    fn name(&self) -> &str;
+}
+
+macro_rules! named_by_field {
+    ($($t:ty),*) => {
+        $(impl Named for $t {
+            fn name(&self) -> &str {
+                &self.name
+            }
+        })*
+    };
+}
+
+named_by_field!(ColumnDef, IndexDef, ForeignKeyDef, CheckDef);
+
+/// The first of `items` called `name`.
+fn named<'x, T: Named>(items: &'x [T], name: &str, opts: &CompareOptions) -> Option<&'x T> {
+    let key = name_key(name, opts);
+    items.iter().find(|x| name_key(x.name(), opts) == key)
 }
 
 fn norm_cols(c: &[String]) -> Vec<String> {
@@ -586,22 +610,22 @@ fn narrowing(from: &str, to: &str) -> Option<String> {
     let (tf, tl, ts) = type_size(to);
     let int_rank = |f: &str| ["int1", "int2", "int4", "int8"].iter().position(|x| *x == f);
     if let (Some(a), Some(b)) = (int_rank(&ff), int_rank(&tf)) {
-        return (b < a).then(|| format!("{from} → {to} is smaller: values out of range fail"));
+        return (b < a).then(|| format!("{from} â†’ {to} is smaller: values out of range fail"));
     }
     if ff != tf {
         return Some(format!(
-            "{from} → {to} changes the kind of data: values that do not convert fail"
+            "{from} â†’ {to} changes the kind of data: values that do not convert fail"
         ));
     }
     if let (Some(a), Some(b)) = (fl, tl)
         && b < a
     {
-        return Some(format!("{from} → {to} is shorter: longer values fail or are cut"));
+        return Some(format!("{from} â†’ {to} is shorter: longer values fail or are cut"));
     }
     if let (Some(a), Some(b)) = (fs, ts)
         && b < a
     {
-        return Some(format!("{from} → {to} keeps fewer decimals: values are rounded"));
+        return Some(format!("{from} â†’ {to} keeps fewer decimals: values are rounded"));
     }
     None
 }
@@ -609,13 +633,8 @@ fn narrowing(from: &str, to: &str) -> Option<String> {
 fn compare_tables(s: &TableDef, t: &TableDef, opts: &CompareOptions) -> (Vec<String>, Vec<String>) {
     let mut details = Vec::new();
     let mut warnings = Vec::new();
-    let col = |cols: &[ColumnDef], n: &str| {
-        cols.iter()
-            .find(|c| name_key(&c.name, opts) == name_key(n, opts))
-            .cloned()
-    };
     for c in &s.columns {
-        match col(&t.columns, &c.name) {
+        match named(&t.columns, &c.name, opts) {
             None => {
                 details.push(format!("column {} {} added", c.name, c.data_type));
                 if !c.nullable && c.default.is_none() && !c.identity && c.computed.is_none() {
@@ -627,14 +646,14 @@ fn compare_tables(s: &TableDef, t: &TableDef, opts: &CompareOptions) -> (Vec<Str
             }
             Some(o) => {
                 if norm_type(&c.data_type) != norm_type(&o.data_type) {
-                    details.push(format!("column {}: type {} → {}", c.name, o.data_type, c.data_type));
+                    details.push(format!("column {}: type {} â†’ {}", c.name, o.data_type, c.data_type));
                     if let Some(w) = narrowing(&o.data_type, &c.data_type) {
                         warnings.push(format!("Column {}.{}: {w}.", t.name, c.name));
                     }
                 }
                 if c.nullable != o.nullable {
                     details.push(format!(
-                        "column {}: {} → {}",
+                        "column {}: {} â†’ {}",
                         c.name,
                         if o.nullable { "NULL" } else { "NOT NULL" },
                         if c.nullable { "NULL" } else { "NOT NULL" }
@@ -648,14 +667,14 @@ fn compare_tables(s: &TableDef, t: &TableDef, opts: &CompareOptions) -> (Vec<Str
                 }
                 if norm_default(&c.default) != norm_default(&o.default) {
                     details.push(format!(
-                        "column {}: default {} → {}",
+                        "column {}: default {} â†’ {}",
                         c.name,
                         o.default.as_deref().unwrap_or("none"),
                         c.default.as_deref().unwrap_or("none")
                     ));
                 }
                 if c.identity != o.identity {
-                    details.push(format!("column {}: identity {} → {}", c.name, o.identity, c.identity));
+                    details.push(format!("column {}: identity {} â†’ {}", c.name, o.identity, c.identity));
                     warnings.push(format!("Column {}.{}: identity cannot be changed in place; the script leaves it for you to do by hand.", t.name, c.name));
                 }
                 if c.computed.as_deref().map(|x| norm_text(x, opts))
@@ -667,7 +686,7 @@ fn compare_tables(s: &TableDef, t: &TableDef, opts: &CompareOptions) -> (Vec<Str
         }
     }
     for o in &t.columns {
-        if col(&s.columns, &o.name).is_none() {
+        if named(&s.columns, &o.name, opts).is_none() {
             details.push(format!("column {} removed", o.name));
             warnings.push(format!("Column {}.{} is dropped: its data is lost.", t.name, o.name));
         }
@@ -686,57 +705,37 @@ fn compare_tables(s: &TableDef, t: &TableDef, opts: &CompareOptions) -> (Vec<Str
     let pk_cols = |k: &Option<KeyDef>| k.as_ref().map(|k| norm_cols(&k.columns));
     if pk_cols(&s.primary_key) != pk_cols(&t.primary_key) {
         details.push(format!(
-            "primary key ({}) → ({})",
+            "primary key ({}) â†’ ({})",
             t.primary_key.as_ref().map(|k| k.columns.join(", ")).unwrap_or_default(),
             s.primary_key.as_ref().map(|k| k.columns.join(", ")).unwrap_or_default()
         ));
     }
     for i in &s.indexes {
-        match t
-            .indexes
-            .iter()
-            .find(|x| name_key(&x.name, opts) == name_key(&i.name, opts))
-        {
+        match named(&t.indexes, &i.name, opts) {
             None => details.push(format!("index {} added", i.name)),
             Some(o) if !same_index(i, o) => details.push(format!("index {} changed", i.name)),
             _ => {}
         }
     }
     for o in &t.indexes {
-        if !s
-            .indexes
-            .iter()
-            .any(|x| name_key(&x.name, opts) == name_key(&o.name, opts))
-        {
+        if named(&s.indexes, &o.name, opts).is_none() {
             details.push(format!("index {} removed", o.name));
         }
     }
     for f in &s.foreign_keys {
-        match t
-            .foreign_keys
-            .iter()
-            .find(|x| name_key(&x.name, opts) == name_key(&f.name, opts))
-        {
+        match named(&t.foreign_keys, &f.name, opts) {
             None => details.push(format!("foreign key {} added", f.name)),
             Some(o) if !same_fk(f, o) => details.push(format!("foreign key {} changed", f.name)),
             _ => {}
         }
     }
     for o in &t.foreign_keys {
-        if !s
-            .foreign_keys
-            .iter()
-            .any(|x| name_key(&x.name, opts) == name_key(&o.name, opts))
-        {
+        if named(&s.foreign_keys, &o.name, opts).is_none() {
             details.push(format!("foreign key {} removed", o.name));
         }
     }
     for c in &s.checks {
-        match t
-            .checks
-            .iter()
-            .find(|x| name_key(&x.name, opts) == name_key(&c.name, opts))
-        {
+        match named(&t.checks, &c.name, opts) {
             None => details.push(format!("check {} added", c.name)),
             Some(o) if norm_check(&c.definition) != norm_check(&o.definition) => {
                 details.push(format!("check {} changed", c.name))
@@ -745,11 +744,7 @@ fn compare_tables(s: &TableDef, t: &TableDef, opts: &CompareOptions) -> (Vec<Str
         }
     }
     for o in &t.checks {
-        if !s
-            .checks
-            .iter()
-            .any(|x| name_key(&x.name, opts) == name_key(&o.name, opts))
-        {
+        if named(&s.checks, &o.name, opts).is_none() {
             details.push(format!("check {} removed", o.name));
         }
     }
@@ -814,7 +809,7 @@ pub fn compare(source: &SchemaModel, target: &SchemaModel, dialect: Dialect, opt
             });
         }
     }
-    let mkey = |m: &ModuleDef| (kind_word(m.kind), name_key(&m.schema, opts), name_key(&m.name, opts));
+    let mkey = |m: &ModuleDef| module_key(m, opts);
     let unreadable: HashSet<String> = source
         .unreadable
         .iter()
@@ -906,19 +901,112 @@ pub struct SyncScript {
     pub statements: usize,
 }
 
+/// A view, routine or trigger to drop or create, with its statement.
+struct ModuleStep<'a> {
+    rank: u8,
+    module: &'a ModuleDef,
+    statement: String,
+}
+
+impl<'a> ModuleStep<'a> {
+    fn create(m: &'a ModuleDef, statement: String) -> Self {
+        Self {
+            rank: module_rank(m.kind),
+            module: m,
+            statement,
+        }
+    }
+
+    fn drop(d: Dialect, m: &'a ModuleDef) -> Self {
+        Self::create(m, drop_module(d, m))
+    }
+}
+
+/// The statements of a sync script by phase, in the order they run.
 #[derive(Default)]
-struct Phases {
+struct Phases<'a> {
     create_schemas: Vec<String>,
     drop_fks: Vec<String>,
-    /// (rank, statement): dropped in reverse dependency order
-    drop_modules: Vec<(u8, String)>,
+    /// Dropped in reverse dependency order.
+    drop_modules: Vec<ModuleStep<'a>>,
     drop_indexes: Vec<String>,
     create_tables: Vec<String>,
     alter_tables: Vec<String>,
     drop_tables: Vec<String>,
     add_keys: Vec<String>,
     add_fks: Vec<String>,
-    modules: Vec<(u8, String)>,
+    /// Created in dependency order.
+    modules: Vec<ModuleStep<'a>>,
+}
+
+type ModuleKey = (&'static str, String, String);
+
+/// What identifies a view, routine or trigger in both databases.
+fn module_key(m: &ModuleDef, opts: &CompareOptions) -> ModuleKey {
+    (kind_word(m.kind), name_key(&m.schema, opts), name_key(&m.name, opts))
+}
+
+/// The names SQL text mentions (identifier values, ASCII lower case).
+fn mentioned_names(text: &str, d: Dialect) -> HashSet<String> {
+    crate::lexer::tokenize(text, d)
+        .iter()
+        .filter(|t| t.is_name())
+        .map(|t| t.ident_value().to_ascii_lowercase())
+        .collect()
+}
+
+/// The statements of `steps` so that each comes after the modules it uses
+/// (`dependents_first`: before them, for dropping). Rank breaks ties and
+/// cycles: of the steps that wait for nothing, the first goes next.
+fn dependency_order(mut steps: Vec<ModuleStep<'_>>, d: Dialect, dependents_first: bool) -> Vec<String> {
+    if dependents_first {
+        steps.sort_by_key(|s| std::cmp::Reverse(s.rank));
+    } else {
+        steps.sort_by_key(|s| s.rank);
+    }
+    let n = steps.len();
+    let mut by_name: HashMap<String, Vec<usize>> = HashMap::new();
+    for (j, s) in steps.iter().enumerate() {
+        by_name.entry(s.module.name.to_ascii_lowercase()).or_default().push(j);
+    }
+    // waiting[k]: unplaced steps k waits for; frees[k]: steps that wait for k
+    let mut waiting = vec![0usize; n];
+    let mut frees: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (i, s) in steps.iter().enumerate() {
+        for name in mentioned_names(&s.module.definition, d) {
+            for &j in by_name.get(&name).into_iter().flatten().filter(|&&j| j != i) {
+                // i uses j: j is created before i, and dropped after it
+                let (first, then) = if dependents_first { (i, j) } else { (j, i) };
+                waiting[then] += 1;
+                frees[first].push(then);
+            }
+        }
+    }
+    let mut ready: BinaryHeap<Reverse<usize>> = (0..n).filter(|&k| waiting[k] == 0).map(Reverse).collect();
+    let mut placed = vec![false; n];
+    let mut first_left = 0;
+    let mut out = Vec::with_capacity(n);
+    while out.len() < n {
+        let k = match std::iter::from_fn(|| ready.pop()).find(|Reverse(k)| !placed[*k]) {
+            Some(Reverse(k)) => k,
+            // a cycle: the first step left goes anyway
+            None => {
+                while placed[first_left] {
+                    first_left += 1;
+                }
+                first_left
+            }
+        };
+        placed[k] = true;
+        out.push(std::mem::take(&mut steps[k].statement));
+        for &m in &frees[k] {
+            waiting[m] -= 1;
+            if waiting[m] == 0 && !placed[m] {
+                ready.push(Reverse(m));
+            }
+        }
+    }
+    out
 }
 
 fn drop_constraint(d: Dialect, t: &TableDef, name: &str, what: &str) -> String {
@@ -957,19 +1045,11 @@ fn drop_module(d: Dialect, m: &ModuleDef) -> String {
             qualified(d, &m.schema, table)
         );
     }
-    if d == Dialect::Postgres
-        && matches!(
-            m.kind,
-            ObjectKind::ScalarFunction | ObjectKind::TableFunction | ObjectKind::Procedure
-        )
-    {
-        // overloads: drop by signature is not known here, the name works when unique
-        return format!("DROP {what} IF EXISTS {};", qualified(d, &m.schema, &m.name));
-    }
+    // PostgreSQL functions: the name works when it is not overloaded
     format!("DROP {what} IF EXISTS {};", qualified(d, &m.schema, &m.name))
 }
 
-/// SQL Server: CREATE → CREATE OR ALTER for views, routines and triggers.
+/// SQL Server: CREATE â†’ CREATE OR ALTER for views, routines and triggers.
 fn create_or_alter(def: &str) -> String {
     let trimmed = def.trim_start();
     let lead = &def[..def.len() - trimmed.len()];
@@ -1014,350 +1094,582 @@ fn module_rank(k: ObjectKind) -> u8 {
     }
 }
 
-/// A script that applies the selected differences (by key) to the target.
-pub fn sync_script(
-    source: &SchemaModel,
-    target: &SchemaModel,
-    diff: &SchemaDiff,
-    selected: &[String],
-    dialect: Dialect,
-    opts: &CompareOptions,
-) -> SyncScript {
-    let d = dialect;
-    let pick: HashSet<&str> = selected.iter().map(String::as_str).collect();
-    let chosen: Vec<&ObjectDiff> = diff
-        .differences
-        .iter()
-        .filter(|x| pick.contains(x.key.as_str()))
-        .collect();
-    let mut p = Phases::default();
-    let mut warnings: Vec<String> = Vec::new();
-    let nk = |s: &str| name_key(s, opts);
-    let find_table = |m: &SchemaModel, o: &ObjectDiff| {
-        m.tables
-            .iter()
-            .find(|t| nk(&t.schema) == nk(&o.schema) && nk(&t.name) == nk(&o.name))
-            .cloned()
-    };
-    let find_module = |m: &SchemaModel, o: &ObjectDiff| {
-        m.modules
-            .iter()
-            .find(|x| {
-                kind_word(x.kind) == kind_word(o.kind) && nk(&x.schema) == nk(&o.schema) && nk(&x.name) == nk(&o.name)
-            })
-            .cloned()
-    };
-    // foreign keys dropped before tables / keys they depend on change
-    let mut dropped_fks: HashSet<(String, String)> = HashSet::new();
-    let mut drop_fk = |t: &TableDef, f: &ForeignKeyDef, p: &mut Phases| {
-        if dropped_fks.insert((nk(&t.name), nk(&f.name))) {
-            p.drop_fks.push(drop_constraint(d, t, &f.name, "fk"));
-        }
-    };
-    let references = |tt: &TableDef, schema: &str, name: &str| -> Vec<ForeignKeyDef> {
-        tt.foreign_keys
-            .iter()
-            .filter(|f| nk(&f.ref_table) == nk(name) && nk(&f.ref_schema) == nk(schema))
-            .cloned()
-            .collect()
-    };
+/// A model's tables and modules by name (the first of a name wins).
+struct ModelIndex<'a> {
+    tables: HashMap<(String, String), &'a TableDef>,
+    modules: HashMap<ModuleKey, &'a ModuleDef>,
+}
 
-    for o in &chosen {
-        warnings.extend(o.warnings.iter().cloned());
+impl<'a> ModelIndex<'a> {
+    fn new(m: &'a SchemaModel, opts: &CompareOptions) -> Self {
+        let mut tables = HashMap::new();
+        for t in &m.tables {
+            tables
+                .entry((name_key(&t.schema, opts), name_key(&t.name, opts)))
+                .or_insert(t);
+        }
+        let mut modules = HashMap::new();
+        for x in &m.modules {
+            modules.entry(module_key(x, opts)).or_insert(x);
+        }
+        Self { tables, modules }
+    }
+}
+
+/// Columns of a changed table whose type (SQL Server: or NULL) changes.
+/// SQL Server refuses ALTER COLUMN while an index, key, check or computed
+/// column uses the column, PostgreSQL while a generated column does: those
+/// are dropped and made again around the change.
+struct AlteredColumns<'o> {
+    names: HashSet<String>,
+    /// Indexes, keys and checks are rebuilt too (SQL Server).
+    rebuild: bool,
+    d: Dialect,
+    opts: &'o CompareOptions,
+}
+
+impl<'o> AlteredColumns<'o> {
+    fn new(s: &TableDef, t: &TableDef, d: Dialect, opts: &'o CompareOptions) -> Self {
+        let names = s
+            .columns
+            .iter()
+            .filter_map(|c| {
+                let o = named(&t.columns, &c.name, opts)?;
+                (o.computed.is_none()
+                    && c.computed.is_none()
+                    && (norm_type(&c.data_type) != norm_type(&o.data_type)
+                        || (d == Dialect::MsSql && c.nullable != o.nullable)))
+                    .then(|| name_key(&c.name, opts))
+            })
+            .collect();
+        Self {
+            names,
+            rebuild: d == Dialect::MsSql,
+            d,
+            opts,
+        }
+    }
+
+    /// Whether an expression (filter, check, computed column) uses one.
+    fn used_by(&self, text: &str) -> bool {
+        !self.names.is_empty()
+            && crate::lexer::tokenize(text, self.d)
+                .iter()
+                .any(|x| x.is_name() && self.names.contains(&name_key(&x.ident_value(), self.opts)))
+    }
+
+    /// Whether key or index columns (`col DESC` too) take one in, so the
+    /// key or index is rebuilt.
+    fn among(&self, cols: &[String]) -> bool {
+        self.rebuild
+            && cols.iter().any(|c| {
+                self.names
+                    .contains(&name_key(c.strip_suffix(" DESC").unwrap_or(c), self.opts))
+            })
+    }
+
+    fn in_index(&self, i: &IndexDef) -> bool {
+        self.among(&i.columns)
+            || self.among(&i.include)
+            || (self.rebuild && i.filter.as_deref().is_some_and(|f| self.used_by(f)))
+    }
+
+    fn in_check(&self, c: &CheckDef) -> bool {
+        self.rebuild && self.used_by(&c.definition)
+    }
+}
+
+/// Builds the statements of a sync script, one selected difference at a
+/// time, then puts them in order.
+struct SyncPlanner<'a> {
+    d: Dialect,
+    opts: &'a CompareOptions,
+    target: &'a SchemaModel,
+    sources: ModelIndex<'a>,
+    targets: ModelIndex<'a>,
+    /// Foreign keys of the target by the table they point at.
+    pointing_at: HashMap<(String, String), Vec<(&'a TableDef, &'a ForeignKeyDef)>>,
+    p: Phases<'a>,
+    warnings: Vec<String>,
+    /// Foreign keys already dropped: (schema, table, name).
+    dropped_fks: HashSet<(String, String, String)>,
+    /// PostgreSQL tables that lose a column or change a column's type.
+    pg_changed_tables: Vec<String>,
+}
+
+impl<'a> SyncPlanner<'a> {
+    fn new(source: &'a SchemaModel, target: &'a SchemaModel, d: Dialect, opts: &'a CompareOptions) -> Self {
+        let mut pointing_at: HashMap<(String, String), Vec<(&TableDef, &ForeignKeyDef)>> = HashMap::new();
+        for t in &target.tables {
+            for f in &t.foreign_keys {
+                pointing_at
+                    .entry((name_key(&f.ref_schema, opts), name_key(&f.ref_table, opts)))
+                    .or_default()
+                    .push((t, f));
+            }
+        }
+        Self {
+            d,
+            opts,
+            target,
+            sources: ModelIndex::new(source, opts),
+            targets: ModelIndex::new(target, opts),
+            pointing_at,
+            p: Phases::default(),
+            warnings: Vec::new(),
+            dropped_fks: HashSet::new(),
+            pg_changed_tables: Vec::new(),
+        }
+    }
+
+    fn nk(&self, s: &str) -> String {
+        name_key(s, self.opts)
+    }
+
+    fn table_key(&self, schema: &str, name: &str) -> (String, String) {
+        (self.nk(schema), self.nk(name))
+    }
+
+    /// The foreign keys of the target that point at `t`.
+    fn pointing_at(&self, t: &TableDef) -> Vec<(&'a TableDef, &'a ForeignKeyDef)> {
+        self.pointing_at
+            .get(&self.table_key(&t.schema, &t.name))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn plan(&mut self, o: &ObjectDiff) {
+        self.warnings.extend(o.warnings.iter().cloned());
+        let table_key = self.table_key(&o.schema, &o.name);
+        let module_key = (kind_word(o.kind), self.nk(&o.schema), self.nk(&o.name));
         match (o.kind, o.change) {
             (ObjectKind::Table, Change::Added) => {
-                let Some(s) = find_table(source, o) else { continue };
-                p.create_tables.push(table_sql(&s, d, false));
-                for i in &s.indexes {
-                    p.add_keys.push(index_sql(&s, i, d));
-                }
-                for c in &s.checks {
-                    p.add_keys.push(check_sql(&s, c, d));
-                }
-                for f in &s.foreign_keys {
-                    p.add_fks.push(fk_sql(&s, f, d));
+                if let Some(&s) = self.sources.tables.get(&table_key) {
+                    self.add_table(s);
                 }
             }
             (ObjectKind::Table, Change::Removed) => {
-                let Some(t) = find_table(target, o) else { continue };
-                // foreign keys of other tables that point at it go first
-                for other in &target.tables {
-                    for f in references(other, &t.schema, &t.name) {
-                        if nk(&other.name) != nk(&t.name) {
-                            warnings.push(format!(
-                                "Foreign key {} on {} references {} and is dropped with it.",
-                                f.name, other.name, t.name
-                            ));
-                        }
-                        drop_fk(other, &f, &mut p);
-                    }
+                if let Some(&t) = self.targets.tables.get(&table_key) {
+                    self.remove_table(t);
                 }
-                for f in &t.foreign_keys {
-                    drop_fk(&t, f, &mut p);
-                }
-                p.drop_tables
-                    .push(format!("DROP TABLE {};", qualified(d, &t.schema, &t.name)));
             }
             (ObjectKind::Table, Change::Changed) => {
-                let (Some(s), Some(t)) = (find_table(source, o), find_table(target, o)) else {
-                    continue;
-                };
-                let table = qualified(d, &t.schema, &t.name);
-                let col_in = |cols: &[ColumnDef], n: &str| cols.iter().find(|c| nk(&c.name) == nk(n)).cloned();
-                let pk_changed = s.primary_key.as_ref().map(|k| norm_cols(&k.columns))
-                    != t.primary_key.as_ref().map(|k| norm_cols(&k.columns));
-                // foreign keys: removed or changed ones are dropped, new or changed ones added
-                for f in &t.foreign_keys {
-                    let keep = s
-                        .foreign_keys
-                        .iter()
-                        .find(|x| nk(&x.name) == nk(&f.name))
-                        .is_some_and(|x| same_fk(x, f));
-                    if !keep {
-                        drop_fk(&t, f, &mut p);
-                    }
-                }
-                for f in &s.foreign_keys {
-                    let exists = t
-                        .foreign_keys
-                        .iter()
-                        .find(|x| nk(&x.name) == nk(&f.name))
-                        .is_some_and(|x| same_fk(x, f));
-                    if !exists {
-                        p.add_fks.push(fk_sql(&s, f, d));
-                    }
-                }
-                // a changed primary key: foreign keys pointing at it are rebuilt
-                if pk_changed {
-                    for other in &target.tables {
-                        for f in references(other, &t.schema, &t.name) {
-                            if nk(&other.name) == nk(&t.name) {
-                                continue;
-                            }
-                            drop_fk(other, &f, &mut p);
-                            if let Some(src_other) = source
-                                .tables
-                                .iter()
-                                .find(|x| nk(&x.name) == nk(&other.name) && nk(&x.schema) == nk(&other.schema))
-                                && let Some(sf) = src_other.foreign_keys.iter().find(|x| nk(&x.name) == nk(&f.name))
-                            {
-                                p.add_fks.push(fk_sql(src_other, sf, d));
-                            } else {
-                                warnings.push(format!(
-                                    "Foreign key {} on {} depends on the changed primary key of {} and is dropped.",
-                                    f.name, other.name, t.name
-                                ));
-                            }
-                        }
-                    }
-                    if let Some(k) = &t.primary_key {
-                        p.drop_indexes.push(drop_constraint(d, &t, &k.name, "pk"));
-                    }
-                    if let Some(pk) = pk_clause(&s, d) {
-                        p.add_keys.push(format!("ALTER TABLE {table} ADD {pk};"));
-                    }
-                }
-                // indexes and checks
-                for i in &t.indexes {
-                    let keep = s
-                        .indexes
-                        .iter()
-                        .find(|x| nk(&x.name) == nk(&i.name))
-                        .is_some_and(|x| same_index(x, i));
-                    if !keep {
-                        p.drop_indexes.push(drop_index(d, &t, i));
-                    }
-                }
-                for i in &s.indexes {
-                    let exists = t
-                        .indexes
-                        .iter()
-                        .find(|x| nk(&x.name) == nk(&i.name))
-                        .is_some_and(|x| same_index(x, i));
-                    if !exists {
-                        p.add_keys.push(index_sql(&s, i, d));
-                    }
-                }
-                for c in &t.checks {
-                    let keep = s
-                        .checks
-                        .iter()
-                        .find(|x| nk(&x.name) == nk(&c.name))
-                        .is_some_and(|x| norm_check(&x.definition) == norm_check(&c.definition));
-                    if !keep {
-                        p.drop_indexes.push(drop_constraint(d, &t, &c.name, "check"));
-                    }
-                }
-                for c in &s.checks {
-                    let exists = t
-                        .checks
-                        .iter()
-                        .find(|x| nk(&x.name) == nk(&c.name))
-                        .is_some_and(|x| norm_check(&x.definition) == norm_check(&c.definition));
-                    if !exists {
-                        p.add_keys.push(check_sql(&s, c, d));
-                    }
-                }
-                // columns
-                for c in &s.columns {
-                    match col_in(&t.columns, &c.name) {
-                        None => p.alter_tables.push(match d {
-                            Dialect::MsSql => format!("ALTER TABLE {table} ADD {};", column_sql(c, d)),
-                            _ => format!("ALTER TABLE {table} ADD COLUMN {};", column_sql(c, d)),
-                        }),
-                        Some(o) => {
-                            let col = q(d, &c.name);
-                            let type_changed = norm_type(&c.data_type) != norm_type(&o.data_type);
-                            let null_changed = c.nullable != o.nullable;
-                            let default_changed = norm_default(&c.default) != norm_default(&o.default);
-                            let computed_changed = c.computed.as_deref().map(|x| norm_text(x, opts))
-                                != o.computed.as_deref().map(|x| norm_text(x, opts));
-                            if c.identity != o.identity || computed_changed {
-                                p.alter_tables.push(format!(
-                                    "-- {}.{}: {} differs; recreate the column by hand (Sqlotus does not rebuild columns).",
-                                    t.name,
-                                    c.name,
-                                    if computed_changed { "the computed expression" } else { "identity" }
-                                ));
-                                if computed_changed {
-                                    warnings.push(format!(
-                                        "Column {}.{}: the computed expression differs and must be changed by hand.",
-                                        t.name, c.name
-                                    ));
-                                }
-                                continue;
-                            }
-                            match d {
-                                Dialect::MsSql => {
-                                    if default_changed && let Some(n) = &o.default_name {
-                                        p.alter_tables
-                                            .push(format!("ALTER TABLE {table} DROP CONSTRAINT {};", q(d, n)));
-                                    }
-                                    if type_changed || null_changed {
-                                        p.alter_tables.push(format!(
-                                            "ALTER TABLE {table} ALTER COLUMN {col} {} {};",
-                                            c.data_type,
-                                            if c.nullable { "NULL" } else { "NOT NULL" }
-                                        ));
-                                    }
-                                    if default_changed && let Some(def) = &c.default {
-                                        let name = c
-                                            .default_name
-                                            .as_ref()
-                                            .map(|n| format!("CONSTRAINT {} ", q(d, n)))
-                                            .unwrap_or_default();
-                                        p.alter_tables
-                                            .push(format!("ALTER TABLE {table} ADD {name}DEFAULT {def} FOR {col};"));
-                                    }
-                                }
-                                Dialect::Postgres => {
-                                    if type_changed {
-                                        p.alter_tables.push(format!(
-                                            "ALTER TABLE {table} ALTER COLUMN {col} TYPE {} USING {col}::{};",
-                                            c.data_type, c.data_type
-                                        ));
-                                    }
-                                    if null_changed {
-                                        p.alter_tables.push(format!(
-                                            "ALTER TABLE {table} ALTER COLUMN {col} {} NOT NULL;",
-                                            if c.nullable { "DROP" } else { "SET" }
-                                        ));
-                                    }
-                                    if default_changed {
-                                        p.alter_tables.push(match &c.default {
-                                            Some(def) => {
-                                                format!("ALTER TABLE {table} ALTER COLUMN {col} SET DEFAULT {def};")
-                                            }
-                                            None => format!("ALTER TABLE {table} ALTER COLUMN {col} DROP DEFAULT;"),
-                                        });
-                                    }
-                                }
-                                Dialect::MySql => {
-                                    if type_changed || null_changed || default_changed {
-                                        p.alter_tables
-                                            .push(format!("ALTER TABLE {table} MODIFY COLUMN {};", column_sql(c, d)));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                for o in &t.columns {
-                    if col_in(&s.columns, &o.name).is_none() {
-                        if d == Dialect::MsSql
-                            && let Some(n) = &o.default_name
-                        {
-                            p.alter_tables
-                                .push(format!("ALTER TABLE {table} DROP CONSTRAINT {};", q(d, n)));
-                        }
-                        p.alter_tables
-                            .push(format!("ALTER TABLE {table} DROP COLUMN {};", q(d, &o.name)));
-                    }
+                if let (Some(&s), Some(&t)) = (self.sources.tables.get(&table_key), self.targets.tables.get(&table_key))
+                {
+                    self.change_table(s, t);
                 }
             }
             (_, Change::Removed) => {
-                if let Some(m) = find_module(target, o) {
-                    p.drop_modules.push((module_rank(m.kind), drop_module(d, &m)));
+                if let Some(&m) = self.targets.modules.get(&module_key) {
+                    self.p.drop_modules.push(ModuleStep::drop(self.d, m));
                 }
             }
             (_, Change::Added) => {
-                if let Some(m) = find_module(source, o) {
-                    p.modules.push((module_rank(m.kind), m.definition.clone()));
+                if let Some(&m) = self.sources.modules.get(&module_key) {
+                    self.p.modules.push(ModuleStep::create(m, m.definition.clone()));
                 }
             }
             (_, Change::Changed) => {
-                let (Some(m), Some(old)) = (find_module(source, o), find_module(target, o)) else {
-                    continue;
-                };
-                match d {
-                    Dialect::MsSql => p.modules.push((module_rank(m.kind), create_or_alter(&m.definition))),
-                    Dialect::Postgres if m.kind != ObjectKind::Trigger && m.kind != ObjectKind::View => {
-                        // functions and procedures are CREATE OR REPLACE
-                        p.modules.push((module_rank(m.kind), m.definition.clone()));
-                    }
-                    Dialect::Postgres if m.kind == ObjectKind::View => {
-                        // a view whose columns change cannot be replaced in place
-                        p.drop_modules.push((module_rank(old.kind), drop_module(d, &old)));
-                        p.modules.push((module_rank(m.kind), m.definition.clone()));
-                        warnings.push(format!(
-                            "View {} is dropped and created again; views that use it must be created again too.",
-                            m.name
-                        ));
-                    }
-                    _ => {
-                        p.drop_modules.push((module_rank(old.kind), drop_module(d, &old)));
-                        p.modules.push((module_rank(m.kind), m.definition.clone()));
-                    }
+                if let (Some(&m), Some(&old)) = (
+                    self.sources.modules.get(&module_key),
+                    self.targets.modules.get(&module_key),
+                ) {
+                    self.change_module(m, old);
                 }
             }
         }
     }
-    p.modules.sort_by_key(|(rank, _)| *rank);
-    // triggers before the functions they call, views before what they use
-    p.drop_modules.sort_by_key(|(rank, _)| std::cmp::Reverse(*rank));
-    let drop_modules: Vec<String> = p.drop_modules.iter().map(|(_, s)| s.clone()).collect();
-    // schemas that new objects need
-    if d != Dialect::MySql {
-        let existing: HashSet<String> = target
+
+    /// Whether two tables are the same table (a schema can hold one
+    /// `Orders` and another schema its own).
+    fn same_table(&self, a: &TableDef, b: &TableDef) -> bool {
+        self.table_key(&a.schema, &a.name) == self.table_key(&b.schema, &b.name)
+    }
+
+    /// Two tables named in one message, with their schemas when they share
+    /// a name.
+    fn names_of(&self, a: &TableDef, b: &TableDef) -> (String, String) {
+        if self.nk(&a.name) == self.nk(&b.name) && !self.same_table(a, b) {
+            (format!("{}.{}", a.schema, a.name), format!("{}.{}", b.schema, b.name))
+        } else {
+            (a.name.clone(), b.name.clone())
+        }
+    }
+
+    fn drop_fk(&mut self, t: &TableDef, f: &ForeignKeyDef) {
+        if self
+            .dropped_fks
+            .insert((self.nk(&t.schema), self.nk(&t.name), self.nk(&f.name)))
+        {
+            self.p.drop_fks.push(drop_constraint(self.d, t, &f.name, "fk"));
+        }
+    }
+
+    fn add_table(&mut self, s: &TableDef) {
+        let d = self.d;
+        self.p.create_tables.push(table_sql(s, d, false));
+        for i in &s.indexes {
+            self.p.add_keys.push(index_sql(s, i, d));
+        }
+        for c in &s.checks {
+            self.p.add_keys.push(check_sql(s, c, d));
+        }
+        for f in &s.foreign_keys {
+            self.p.add_fks.push(fk_sql(s, f, d));
+        }
+    }
+
+    fn remove_table(&mut self, t: &TableDef) {
+        // foreign keys of other tables that point at it go first
+        for (other, f) in self.pointing_at(t) {
+            if !self.same_table(other, t) {
+                let (on, to) = self.names_of(other, t);
+                self.warnings.push(format!(
+                    "Foreign key {} on {on} references {to} and is dropped with it.",
+                    f.name
+                ));
+            }
+            self.drop_fk(other, f);
+        }
+        for f in &t.foreign_keys {
+            self.drop_fk(t, f);
+        }
+        self.p
+            .drop_tables
+            .push(format!("DROP TABLE {};", qualified(self.d, &t.schema, &t.name)));
+    }
+
+    fn change_table(&mut self, s: &'a TableDef, t: &'a TableDef) {
+        let opts = self.opts;
+        let altered = AlteredColumns::new(s, t, self.d, opts);
+        self.sync_foreign_keys(s, t, &altered);
+        let pk_changed = s.primary_key.as_ref().map(|k| norm_cols(&k.columns))
+            != t.primary_key.as_ref().map(|k| norm_cols(&k.columns))
+            || t.primary_key.as_ref().is_some_and(|k| altered.among(&k.columns));
+        if pk_changed {
+            self.rebuild_primary_key(s, t);
+        }
+        self.sync_indexes_and_checks(s, t, &altered);
+        self.sync_columns(s, t, &altered);
+        if self.d == Dialect::Postgres
+            && (t.columns.iter().any(|o| named(&s.columns, &o.name, opts).is_none())
+                || s.columns.iter().any(|c| {
+                    named(&t.columns, &c.name, opts).is_some_and(|o| norm_type(&c.data_type) != norm_type(&o.data_type))
+                }))
+        {
+            self.pg_changed_tables.push(t.name.clone());
+        }
+    }
+
+    /// Removed or changed foreign keys are dropped, new or changed ones added.
+    fn sync_foreign_keys(&mut self, s: &TableDef, t: &TableDef, altered: &AlteredColumns<'_>) {
+        let opts = self.opts;
+        for f in &t.foreign_keys {
+            let keep =
+                named(&s.foreign_keys, &f.name, opts).is_some_and(|x| same_fk(x, f)) && !altered.among(&f.columns);
+            if !keep {
+                self.drop_fk(t, f);
+            }
+        }
+        for f in &s.foreign_keys {
+            let exists =
+                named(&t.foreign_keys, &f.name, opts).is_some_and(|x| same_fk(x, f)) && !altered.among(&f.columns);
+            if !exists {
+                self.p.add_fks.push(fk_sql(s, f, self.d));
+            }
+        }
+    }
+
+    /// A changed primary key, and the foreign keys of other tables pointing
+    /// at it, are dropped and made again.
+    fn rebuild_primary_key(&mut self, s: &TableDef, t: &TableDef) {
+        let d = self.d;
+        for (other, f) in self.pointing_at(t) {
+            if self.same_table(other, t) {
+                continue;
+            }
+            self.drop_fk(other, f);
+            let in_source = self
+                .sources
+                .tables
+                .get(&self.table_key(&other.schema, &other.name))
+                .and_then(|&o| Some((o, named(&o.foreign_keys, &f.name, self.opts)?)));
+            match in_source {
+                Some((o, sf)) => self.p.add_fks.push(fk_sql(o, sf, d)),
+                None => {
+                    let (on, to) = self.names_of(other, t);
+                    self.warnings.push(format!(
+                        "Foreign key {} on {on} depends on the changed primary key of {to} and is dropped.",
+                        f.name
+                    ));
+                }
+            }
+        }
+        if let Some(k) = &t.primary_key {
+            self.p.drop_indexes.push(drop_constraint(d, t, &k.name, "pk"));
+        }
+        if let Some(pk) = pk_clause(s, d) {
+            let table = qualified(d, &t.schema, &t.name);
+            self.p.add_keys.push(format!("ALTER TABLE {table} ADD {pk};"));
+        }
+    }
+
+    fn sync_indexes_and_checks(&mut self, s: &TableDef, t: &TableDef, altered: &AlteredColumns<'_>) {
+        let (d, opts) = (self.d, self.opts);
+        for i in &t.indexes {
+            let keep = named(&s.indexes, &i.name, opts).is_some_and(|x| same_index(x, i)) && !altered.in_index(i);
+            if !keep {
+                self.p.drop_indexes.push(drop_index(d, t, i));
+            }
+        }
+        for i in &s.indexes {
+            let exists = named(&t.indexes, &i.name, opts).is_some_and(|x| same_index(x, i)) && !altered.in_index(i);
+            if !exists {
+                self.p.add_keys.push(index_sql(s, i, d));
+            }
+        }
+        let same_check = |a: &CheckDef, b: &CheckDef| norm_check(&a.definition) == norm_check(&b.definition);
+        for c in &t.checks {
+            let keep = named(&s.checks, &c.name, opts).is_some_and(|x| same_check(x, c)) && !altered.in_check(c);
+            if !keep {
+                self.p.drop_indexes.push(drop_constraint(d, t, &c.name, "check"));
+            }
+        }
+        for c in &s.checks {
+            let exists = named(&t.checks, &c.name, opts).is_some_and(|x| same_check(x, c)) && !altered.in_check(c);
+            if !exists {
+                self.p.add_keys.push(check_sql(s, c, d));
+            }
+        }
+    }
+
+    fn sync_columns(&mut self, s: &TableDef, t: &TableDef, altered: &AlteredColumns<'_>) {
+        let (d, opts) = (self.d, self.opts);
+        let table = qualified(d, &t.schema, &t.name);
+        let add_column = |c: &ColumnDef| match d {
+            Dialect::MsSql => format!("ALTER TABLE {table} ADD {};", column_sql(c, d)),
+            _ => format!("ALTER TABLE {table} ADD COLUMN {};", column_sql(c, d)),
+        };
+        // columns that go away first: a computed one may use a column that changes
+        for o in &t.columns {
+            if named(&s.columns, &o.name, opts).is_none() {
+                if d == Dialect::MsSql
+                    && let Some(n) = &o.default_name
+                {
+                    self.p
+                        .alter_tables
+                        .push(format!("ALTER TABLE {table} DROP CONSTRAINT {};", q(d, n)));
+                }
+                self.p
+                    .alter_tables
+                    .push(format!("ALTER TABLE {table} DROP COLUMN {};", q(d, &o.name)));
+            }
+        }
+        // computed columns over a changing column are made again after it
+        let mut readd = Vec::new();
+        for c in &s.columns {
+            if let (Some(expr), Some(o)) = (&c.computed, named(&t.columns, &c.name, opts))
+                && o.computed.as_deref().map(|x| norm_text(x, opts)) == Some(norm_text(expr, opts))
+                && altered.used_by(expr)
+            {
+                self.p
+                    .alter_tables
+                    .push(format!("ALTER TABLE {table} DROP COLUMN {};", q(d, &c.name)));
+                readd.push(add_column(c));
+            }
+        }
+        for c in &s.columns {
+            match named(&t.columns, &c.name, opts) {
+                None => self.p.alter_tables.push(add_column(c)),
+                Some(o) => self.alter_column(&table, t, c, o),
+            }
+        }
+        self.p.alter_tables.extend(readd);
+    }
+
+    /// Column `o` of the target becomes `c`.
+    fn alter_column(&mut self, table: &str, t: &TableDef, c: &ColumnDef, o: &ColumnDef) {
+        let (d, opts) = (self.d, self.opts);
+        let col = q(d, &c.name);
+        let type_changed = norm_type(&c.data_type) != norm_type(&o.data_type);
+        let null_changed = c.nullable != o.nullable;
+        let default_changed = norm_default(&c.default) != norm_default(&o.default);
+        let computed_changed =
+            c.computed.as_deref().map(|x| norm_text(x, opts)) != o.computed.as_deref().map(|x| norm_text(x, opts));
+        // a computed column's type follows its expression
+        if c.computed.is_some() && !computed_changed {
+            return;
+        }
+        if c.identity != o.identity || computed_changed {
+            self.p.alter_tables.push(format!(
+                "-- {}.{}: {} differs; recreate the column by hand (Sqlotus does not rebuild columns).",
+                t.name,
+                c.name,
+                if computed_changed {
+                    "the computed expression"
+                } else {
+                    "identity"
+                }
+            ));
+            if computed_changed {
+                self.warnings.push(format!(
+                    "Column {}.{}: the computed expression differs and must be changed by hand.",
+                    t.name, c.name
+                ));
+            }
+            return;
+        }
+        let alter = &mut self.p.alter_tables;
+        match d {
+            Dialect::MsSql => {
+                if default_changed && let Some(n) = &o.default_name {
+                    alter.push(format!("ALTER TABLE {table} DROP CONSTRAINT {};", q(d, n)));
+                }
+                if type_changed || null_changed {
+                    alter.push(format!(
+                        "ALTER TABLE {table} ALTER COLUMN {col} {} {};",
+                        c.data_type,
+                        if c.nullable { "NULL" } else { "NOT NULL" }
+                    ));
+                }
+                if default_changed && let Some(def) = &c.default {
+                    let name = c
+                        .default_name
+                        .as_ref()
+                        .map(|n| format!("CONSTRAINT {} ", q(d, n)))
+                        .unwrap_or_default();
+                    alter.push(format!("ALTER TABLE {table} ADD {name}DEFAULT {def} FOR {col};"));
+                }
+            }
+            Dialect::Postgres => {
+                if type_changed {
+                    alter.push(format!(
+                        "ALTER TABLE {table} ALTER COLUMN {col} TYPE {} USING {col}::{};",
+                        c.data_type, c.data_type
+                    ));
+                }
+                if null_changed {
+                    alter.push(format!(
+                        "ALTER TABLE {table} ALTER COLUMN {col} {} NOT NULL;",
+                        if c.nullable { "DROP" } else { "SET" }
+                    ));
+                }
+                if default_changed {
+                    alter.push(match &c.default {
+                        Some(def) => format!("ALTER TABLE {table} ALTER COLUMN {col} SET DEFAULT {def};"),
+                        None => format!("ALTER TABLE {table} ALTER COLUMN {col} DROP DEFAULT;"),
+                    });
+                }
+            }
+            Dialect::MySql => {
+                if type_changed || null_changed || default_changed {
+                    alter.push(format!("ALTER TABLE {table} MODIFY COLUMN {};", column_sql(c, d)));
+                }
+            }
+        }
+    }
+
+    fn change_module(&mut self, m: &'a ModuleDef, old: &'a ModuleDef) {
+        match self.d {
+            Dialect::MsSql => self
+                .p
+                .modules
+                .push(ModuleStep::create(m, create_or_alter(&m.definition))),
+            // functions and procedures are CREATE OR REPLACE
+            Dialect::Postgres if m.kind != ObjectKind::Trigger && m.kind != ObjectKind::View => {
+                self.p.modules.push(ModuleStep::create(m, m.definition.clone()))
+            }
+            // a PostgreSQL view whose columns change cannot be replaced in place
+            _ => {
+                self.p.drop_modules.push(ModuleStep::drop(self.d, old));
+                self.p.modules.push(ModuleStep::create(m, m.definition.clone()));
+            }
+        }
+    }
+
+    /// PostgreSQL will not drop a view, or change a column, that other views
+    /// (or triggers) are built on: those go first and come back afterwards.
+    fn rebuild_postgres_dependents(&mut self) {
+        let (d, opts, target) = (self.d, self.opts, self.target);
+        // the target modules that name each name
+        let mut users: HashMap<String, Vec<usize>> = HashMap::new();
+        for (k, m) in target.modules.iter().enumerate() {
+            for name in mentioned_names(&m.definition, d) {
+                users.entry(name).or_default().push(k);
+            }
+        }
+        let users_of = |name: &str| users.get(&name.to_ascii_lowercase()).cloned().unwrap_or_default();
+        let mut dropped: HashSet<ModuleKey> = self.p.drop_modules.iter().map(|s| module_key(s.module, opts)).collect();
+        let mut created: HashSet<ModuleKey> = self.p.modules.iter().map(|s| module_key(s.module, opts)).collect();
+        let mut queue: Vec<&'a ModuleDef> = self.p.drop_modules.iter().map(|s| s.module).collect();
+        let mut over_tables: Vec<usize> = self
+            .pg_changed_tables
+            .iter()
+            .flat_map(|t| users_of(t))
+            .filter(|&k| target.modules[k].kind == ObjectKind::View)
+            .collect();
+        over_tables.sort_unstable();
+        over_tables.dedup();
+        let mut rebuild = |m: &'a ModuleDef, this: &mut Self, queue: &mut Vec<&'a ModuleDef>| {
+            if !dropped.insert(module_key(m, opts)) {
+                return;
+            }
+            this.p.drop_modules.push(ModuleStep::drop(d, m));
+            match this.sources.modules.get(&module_key(m, opts)) {
+                Some(&s) => {
+                    if created.insert(module_key(s, opts)) {
+                        this.p.modules.push(ModuleStep::create(s, s.definition.clone()));
+                    }
+                }
+                None => this.warnings.push(format!(
+                    "{} {} is built on an object that changes and is dropped with it (it is not in the source).",
+                    kind_word(m.kind),
+                    m.name
+                )),
+            }
+            queue.push(m);
+        };
+        for k in over_tables {
+            rebuild(&target.modules[k], self, &mut queue);
+        }
+        while let Some(gone) = queue.pop() {
+            let key = module_key(gone, opts);
+            for k in users_of(&gone.name) {
+                let m = &target.modules[k];
+                if matches!(m.kind, ObjectKind::View | ObjectKind::Trigger) && module_key(m, opts) != key {
+                    rebuild(m, self, &mut queue);
+                }
+            }
+        }
+    }
+
+    /// Schemas that new objects need (not MySQL, where a schema is a database).
+    fn create_schemas(&mut self, chosen: &[&ObjectDiff]) {
+        let d = self.d;
+        if d == Dialect::MySql {
+            return;
+        }
+        let existing: HashSet<String> = self
+            .target
             .tables
             .iter()
-            .map(|t| nk(&t.schema))
-            .chain(target.modules.iter().map(|m| nk(&m.schema)))
+            .map(|t| self.nk(&t.schema))
+            .chain(self.target.modules.iter().map(|m| self.nk(&m.schema)))
             .collect();
         let mut needed: Vec<String> = Vec::new();
-        for o in &chosen {
+        for o in chosen {
             let builtin = matches!(o.schema.to_lowercase().as_str(), "dbo" | "public");
             if o.change == Change::Added
                 && !o.schema.is_empty()
                 && !builtin
-                && !existing.contains(&nk(&o.schema))
-                && !needed.iter().any(|s| nk(s) == nk(&o.schema))
+                && !existing.contains(&self.nk(&o.schema))
+                && !needed.iter().any(|s| self.nk(s) == self.nk(&o.schema))
             {
                 needed.push(o.schema.clone());
             }
         }
         for s in needed {
-            p.create_schemas.push(match d {
+            self.p.create_schemas.push(match d {
                 Dialect::MsSql => {
                     let lit = |x: &str| x.replace('\'', "''");
                     format!(
@@ -1371,64 +1683,99 @@ pub fn sync_script(
         }
     }
 
-    let mut script = String::new();
-    let mut statements = 0usize;
-    let go = if d == Dialect::MsSql { "GO\n" } else { "" };
-    script.push_str("-- Schema synchronisation script generated by Sqlotus.\n-- Review it before running: it changes the target database.\n");
-    let mut seen = HashSet::new();
-    warnings.retain(|w| seen.insert(w.clone()));
-    if !warnings.is_empty() {
-        script.push_str("--\n-- WARNINGS:\n");
-        for w in &warnings {
-            script.push_str(&format!("--   * {w}\n"));
+    /// The script: the phases in order, each statement once, with the
+    /// warnings at the top.
+    fn into_script(mut self) -> SyncScript {
+        let d = self.d;
+        let drop_modules = dependency_order(std::mem::take(&mut self.p.drop_modules), d, true);
+        let modules = dependency_order(std::mem::take(&mut self.p.modules), d, false);
+        let p = &self.p;
+        let mut warnings = self.warnings;
+        let mut seen = HashSet::new();
+        warnings.retain(|w| seen.insert(w.clone()));
+        let mut script = String::new();
+        let mut statements = 0usize;
+        let go = if d == Dialect::MsSql { "GO\n" } else { "" };
+        script.push_str("-- Schema synchronisation script generated by Sqlotus.\n-- Review it before running: it changes the target database.\n");
+        if !warnings.is_empty() {
+            script.push_str("--\n-- WARNINGS:\n");
+            for w in &warnings {
+                script.push_str(&format!("--   * {w}\n"));
+            }
         }
-    }
-    let mut section = |title: &str, items: &[String], script: &mut String| {
-        if items.is_empty() {
-            return;
-        }
-        script.push_str(&format!("\n-- {title}\n"));
-        for i in items {
-            script.push_str(i);
-            script.push('\n');
-            if !i.starts_with("--") {
+        let mut section = |title: &str, items: &[String], script: &mut String| {
+            if items.is_empty() {
+                return;
+            }
+            script.push_str(&format!("\n-- {title}\n"));
+            for i in items {
+                script.push_str(i);
+                script.push('\n');
+                if !i.starts_with("--") {
+                    statements += 1;
+                }
+            }
+            script.push_str(go);
+        };
+        section("Create schemas", &p.create_schemas, &mut script);
+        section("Drop foreign keys", &p.drop_fks, &mut script);
+        section("Drop views, routines and triggers", &drop_modules, &mut script);
+        section("Drop indexes, keys and checks", &p.drop_indexes, &mut script);
+        section("Create tables", &p.create_tables, &mut script);
+        section("Change tables", &p.alter_tables, &mut script);
+        section("Drop tables", &p.drop_tables, &mut script);
+        section("Create keys, indexes and checks", &p.add_keys, &mut script);
+        section("Create foreign keys", &p.add_fks, &mut script);
+        if !modules.is_empty() {
+            // the comment gets its own batch: SQL Server would store it as part of the first module
+            script.push_str("\n-- Create or change views, routines and triggers\n");
+            script.push_str(go);
+            for m in &modules {
+                let m = m.trim_end();
+                script.push_str(m);
+                if d != Dialect::MsSql && !m.ends_with(';') {
+                    script.push(';');
+                }
+                script.push('\n');
+                script.push_str(go);
                 statements += 1;
             }
         }
-        script.push_str(go);
-    };
-    section("Create schemas", &p.create_schemas, &mut script);
-    section("Drop foreign keys", &p.drop_fks, &mut script);
-    section("Drop views, routines and triggers", &drop_modules, &mut script);
-    section("Drop indexes, keys and checks", &p.drop_indexes, &mut script);
-    section("Create tables", &p.create_tables, &mut script);
-    section("Change tables", &p.alter_tables, &mut script);
-    section("Drop tables", &p.drop_tables, &mut script);
-    section("Create keys, indexes and checks", &p.add_keys, &mut script);
-    section("Create foreign keys", &p.add_fks, &mut script);
-    if !p.modules.is_empty() {
-        // the comment gets its own batch: SQL Server would store it as part of the first module
-        script.push_str("\n-- Create or change views, routines and triggers\n");
-        script.push_str(go);
-        for (_, m) in &p.modules {
-            let m = m.trim_end();
-            script.push_str(m);
-            if d != Dialect::MsSql && !m.ends_with(';') {
-                script.push(';');
-            }
-            script.push('\n');
-            script.push_str(go);
-            statements += 1;
+        if statements == 0 {
+            script.push_str("\n-- Nothing to change for the selected objects.\n");
+        }
+        SyncScript {
+            script,
+            warnings,
+            statements,
         }
     }
-    if statements == 0 {
-        script.push_str("\n-- Nothing to change for the selected objects.\n");
+}
+
+/// A script that applies the selected differences (by key) to the target.
+pub fn sync_script(
+    source: &SchemaModel,
+    target: &SchemaModel,
+    diff: &SchemaDiff,
+    selected: &[String],
+    dialect: Dialect,
+    opts: &CompareOptions,
+) -> SyncScript {
+    let pick: HashSet<&str> = selected.iter().map(String::as_str).collect();
+    let chosen: Vec<&ObjectDiff> = diff
+        .differences
+        .iter()
+        .filter(|x| pick.contains(x.key.as_str()))
+        .collect();
+    let mut planner = SyncPlanner::new(source, target, dialect, opts);
+    for o in &chosen {
+        planner.plan(o);
     }
-    SyncScript {
-        script,
-        warnings,
-        statements,
+    if dialect == Dialect::Postgres {
+        planner.rebuild_postgres_dependents();
     }
+    planner.create_schemas(&chosen);
+    planner.into_script()
 }
 
 #[cfg(test)]
@@ -1584,7 +1931,7 @@ mod tests {
         let src = model();
         let mut tgt = model();
         let c = &mut tgt.tables[0];
-        c.columns[1].data_type = "nvarchar(200)".into(); // source is shorter → narrowing
+        c.columns[1].data_type = "nvarchar(200)".into(); // source is shorter â†’ narrowing
         c.columns[2].nullable = false; // source allows NULL
         c.columns.push(col("Legacy", "int", true)); // dropped
         c.indexes.clear(); // index added
@@ -1595,7 +1942,7 @@ mod tests {
         let cust = d.differences.iter().find(|x| x.name == "Customers").unwrap();
         assert!(
             cust.details
-                .contains(&"column Name: type nvarchar(200) → nvarchar(100)".to_string()),
+                .contains(&"column Name: type nvarchar(200) â†’ nvarchar(100)".to_string()),
             "{:?}",
             cust.details
         );
@@ -1924,5 +2271,185 @@ mod tests {
             s.script
         );
         assert!(!s.script.contains("GO"));
+    }
+
+    fn sync_all(src: &SchemaModel, tgt: &SchemaModel, d: Dialect) -> String {
+        let opts = CompareOptions::default();
+        let diff = compare(src, tgt, d, &opts);
+        let keys: Vec<String> = diff.differences.iter().map(|x| x.key.clone()).collect();
+        sync_script(src, tgt, &diff, &keys, d, &opts).script
+    }
+
+    fn module(kind: ObjectKind, name: &str, def: &str) -> ModuleDef {
+        ModuleDef {
+            schema: "public".into(),
+            name: name.into(),
+            kind,
+            definition: def.into(),
+            table: None,
+        }
+    }
+
+    #[test]
+    fn views_go_in_dependency_order() {
+        let pg = Dialect::Postgres;
+        let base = module(
+            ObjectKind::View,
+            "v_base",
+            "CREATE VIEW public.v_base AS SELECT id FROM t",
+        );
+        let top = module(
+            ObjectKind::View,
+            "v_top",
+            "CREATE VIEW public.v_top AS SELECT id FROM public.v_base",
+        );
+        let both = SchemaModel {
+            modules: vec![top.clone(), base.clone()],
+            ..Default::default()
+        };
+        let none = SchemaModel::default();
+        let at = |s: &str, x: &str| s.find(x).unwrap_or_else(|| panic!("{x} in {s}"));
+        // created: the view it uses first; dropped: the view using it first
+        let up = sync_all(&both, &none, pg);
+        assert!(at(&up, "VIEW public.v_base") < at(&up, "VIEW public.v_top"), "{up}");
+        let down = sync_all(&none, &both, pg);
+        assert!(
+            at(&down, "DROP VIEW IF EXISTS public.v_top") < at(&down, "DROP VIEW IF EXISTS public.v_base"),
+            "{down}"
+        );
+        // a changed view takes the unchanged views built on it along (PostgreSQL)
+        let changed = SchemaModel {
+            modules: vec![
+                top.clone(),
+                module(
+                    ObjectKind::View,
+                    "v_base",
+                    "CREATE VIEW public.v_base AS SELECT id, name FROM t",
+                ),
+            ],
+            ..Default::default()
+        };
+        let script = sync_all(&changed, &both, pg);
+        assert!(
+            at(&script, "DROP VIEW IF EXISTS public.v_top") < at(&script, "DROP VIEW IF EXISTS public.v_base"),
+            "{script}"
+        );
+        assert!(
+            at(&script, "CREATE VIEW public.v_base") < at(&script, "CREATE VIEW public.v_top"),
+            "{script}"
+        );
+    }
+
+    #[test]
+    fn changed_column_types_rebuild_what_uses_them() {
+        let ms = Dialect::MsSql;
+        let table = |amount: &str| TableDef {
+            schema: "dbo".into(),
+            name: "Kept".into(),
+            columns: vec![
+                col("Id", "int", false),
+                col("Amount", amount, false),
+                ColumnDef {
+                    computed: Some("([Amount]*(2))".into()),
+                    ..col("Twice", "decimal(13, 2)", true)
+                },
+                col("Gone", "int", true),
+            ],
+            primary_key: Some(KeyDef {
+                name: "PK_Kept".into(),
+                columns: vec!["Id".into()],
+            }),
+            indexes: vec![IndexDef {
+                name: "IX_Kept_Amount".into(),
+                columns: vec!["Amount".into()],
+                ..Default::default()
+            }],
+            checks: vec![CheckDef {
+                name: "CK_Kept_Amount".into(),
+                definition: "([Amount]>=(0))".into(),
+            }],
+            ..Default::default()
+        };
+        let mut src = table("decimal(12, 2)");
+        src.columns.retain(|c| c.name != "Gone");
+        let src = SchemaModel {
+            tables: vec![src],
+            ..Default::default()
+        };
+        let tgt = SchemaModel {
+            tables: vec![table("decimal(9, 2)")],
+            ..Default::default()
+        };
+        let script = sync_all(&src, &tgt, ms);
+        let at = |x: &str| script.find(x).unwrap_or_else(|| panic!("{x} in {script}"));
+        // the index, the check and the computed column go before the change and come back after
+        assert!(at("DROP INDEX IX_Kept_Amount") < at("ALTER COLUMN Amount"));
+        assert!(at("DROP CONSTRAINT CK_Kept_Amount") < at("ALTER COLUMN Amount"));
+        assert!(at("DROP COLUMN Twice") < at("ALTER COLUMN Amount"));
+        assert!(at("ALTER COLUMN Amount") < at("ADD Twice AS"));
+        assert!(at("ALTER COLUMN Amount") < at("NONCLUSTERED INDEX IX_Kept_Amount ON"));
+        assert!(at("ALTER COLUMN Amount") < at("ADD CONSTRAINT CK_Kept_Amount"));
+        // a dropped column goes first; a computed column's type is not altered
+        assert!(at("DROP COLUMN Gone") < at("ALTER COLUMN Amount"));
+        assert!(!script.contains("ALTER COLUMN Twice"), "{script}");
+        // PostgreSQL: only the generated column has to make way
+        let pg = sync_all(&src, &tgt, Dialect::Postgres);
+        assert!(
+            pg.contains("DROP COLUMN \"Twice\"") && pg.contains("ADD COLUMN \"Twice\""),
+            "{pg}"
+        );
+        assert!(!pg.contains("DROP INDEX"), "{pg}");
+    }
+
+    #[test]
+    fn tables_of_one_name_in_two_schemas() {
+        let in_schema = |schema: &str, refs: &str| TableDef {
+            schema: schema.into(),
+            name: "Orders".into(),
+            columns: vec![col("Id", "int", false), col("Ref", "int", true)],
+            primary_key: Some(KeyDef {
+                name: format!("PK_{schema}_Orders"),
+                columns: vec!["Id".into()],
+            }),
+            foreign_keys: vec![ForeignKeyDef {
+                name: "FK_Orders_Ref".into(),
+                columns: vec!["Ref".into()],
+                ref_schema: refs.into(),
+                ref_table: "Orders".into(),
+                ref_columns: vec!["Id".into()],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let both = SchemaModel {
+            tables: vec![in_schema("dbo", "sales"), in_schema("sales", "dbo")],
+            ..Default::default()
+        };
+        // each table's foreign key is dropped, though both have the same name
+        let down = sync_all(&SchemaModel::default(), &both, MS);
+        for drop in [
+            "ALTER TABLE dbo.Orders DROP CONSTRAINT FK_Orders_Ref;",
+            "ALTER TABLE sales.Orders DROP CONSTRAINT FK_Orders_Ref;",
+        ] {
+            assert!(
+                down.contains(drop),
+                "{drop}
+{down}"
+            );
+        }
+        assert!(down.contains("on sales.Orders references dbo.Orders"), "{down}");
+        // a new primary key on dbo.Orders: the key of sales.Orders pointing at it goes and comes back
+        let mut changed = both.clone();
+        changed.tables[0].primary_key = Some(KeyDef {
+            name: "PK_dbo_Orders".into(),
+            columns: vec!["Id".into(), "Ref".into()],
+        });
+        let script = sync_all(&changed, &both, MS);
+        let at = |x: &str| script.find(x).unwrap_or_else(|| panic!("{x} in {script}"));
+        assert!(
+            at("ALTER TABLE sales.Orders DROP CONSTRAINT FK_Orders_Ref;")
+                < at("ALTER TABLE dbo.Orders DROP CONSTRAINT PK_dbo_Orders;")
+        );
+        assert!(at("ADD CONSTRAINT PK_dbo_Orders") < at("ALTER TABLE sales.Orders ADD CONSTRAINT FK_Orders_Ref"));
     }
 }

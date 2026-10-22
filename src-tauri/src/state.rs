@@ -17,7 +17,12 @@ pub struct EditorSettings {
     /// Seconds between history autosaves of a changed tab.
     pub autosave_seconds: u32,
     pub max_rows: usize,
+    /// `dark`, `light`, or `system` (follow Windows).
     pub theme: String,
+    /// Execute (F5) runs the statement at the cursor when nothing is selected.
+    pub f5_runs_statement: bool,
+    /// Query history older than this many days is deleted; 0 keeps it all.
+    pub history_days: u32,
 }
 
 impl Default for EditorSettings {
@@ -27,6 +32,8 @@ impl Default for EditorSettings {
             autosave_seconds: 15,
             max_rows: 100_000,
             theme: "dark".into(),
+            f5_runs_statement: false,
+            history_days: 0,
         }
     }
 }
@@ -39,6 +46,12 @@ pub struct SafetySettings {
     pub confirm_rows_over: u64,
     /// Ask for values of variables the script uses without declaring them.
     pub prompt_variables: bool,
+    /// Scripts that call procedures run in a transaction, and Sqlotus asks
+    /// before committing what the procedures changed (it cannot count it).
+    pub confirm_procedure_calls: bool,
+    /// CSV files get a `'` before text values starting with `=`, `+`, `-`
+    /// or `@`, so a spreadsheet does not run them as formulas.
+    pub csv_formula_guard: bool,
 }
 
 impl Default for SafetySettings {
@@ -46,6 +59,8 @@ impl Default for SafetySettings {
         Self {
             confirm_rows_over: 1000,
             prompt_variables: true,
+            confirm_procedure_calls: false,
+            csv_formula_guard: true,
         }
     }
 }

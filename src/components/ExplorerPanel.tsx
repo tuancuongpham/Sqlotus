@@ -2,8 +2,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api, errorText } from "../api";
 import { toast, update } from "../notify";
 import type { DbObject, Dialect, ObjectKind, ObjectProblem, Reference, ScriptKind } from "../types";
+import { BackupDialog } from "./BackupDialog";
 import { DiagramDialog } from "./DiagramDialog";
+import { FindValueDialog } from "./FindValueDialog";
 import { IndexHealthDialog } from "./IndexHealthDialog";
+import { ScriptDataDialog } from "./ScriptDataDialog";
 import { TestDataDialog } from "./TestDataDialog";
 
 const GROUPS: { kind: ObjectKind[]; label: string }[] = [
@@ -47,6 +50,9 @@ export function ExplorerPanel({ connectionId, database, dialect, version, onOpen
   const [checking, setChecking] = useState(false);
   const [diagram, setDiagram] = useState<{ schema: string; name: string } | "all" | null>(null);
   const [testData, setTestData] = useState<DbObject | null>(null);
+  const [scriptData, setScriptData] = useState<DbObject | null>(null);
+  const [findValue, setFindValue] = useState(false);
+  const [backup, setBackup] = useState(false);
   const [health, setHealth] = useState(false);
   const [refs, setRefs] = useState<{ title: string; list: Reference[] } | null>(null);
 
@@ -163,6 +169,14 @@ export function ExplorerPanel({ connectionId, database, dialect, version, onOpen
         <button onClick={() => setHealth(true)} disabled={!database} title="Missing, duplicate and unused indexes">
           Index health
         </button>
+        <button onClick={() => setFindValue(true)} disabled={!database} title="Find a value in every text column of the database (writes a search script to review)">
+          Find value…
+        </button>
+        {dialect === "mssql" && (
+          <button onClick={() => setBackup(true)} disabled={!database} title="Back up or restore the database (writes the script to review)">
+            Backup…
+          </button>
+        )}
       </div>
       {refs && (
         <div className="problems references">
@@ -258,6 +272,9 @@ export function ExplorerPanel({ connectionId, database, dialect, version, onOpen
                               <button onClick={() => setTestData(o)} title="Generate realistic rows as an INSERT script">
                                 Test data…
                               </button>
+                              <button onClick={() => setScriptData(o)} title="The table's rows as INSERT statements">
+                                Data as INSERT…
+                              </button>
                             </>
                           )}
                           {o.kind === "procedure" && <button onClick={() => script(o, "exec")}>EXEC</button>}
@@ -312,6 +329,35 @@ export function ExplorerPanel({ connectionId, database, dialect, version, onOpen
           dialect={dialect}
           onOpenScript={(title, text) => onOpenScript(title, text)}
           onClose={() => setHealth(false)}
+        />
+      )}
+      {scriptData && database && (
+        <ScriptDataDialog
+          connectionId={connectionId}
+          database={database}
+          schema={scriptData.schema}
+          name={scriptData.name}
+          dialect={dialect}
+          onOpenScript={(title, text) => onOpenScript(title, text)}
+          onClose={() => setScriptData(null)}
+        />
+      )}
+      {findValue && database && (
+        <FindValueDialog
+          connectionId={connectionId}
+          database={database}
+          dialect={dialect}
+          schemas={[...new Set(objects.map((o) => o.schema))].sort()}
+          onOpenScript={(title, text) => onOpenScript(title, text)}
+          onClose={() => setFindValue(false)}
+        />
+      )}
+      {backup && database && (
+        <BackupDialog
+          connectionId={connectionId}
+          database={database}
+          onOpenScript={(title, text) => onOpenScript(title, text)}
+          onClose={() => setBackup(false)}
         />
       )}
       {testData && database && (

@@ -5,6 +5,7 @@
 //   SQLOTUS_E2E_PASSWORD=... node scripts/e2e-compare.mjs [screenshot-dir]
 import { mkdirSync } from "node:fs";
 import { attach, checker } from "./cdp.mjs";
+import { helpers } from "./e2e-kit.mjs";
 
 const outDir = process.argv[2] ?? "e2e-out";
 mkdirSync(outDir, { recursive: true });
@@ -12,23 +13,9 @@ const password = process.env.SQLOTUS_E2E_PASSWORD;
 if (!password) throw new Error("set SQLOTUS_E2E_PASSWORD");
 const ui = await attach(outDir);
 const { sleep, evaluate, press, shot, invoke } = ui;
+const { until, toastText, waitToast, clearToasts, clickButton, text } = helpers(ui);
 const { check, summary } = checker();
 
-async function until(fn, timeout = 10000) {
-  const end = Date.now() + timeout;
-  while (Date.now() < end) {
-    const v = await fn();
-    if (v) return v;
-    await sleep(150);
-  }
-  return null;
-}
-const toastText = () => evaluate(`[...document.querySelectorAll(".toast")].map((t) => t.innerText.replace(/\\s+/g, " ")).join(" | ")`);
-const waitToast = (needle, timeout = 10000) => until(async () => ((await toastText()).includes(needle) ? toastText() : null), timeout);
-const clearToasts = () => evaluate(`document.querySelectorAll(".toast-close").forEach((b) => b.click())`);
-const clickButton = (scope, label) =>
-  evaluate(`(() => { const b = [...document.querySelectorAll(${JSON.stringify(scope + " button")})].find((x) => x.textContent.trim().startsWith(${JSON.stringify(label)})); b?.click(); return !!b; })()`);
-const text = (sel) => evaluate(`document.querySelector(${JSON.stringify(sel)})?.innerText ?? ""`);
 const tabTitles = () => evaluate(`[...document.querySelectorAll(".tab")].map((t) => t.textContent)`);
 const before = new Set(await tabTitles());
 
@@ -211,6 +198,8 @@ try {
     if (own < 0) break;
     await evaluate(`document.querySelectorAll(".tab")[${own}].dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }))`);
     await sleep(200);
+    // close only the tab just selected: Ctrl+W closes the active one
+    if (!(await evaluate(`!!document.querySelectorAll(".tab")[${own}]?.classList.contains("active")`))) break;
     await press("Control+W");
     await sleep(300);
     await clickButton(".confirm-modal", "Roll back and close");

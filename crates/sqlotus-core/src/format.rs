@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::Dialect;
 use crate::keywords;
 use crate::lexer::{Token, TokenKind, tokenize};
+use crate::statements::{delimiter_regions, go_lines, region_pieces, split_batches};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -71,23 +72,155 @@ impl Default for FormatOptions {
 }
 
 /// Format `src`. Returns the input unchanged if formatting would alter
-/// anything but whitespace and keyword case.
+/// anything but whitespace and keyword case, or the script's batches.
+///
+/// Client lines (`GO [n]`, MySQL `DELIMITER x`) are not SQL: they keep their
+/// own line, and the SQL between them is formatted on its own, each
+/// statement of a `DELIMITER` region followed by its terminator. Line breaks
+/// follow the document (CRLF stays CRLF).
 pub fn format_sql(src: &str, dialect: Dialect, opts: &FormatOptions) -> String {
-    let tokens = tokenize(src, dialect);
-    let items = build_items(&tokens);
-    let mut f = Formatter::new(&items, dialect, opts);
-    f.run();
-    let mut out = f.out.buf;
-    let trimmed = out.trim_end().len();
-    out.truncate(trimmed);
-    if src.ends_with('\n') {
-        out.push('\n');
+    let eol = if src.contains("\r\n") { "\r\n" } else { "\n" };
+    let blank = if opts.blank_line_between_statements {
+        format!("{eol}{eol}")
+    } else {
+        eol.to_string()
+    };
+    let mut out = String::new();
+    let mut prev: Option<&Part<'_>> = None;
+    let parts = script_parts(src, dialect);
+    for part in &parts {
+        let text = match part {
+            Part::Sql { text, terminator } => {
+                let code = format_code(text, dialect, opts, eol);
+                if code.is_empty() {
+                    continue;
+                }
+                match terminator {
+                    // a comment ending the code would swallow the terminator
+                    Some((t, _)) if ends_in_line_comment(&code, dialect) => format!("{code}{eol}{t}"),
+                    // `end$$` is one word to MySQL: keep the terminator where it was
+                    Some((t, true)) => format!("{code}{t}"),
+                    Some((t, false)) => format!("{code} {t}"),
+                    None => code,
+                }
+            }
+            Part::Line(line) => {
+                let (word, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
+                let word = match opts.keyword_case {
+                    KeywordCase::Upper => word.to_ascii_uppercase(),
+                    KeywordCase::Lower => word.to_ascii_lowercase(),
+                    KeywordCase::Preserve => word.to_string(),
+                };
+                match rest.trim() {
+                    "" => word,
+                    rest => format!("{word} {rest}"),
+                }
+            }
+        };
+        match (prev, part) {
+            (None, _) => {}
+            // after GO the next batch starts like a new statement
+            (Some(Part::Line(l)), Part::Sql { .. }) if is_go_line(l) => out.push_str(&blank),
+            (Some(Part::Sql { .. }), Part::Sql { .. }) => out.push_str(&blank),
+            _ => out.push_str(eol),
+        }
+        out.push_str(&text);
+        prev = Some(part);
     }
-    if same_tokens(src, &out, dialect) {
+    if src.ends_with('\n') {
+        out.push_str(eol);
+    }
+    if same_tokens(src, &out, dialect) && same_batches(src, &out, dialect) {
         out
     } else {
         src.to_string()
     }
+}
+
+/// A stretch of a script for [`format_sql`].
+enum Part<'a> {
+    /// SQL to format, and the custom terminator that followed it (right
+    /// after the code, or after a space).
+    Sql {
+        text: &'a str,
+        terminator: Option<(&'a str, bool)>,
+    },
+    /// A client line kept as it is: `GO [n]` or `DELIMITER x`.
+    Line(&'a str),
+}
+
+fn script_parts(src: &str, dialect: Dialect) -> Vec<Part<'_>> {
+    let sql = |text| Part::Sql { text, terminator: None };
+    let tokens = tokenize(src, dialect);
+    let mut parts = Vec::new();
+    match dialect {
+        Dialect::MsSql => {
+            let mut from = 0;
+            for (i, _, line_end) in go_lines(&tokens) {
+                parts.push(sql(&src[from..tokens[i].start]));
+                parts.push(Part::Line(src[tokens[i].start..line_end].trim()));
+                from = line_end;
+            }
+            parts.push(sql(&src[from..]));
+        }
+        Dialect::MySql => match delimiter_regions(src, &tokens) {
+            None => parts.push(sql(src)),
+            Some(regions) => {
+                for (k, r) in regions.iter().enumerate() {
+                    if k > 0 {
+                        // the DELIMITER line that opened this region
+                        parts.push(Part::Line(src[regions[k - 1].end..r.start].trim()));
+                    }
+                    if r.delimiter == ";" {
+                        parts.push(sql(&src[r.start..r.end]));
+                        continue;
+                    }
+                    for span in region_pieces(src, &tokens, r) {
+                        let after = &src[span.end..r.end];
+                        let ended = after.trim_start().starts_with(r.delimiter);
+                        parts.push(Part::Sql {
+                            text: span.text(src),
+                            terminator: ended.then_some((r.delimiter, after.starts_with(r.delimiter))),
+                        });
+                    }
+                }
+            }
+        },
+        Dialect::Postgres => parts.push(sql(src)),
+    }
+    parts
+}
+
+fn is_go_line(line: &str) -> bool {
+    line.split_whitespace()
+        .next()
+        .is_some_and(|w| w.eq_ignore_ascii_case("GO"))
+}
+
+fn ends_in_line_comment(code: &str, dialect: Dialect) -> bool {
+    tokenize(code, dialect)
+        .iter()
+        .rfind(|t| t.kind != TokenKind::Whitespace)
+        .is_some_and(|t| t.kind == TokenKind::LineComment)
+}
+
+/// The same batches (count, repeat counts and code) in both scripts.
+fn same_batches(a: &str, b: &str, dialect: Dialect) -> bool {
+    let (x, y) = (split_batches(a, dialect), split_batches(b, dialect));
+    x.len() == y.len()
+        && x.iter()
+            .zip(&y)
+            .all(|(p, q)| p.repeat == q.repeat && same_tokens(p.span.text(a), q.span.text(b), dialect))
+}
+
+/// Format SQL without client lines; the result has no leading or trailing
+/// whitespace.
+fn format_code(src: &str, dialect: Dialect, opts: &FormatOptions, eol: &'static str) -> String {
+    let tokens = tokenize(src, dialect);
+    let items = build_items(&tokens);
+    let mut f = Formatter::new(&items, dialect, opts, eol);
+    f.run();
+    f.out.buf.trim().to_string()
 }
 
 /// True when both texts have the same significant tokens, comparing words
@@ -232,16 +365,19 @@ struct Out {
     line_indent: usize,
     at_line_start: bool,
     pending: Option<(usize, bool)>,
+    /// The document's line break.
+    eol: &'static str,
 }
 
 impl Out {
-    fn new() -> Self {
+    fn new(eol: &'static str) -> Self {
         Self {
             buf: String::new(),
             col: 0,
             line_indent: 0,
             at_line_start: true,
             pending: None,
+            eol,
         }
     }
 
@@ -261,9 +397,9 @@ impl Out {
         if let Some((indent, blank)) = self.pending.take() {
             let trimmed = self.buf.trim_end_matches([' ', '\t']).len();
             self.buf.truncate(trimmed);
-            self.buf.push('\n');
+            self.buf.push_str(self.eol);
             if blank {
-                self.buf.push('\n');
+                self.buf.push_str(self.eol);
             }
             self.col = indent;
             self.line_indent = indent;
@@ -539,12 +675,12 @@ struct Formatter<'a, 'o> {
 }
 
 impl<'a, 'o> Formatter<'a, 'o> {
-    fn new(items: &'a [Item<'a>], dialect: Dialect, opts: &'o FormatOptions) -> Self {
+    fn new(items: &'a [Item<'a>], dialect: Dialect, opts: &'o FormatOptions, eol: &'static str) -> Self {
         Self {
             items,
             dialect,
             opts,
-            out: Out::new(),
+            out: Out::new(eol),
             blocks: vec![Block::new(BlockKind::Root, 0)],
             parens: Vec::new(),
             stmt: Stmt::default(),
@@ -627,7 +763,8 @@ impl<'a, 'o> Formatter<'a, 'o> {
             TokenKind::LParen | TokenKind::Dot => return false,
             _ => {}
         }
-        if cur.text == "::" || prev.text == "::" || prev.text == "[" || cur.text == "]" {
+        // `label:` (a space there is a syntax error in T-SQL), `a[1:2]`
+        if cur.text == "::" || prev.text == "::" || prev.text == "[" || cur.text == "]" || cur.text == ":" {
             return false;
         }
         if cur.text == "[" && (prev.kind == TokenKind::RParen || prev.kind.is_name_like()) {
@@ -1429,6 +1566,14 @@ mod tests {
         assert_eq!(
             fmt("with c as (select a from t) select a from c"),
             "WITH c AS (\n    SELECT a\n    FROM t\n)\nSELECT a\nFROM c"
+        );
+    }
+
+    #[test]
+    fn sqlcmd_lines_and_variables_are_kept() {
+        assert_eq!(
+            fmt(":setvar Schema \"dbo\"\n:on error exit\nselect a from $(Schema).Orders_$(Env) where b = '$(x)'\ngo"),
+            ":setvar Schema \"dbo\"\n:on error exit\nSELECT a\nFROM $(Schema).Orders_$(Env)\nWHERE b = '$(x)'\nGO"
         );
     }
 

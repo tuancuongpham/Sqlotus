@@ -401,6 +401,150 @@ textarea:focus,
   z-index: 3;
 }
 
+/* the result body: the grid (or the text) and the record view beside it */
+.grid-main {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.grid-main > .grid,
+.grid-main > .text-view {
+  flex: 1;
+  min-width: 0;
+}
+
+.view-switch {
+  display: inline-flex;
+}
+
+.view-switch button + button {
+  margin-left: -1px;
+}
+
+.text-view {
+  overflow: auto;
+  position: relative;
+  font: 12.5px Consolas, "Cascadia Mono", monospace;
+  user-select: text;
+}
+
+.text-view:focus {
+  outline: 1px solid var(--accent);
+}
+
+.text-line {
+  position: absolute;
+  left: 0;
+  height: 18px;
+  line-height: 18px;
+  padding-left: 6px;
+  white-space: pre;
+}
+
+.grid-cell.fk {
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+
+.grid-link {
+  color: var(--accent);
+  font-weight: normal;
+}
+
+.grid-menu {
+  position: fixed;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  min-width: 220px;
+  max-width: 560px;
+  padding: 4px 0;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+}
+
+.grid-menu button {
+  border: none;
+  background: none;
+  text-align: left;
+  padding: 4px 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.grid-menu button:hover {
+  background: var(--selected);
+}
+
+.menu-sep {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--border);
+}
+
+.record-view {
+  width: 340px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-left: 1px solid var(--border);
+  background: var(--bg2);
+}
+
+.record-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.record-head b {
+  white-space: nowrap;
+}
+
+.record-head .record-filter {
+  flex: 1;
+  min-width: 60px;
+}
+
+.record-fields {
+  flex: 1;
+  overflow: auto;
+}
+
+.record-field {
+  padding: 3px 8px;
+  border-bottom: 1px solid var(--grid-line);
+}
+
+.record-name {
+  font-weight: 600;
+}
+
+.record-name small {
+  color: var(--fg-dim);
+  font-weight: normal;
+}
+
+.record-value {
+  font: 12.5px Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow: auto;
+  cursor: copy;
+}
+
+.record-value.null {
+  color: var(--null);
+  font-style: italic;
+}
+
 /* side panels */
 .side-panel {
   display: flex;
@@ -2087,4 +2231,72 @@ button.diff-changed {
   color: #e5a50a;
   font-size: 12px;
   white-space: nowrap;
+}
+
+/* connection folders */
+.conn-filter {
+  width: 100%;
+  margin-bottom: 4px;
+}
+.conn-group.conn-folder {
+  cursor: pointer;
+  user-select: none;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.env-tag {
+  margin-left: 6px;
+  padding: 0 4px;
+  border-radius: 3px;
+  font-size: 10px;
+  text-transform: uppercase;
+  background: var(--bg3);
+  color: var(--fg-dim);
+}
+.env-tag.env-prod {
+  background: #c0392b;
+  color: #fff;
+}
+.env-tag.env-staging {
+  background: #d35400;
+  color: #fff;
+}
+
+/* small dialogs: data as INSERT, find a value; backup and restore */
+.small-modal {
+  width: min(520px, 94vw);
+}
+.backup-modal {
+  width: min(720px, 94vw);
+  max-height: 90vh;
+}
+.backup-modal .row2 > input {
+  flex: 1;
+}
+.restore-moves {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.settings-form > .restore-moves > label.restore-move {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+.restore-move span {
+  flex: 0 0 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.restore-move input {
+  flex: 1;
+}
+.backup-error {
+  margin: 0 16px 8px;
+  white-space: pre-wrap;
 }

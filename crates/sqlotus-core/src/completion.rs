@@ -1,6 +1,6 @@
 //! Context-aware completion: what to suggest at a cursor position.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -820,7 +820,9 @@ impl<'a> Ctx<'a> {
     }
 
     /// After `JOIN`: tables with a foreign key to a table already in scope,
-    /// inserted together with the ON clause.
+    /// inserted together with the ON clause. Only the keys of the tables in
+    /// scope are looked at: a catalog of thousands of tables and keys took
+    /// seconds per keystroke when every table was tried against every key.
     fn fk_joins(&mut self, taken: &HashSet<String>) {
         let Some(cat) = self.catalog else { return };
         let in_scope: Vec<(TableRef, &DbObject)> = self
@@ -829,9 +831,26 @@ impl<'a> Ctx<'a> {
             .iter()
             .filter_map(|t| cat.find(t.schema.as_deref(), &t.name).map(|o| (t.clone(), o)))
             .collect();
-        for target in cat.objects.iter().filter(|o| o.kind == ObjectKind::Table) {
-            for (r, ro) in &in_scope {
-                for fk in cat.foreign_keys_between(target, ro) {
+        if in_scope.is_empty() {
+            return;
+        }
+        let mut tables: HashMap<(String, String), Vec<&DbObject>> = HashMap::new();
+        for o in cat.objects.iter().filter(|o| o.kind == ObjectKind::Table) {
+            tables
+                .entry((o.schema.to_ascii_lowercase(), o.name.to_ascii_lowercase()))
+                .or_default()
+                .push(o);
+        }
+        for (r, ro) in &in_scope {
+            for fk in cat.foreign_keys_of(ro) {
+                // the table at the other end (a self reference ends at `ro` both ways)
+                let (schema, table) = if fk.is_from(ro) {
+                    (&fk.to_schema, &fk.to_table)
+                } else {
+                    (&fk.from_schema, &fk.from_table)
+                };
+                let key = (schema.to_ascii_lowercase(), table.to_ascii_lowercase());
+                for &target in tables.get(&key).into_iter().flatten() {
                     let alias = make_alias(&target.name, taken);
                     let target_is_from = fk.from_table.eq_ignore_ascii_case(&target.name)
                         && fk.from_schema.eq_ignore_ascii_case(&target.schema);
