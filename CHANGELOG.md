@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.8
 
 - **Objects reload by themselves** after a script creates, alters, drops or renames something (also `sp_rename` and
   `SELECT … INTO`): completion, analysis, Object Explorer and the diagram know the new table at once. A change made
