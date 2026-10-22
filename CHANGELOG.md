@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.2.7
+
+- **Production connections** now also confirm runs on multiple databases (Ctrl+Shift+F5) and Save of edited rows,
+  showing the statements and naming the server. A script that cannot be analysed asks too.
+- **Long values**: values over 65,535 characters are shown cut. The grid now says how many were cut, copies and
+  exports warn that they hold the cut text, and such results cannot be edited (saving could store the cut text).
+- **Quick fixes** apply only while the analysis matches the text: right after typing, Fix / Fix all wait for the
+  new analysis instead of editing at old positions.
+- **Ignore on this line** never writes into a string or comment: a line that already ends in a comment gets a
+  `/* sqlotus-disable-line … */` before it, and a line ending inside a multi-line string gets
+  `-- sqlotus-disable-next-line …` above it.
+- **Source control**: a folder that holds only the deploy scripts of an earlier link can be linked again; a linked
+  folder that was moved or deleted is reported; files git has not committed (for example after a commit git
+  refused) are listed with **Commit these files**; the first Push of a new branch publishes it to `origin`, and a
+  missing remote is explained. Git runs with English messages, file names with accents stay readable, and objects
+  named like Windows devices (`COM4`, `LPT9`, `nul.backup`) get a file name Windows accepts.
+- **sqlotus-lint**: reads UTF-16 big-endian files, keeps the UTF-8 BOM when fixing, never rewrites a file that is
+  not UTF-8 or UTF-16 (it would lose its accented characters), and does not follow links to folders (a link to a
+  parent folder looped).
+- **Schema compare**: All / None act on the objects the filter shows, the list says how many selected objects are
+  hidden by the filter, and opening a saved comparison whose connection was deleted says so.
+
 ## 0.2.6
 
 - **Source control (git)**: link a database to a folder, usually a git repository. Sqlotus writes one `.sql` file per

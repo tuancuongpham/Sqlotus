@@ -1,6 +1,6 @@
 [package]
 name = "sqlotus"
-version = "0.2.6"
+version = "0.2.7"
 description = "SQL editor with completion, formatting, object search and query history"
 authors.workspace = true
 edition.workspace = true
