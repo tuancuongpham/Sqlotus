@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.9
 
 - **Execute the statement at the cursor** (Shift+F5, or F5 with that option) ran only a part of a statement that a
   blank line split: `WITH x AS (…)`, a blank line, `DELETE FROM x` ran the DELETE alone — with a CTE named like its
