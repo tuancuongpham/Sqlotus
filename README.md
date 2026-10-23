@@ -249,6 +249,7 @@ Keep a database's schema in a folder — usually a git repository shared with yo
   it as a formula (numbers stay as they are; Options → Safety).
 - Values longer than 65,535 characters are shown cut: the grid says how many, copies and exports warn that they
   hold the cut text, and such a result cannot be edited. Query a long value on its own when you need all of it.
+  A run keeps rows until their values hold 100 MB of text (the statements after still run) and says so.
 - **Excel**: open the result in Excel or save it as .xlsx (numbers stay numbers, header row, filters; a cell holds
   at most 32,767 characters, longer values are cut with a warning).
 - **Chart**: bar, line or pie chart of a result; copy it as an image.
@@ -269,7 +270,9 @@ Keep a database's schema in a folder — usually a git repository shared with yo
   databases and when saving edited rows.
 - **Folders** for connections (a customer, a project): connections of a folder are listed together, folders fold,
   and a filter finds a connection by name, server, database or folder.
-- Per-connection tab colours. Passwords are stored in the Windows Credential Manager.
+- Per-connection tab colours. Passwords are stored in the Windows Credential Manager, and a saved password is
+  only sent to the server and user it was saved for: point a saved connection at another server and you type the
+  password again.
 - **Theme**: dark, light, or following Windows as it switches. **Ctrl+mouse wheel** (or Ctrl+= / Ctrl+-) changes
   the editor's font size, Ctrl+0 resets it.
 

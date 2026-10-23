@@ -565,6 +565,20 @@ await step("PostgreSQL database switch with an open transaction", async () => {
   await back();
 });
 
+// -- F8 toggles Object Explorer while the editor has the focus ------------------------------
+await step("F8 in the editor toggles Object Explorer", async () => {
+  await back();
+  const shown = () => evaluate(`!!document.querySelector(".explorer-panel")`);
+  const before = await shown();
+  await t.focusEditor();
+  await press("F8");
+  const toggled = await t.until(async () => (await shown()) !== before, 3000);
+  await t.focusEditor();
+  await press("F8");
+  const restored = await t.until(async () => (await shown()) === before, 3000);
+  check("F8 in the editor toggles Object Explorer", !!toggled && !!restored, `${before} → ${toggled} → ${restored}`);
+});
+
 // -- clean up --------------------------------------------------------------------------------
 await back();
 await t.runSql(

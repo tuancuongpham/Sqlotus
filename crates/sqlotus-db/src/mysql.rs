@@ -90,6 +90,7 @@ impl MySqlConn {
                 return out;
             }
         };
+        let mut kept = 0;
         loop {
             let columns = result.columns();
             match columns {
@@ -110,12 +111,12 @@ impl MySqlConn {
                     loop {
                         match result.next().await {
                             Ok(Some(row)) => {
-                                if rs.rows.len() >= limits.max_rows {
+                                if rs.rows.len() >= limits.max_rows || kept >= limits.max_result_bytes {
                                     rs.truncated = true;
                                     continue;
                                 }
                                 let cells = row.unwrap().into_iter().zip(&shapes).map(|(v, s)| value(v, *s));
-                                rs.push_cells(cells, limits.max_cell_chars);
+                                kept += rs.push_cells(cells, limits.max_cell_chars);
                             }
                             Ok(None) => break,
                             Err(e) => {
@@ -125,7 +126,11 @@ impl MySqlConn {
                         }
                     }
                     let n = rs.rows.len();
-                    out.info(format!("({n} row{} returned)", if n == 1 { "" } else { "s" }));
+                    out.info(if rs.truncated {
+                        format!("({n} rows shown, result truncated)")
+                    } else {
+                        format!("({n} row{} returned)", if n == 1 { "" } else { "s" })
+                    });
                     out.result_sets.push(rs);
                 }
                 _ => {

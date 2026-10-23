@@ -863,6 +863,8 @@ ${r.notice}` : failure.text);
     ed.addCommand(KM.chord(KM.CtrlCmd | KC.KeyK, KM.CtrlCmd | KC.KeyY), () => actions.current.format());
     ed.addCommand(KM.Alt | KC.PauseBreak, () => actions.current.cancel());
     ed.addCommand(KM.CtrlCmd | KC.KeyR, () => setResultsVisible((v) => !v));
+    // the editor's own F8 (next problem) kept F8 from reaching the window while typing
+    ed.addCommand(KC.F8, () => setPanel((p) => (p === "explorer" ? null : "explorer")));
     ed.addCommand(KM.CtrlCmd | KC.KeyL, () => void actions.current.explain());
     ed.addCommand(KM.CtrlCmd | KC.Equal, () => actions.current.zoom(1));
     ed.addCommand(KM.CtrlCmd | KC.Minus, () => actions.current.zoom(-1));

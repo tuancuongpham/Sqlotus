@@ -12,7 +12,9 @@ use sqlotus_core::search::{SearchHit, SearchOptions};
 use sqlotus_core::snippet::Snippet;
 use sqlotus_core::variables::VariableValue;
 use sqlotus_core::{CompletionResult, Dialect, byte_to_utf16, utf16_to_byte};
-use sqlotus_db::{BatchOutput, Connection, ConnectionConfig, ExplainOutput, Limits, ScriptOptions, load_catalog};
+use sqlotus_db::{
+    AuthKind, BatchOutput, Connection, ConnectionConfig, ExplainOutput, Limits, ScriptOptions, load_catalog,
+};
 use sqlotus_store::{HistoryEntry, NewHistory};
 use tauri::State;
 
@@ -107,7 +109,7 @@ pub fn list_connections(state: State<'_, AppState>) -> CmdResult<Vec<SavedConnec
 }
 
 /// Save a connection. `password`: `Some` stores it, `None` keeps the stored
-/// one, unless `forget_password` is set.
+/// one (see [`password_change`]).
 #[tauri::command]
 pub fn save_connection(
     state: State<'_, AppState>,
@@ -115,13 +117,44 @@ pub fn save_connection(
     password: Option<String>,
     forget_password: bool,
 ) -> CmdResult<()> {
+    let saved = state.store.get_connection(&config.id).map_err(err)?;
+    let change = password_change(saved.as_ref(), &config, password, forget_password);
     state.store.save_connection(&config).map_err(err)?;
-    if forget_password {
-        state.store.set_password(&config.id, None).map_err(err)?;
-    } else if let Some(p) = password.filter(|p| !p.is_empty()) {
-        state.store.set_password(&config.id, Some(&p)).map_err(err)?;
+    match change {
+        PasswordChange::Keep => {}
+        PasswordChange::Set(p) => state.store.set_password(&config.id, Some(&p)).map_err(err)?,
+        PasswordChange::Remove => state.store.set_password(&config.id, None).map_err(err)?,
     }
     Ok(())
+}
+
+/// What saving a connection does to its stored password.
+#[derive(Debug, PartialEq, Eq)]
+enum PasswordChange {
+    Keep,
+    Set(String),
+    Remove,
+}
+
+/// The password typed is stored; none typed keeps the stored one, unless
+/// `forget` is set or the connection now points at another server or user:
+/// the stored password stays with those it was saved for (see [`same_login`]).
+fn password_change(
+    saved: Option<&ConnectionConfig>,
+    config: &ConnectionConfig,
+    typed: Option<String>,
+    forget: bool,
+) -> PasswordChange {
+    if forget {
+        return PasswordChange::Remove;
+    }
+    if let Some(p) = typed.filter(|p| !p.is_empty()) {
+        return PasswordChange::Set(p);
+    }
+    match saved {
+        Some(saved) if !same_login(saved, config) => PasswordChange::Remove,
+        _ => PasswordChange::Keep,
+    }
 }
 
 #[tauri::command]
@@ -129,10 +162,77 @@ pub fn delete_connection(state: State<'_, AppState>, id: String) -> CmdResult<()
     state.store.delete_connection(&id).map_err(err)
 }
 
-fn resolve_password(state: &AppState, config: &ConnectionConfig, password: Option<String>) -> Option<String> {
-    password
-        .filter(|p| !p.is_empty())
-        .or_else(|| state.store.get_password(&config.id).ok().flatten())
+/// Why the saved password was not sent for an edited connection.
+pub(crate) const PASSWORD_ELSEWHERE: &str =
+    "Type the password: the saved one is only sent to the server and user it was saved for.";
+
+/// Whether a password saved with `saved` may be sent for `config`: the same
+/// kind of server on the same computer, and the same user. Port and
+/// instance may differ (the Connection Doctor's fixes change them); a saved
+/// connection edited to point at another server must not take its password
+/// along.
+pub(crate) fn same_login(saved: &ConnectionConfig, config: &ConnectionConfig) -> bool {
+    let host = |c: &ConnectionConfig| {
+        let h = c.endpoint().host.to_lowercase();
+        if this_computer(&h) { String::new() } else { h }
+    };
+    let user = |c: &ConnectionConfig| c.user.as_deref().unwrap_or("").trim().to_string();
+    saved.dialect == config.dialect && host(saved) == host(config) && user(saved) == user(config)
+}
+
+/// The names of this computer (lowercase `host`), all one server for a saved
+/// password. Exact names only: `db.example.com` is another server even on a
+/// computer called DB.
+fn this_computer(host: &str) -> bool {
+    let machine = std::env::var("COMPUTERNAME").unwrap_or_default();
+    matches!(
+        host,
+        "" | "." | "(local)" | "(localdb)" | "localhost" | "127.0.0.1" | "::1"
+    ) || (!machine.is_empty() && host.eq_ignore_ascii_case(&machine))
+}
+
+/// The password to connect `config` with: the one typed, else the one saved
+/// for its connection while it still fits (see [`same_login`]).
+pub(crate) fn resolve_password(
+    state: &AppState,
+    config: &ConnectionConfig,
+    password: Option<String>,
+) -> CmdResult<Option<String>> {
+    choose_password(config, password, || {
+        let saved = state.store.get_connection(&config.id).ok().flatten()?;
+        Some((saved, state.store.get_password(&config.id).ok().flatten()?))
+    })
+}
+
+/// [`resolve_password`] with the saved connection and its stored password
+/// given by `stored` (`None` when either is missing).
+fn choose_password(
+    config: &ConnectionConfig,
+    typed: Option<String>,
+    stored: impl FnOnce() -> Option<(ConnectionConfig, String)>,
+) -> CmdResult<Option<String>> {
+    if let Some(p) = typed.filter(|p| !p.is_empty()) {
+        return Ok(Some(p));
+    }
+    if config.dialect == Dialect::MsSql && config.auth == AuthKind::Windows {
+        return Ok(None);
+    }
+    match stored() {
+        Some((saved, password)) if same_login(&saved, config) => Ok(Some(password)),
+        Some(_) => Err(PASSWORD_ELSEWHERE.into()),
+        None => Ok(None),
+    }
+}
+
+/// Whether the password saved for `config`'s connection would be sent for
+/// `config` as it is now (true for a connection not saved yet).
+#[tauri::command]
+pub fn saved_password_fits(state: State<'_, AppState>, config: ConnectionConfig) -> CmdResult<bool> {
+    Ok(state
+        .store
+        .get_connection(&config.id)
+        .map_err(err)?
+        .is_none_or(|saved| same_login(&saved, &config)))
 }
 
 /// Try a connection; returns the databases visible to it.
@@ -142,7 +242,7 @@ pub async fn test_connection(
     config: ConnectionConfig,
     password: Option<String>,
 ) -> CmdResult<Vec<String>> {
-    let password = resolve_password(&state, &config, password);
+    let password = resolve_password(&state, &config, password)?;
     let mut conn = Connection::open(&config, password.as_deref()).await.map_err(err)?;
     let dbs = conn.list_databases().await.map_err(err);
     conn.close().await;
@@ -177,7 +277,7 @@ pub async fn connect_tab(
     if let Some(db) = database.filter(|d| !d.is_empty()) {
         config.database = Some(db);
     }
-    let password = resolve_password(&state, &config, password);
+    let password = resolve_password(&state, &config, password)?;
     let mut conn = Connection::open(&config, password.as_deref()).await.map_err(err)?;
     let current = conn.current_database().await.unwrap_or_default();
     let databases = conn.list_databases().await.unwrap_or_default();
@@ -418,6 +518,7 @@ pub async fn execute(
         // SQL Server reports changed rows only through sp_executesql, whose
         // scope would undo a USE statement
         counted: rows_only && !has_word(&as_run, dialect, "USE"),
+        ..ScriptOptions::default()
     };
     // SQL Server reports no counts under SET NOCOUNT ON, and no server counts
     // the rows of a change nested in another (a CTE that deletes); an unknown
@@ -965,4 +1066,125 @@ pub fn history_recently_closed(state: State<'_, AppState>, limit: Option<usize>)
 #[tauri::command]
 pub fn history_delete(state: State<'_, AppState>, id: i64) -> CmdResult<()> {
     state.store.delete_history(id).map_err(err)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg(dialect: Dialect, host: &str, port: Option<u16>, user: &str) -> ConnectionConfig {
+        ConnectionConfig {
+            id: "c1".into(),
+            dialect,
+            host: host.into(),
+            port,
+            user: Some(user.into()),
+            ..ConnectionConfig::default()
+        }
+    }
+
+    fn mssql(host: &str, port: Option<u16>, user: &str) -> ConnectionConfig {
+        cfg(Dialect::MsSql, host, port, user)
+    }
+
+    #[test]
+    fn saved_passwords_stay_with_their_server() {
+        let saved = mssql("db.example.com", None, "sa");
+        // the same server written otherwise, another port or instance of it
+        assert!(same_login(&saved, &mssql(" DB.Example.com", None, "sa ")));
+        assert!(same_login(&saved, &mssql("db.example.com,1500", None, "sa")));
+        assert!(same_login(&saved, &mssql(r"tcp:db.example.com\SQL2", Some(1433), "sa")));
+        // another server, user or kind of server
+        assert!(!same_login(&saved, &mssql("db2.example.com", None, "sa")));
+        assert!(!same_login(&saved, &mssql("db.example.com.other.test", None, "sa")));
+        assert!(!same_login(&saved, &mssql("db.example.com", None, "admin")));
+        assert!(!same_login(
+            &saved,
+            &cfg(Dialect::Postgres, "db.example.com", None, "sa")
+        ));
+        // the names of this computer are one server
+        let local = mssql(".", None, "sa");
+        assert!(same_login(&local, &mssql(r"localhost\SQLEXPRESS", None, "sa")));
+        assert!(same_login(&local, &mssql("127.0.0.1,14333", None, "sa")));
+        assert!(!same_login(&local, &mssql("10.0.0.5", None, "sa")));
+        let machine = std::env::var("COMPUTERNAME").unwrap_or_default();
+        if !machine.is_empty() {
+            assert!(same_login(&local, &mssql(&machine.to_lowercase(), None, "sa")));
+            // a server whose name starts like this computer's is another one
+            assert!(!same_login(
+                &local,
+                &mssql(&format!("{machine}.example.com"), None, "sa")
+            ));
+        }
+        // PostgreSQL and MySQL take host:port
+        let pg = cfg(Dialect::Postgres, "pg.example.com:5432", None, "app");
+        assert!(same_login(
+            &pg,
+            &cfg(Dialect::Postgres, "pg.example.com", Some(6432), "app")
+        ));
+        assert!(!same_login(
+            &pg,
+            &cfg(Dialect::Postgres, "pg2.example.com:5432", None, "app")
+        ));
+    }
+
+    #[test]
+    fn the_saved_password_is_sent_only_where_it_fits() {
+        let saved = mssql("db.example.com", None, "sa");
+        let stored = || Some((saved.clone(), "secret".to_string()));
+        assert_eq!(
+            choose_password(&saved, Some("typed".into()), stored),
+            Ok(Some("typed".into()))
+        );
+        assert_eq!(
+            choose_password(&saved, Some(String::new()), stored),
+            Ok(Some("secret".into()))
+        );
+        // edited to point at another server: refused, nothing sent
+        let moved = mssql("other.example.com", None, "sa");
+        assert_eq!(
+            choose_password(&moved, None, stored),
+            Err(PASSWORD_ELSEWHERE.to_string())
+        );
+        assert_eq!(
+            choose_password(&moved, Some("typed".into()), stored),
+            Ok(Some("typed".into()))
+        );
+        // Windows Authentication sends none; nothing stored, nothing sent
+        let windows = ConnectionConfig {
+            auth: AuthKind::Windows,
+            ..moved.clone()
+        };
+        assert_eq!(choose_password(&windows, None, stored), Ok(None));
+        assert_eq!(choose_password(&moved, None, || None), Ok(None));
+    }
+
+    #[test]
+    fn saving_another_server_drops_the_saved_password() {
+        let saved = mssql("db.example.com", None, "sa");
+        let renamed = ConnectionConfig {
+            name: "Renamed".into(),
+            port: Some(1500),
+            ..saved.clone()
+        };
+        let moved = mssql("other.example.com", None, "sa");
+        assert_eq!(
+            password_change(Some(&saved), &renamed, None, false),
+            PasswordChange::Keep
+        );
+        assert_eq!(
+            password_change(Some(&saved), &moved, None, false),
+            PasswordChange::Remove
+        );
+        assert_eq!(
+            password_change(Some(&saved), &moved, Some("new".into()), false),
+            PasswordChange::Set("new".into())
+        );
+        assert_eq!(
+            password_change(Some(&saved), &renamed, Some("x".into()), true),
+            PasswordChange::Remove
+        );
+        // a new connection keeps what it has: nothing
+        assert_eq!(password_change(None, &moved, None, false), PasswordChange::Keep);
+    }
 }

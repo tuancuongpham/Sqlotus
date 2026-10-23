@@ -106,7 +106,8 @@ pub struct ResultColumn {
 pub struct ResultSet {
     pub columns: Vec<ResultColumn>,
     pub rows: Vec<Vec<Option<String>>>,
-    /// More rows existed than `Limits::max_rows`.
+    /// More rows existed than the limits kept (`Limits::max_rows` or
+    /// `Limits::max_result_bytes`).
     pub truncated: bool,
     /// Values cut to `Limits::max_cell_chars` for display: editing or
     /// exporting them would use the cut text.
@@ -114,21 +115,29 @@ pub struct ResultSet {
 }
 
 impl ResultSet {
-    /// Add a row, cutting values longer than `max` characters.
-    pub(crate) fn push_cells(&mut self, cells: impl IntoIterator<Item = Option<String>>, max: usize) {
-        let mut cut = 0;
+    /// Add a row, cutting values longer than `max` characters; returns the
+    /// bytes of text kept.
+    pub(crate) fn push_cells(&mut self, cells: impl IntoIterator<Item = Option<String>>, max: usize) -> usize {
+        let (mut cut, mut bytes) = (0, 0);
         let row = cells
             .into_iter()
             .map(|c| {
                 c.map(|s| {
                     let (s, was_cut) = clip(s, max);
                     cut += usize::from(was_cut);
+                    bytes += s.len();
                     s
                 })
             })
             .collect();
         self.clipped += cut;
         self.rows.push(row);
+        bytes
+    }
+
+    /// Bytes of text the rows hold.
+    pub fn bytes(&self) -> usize {
+        self.rows.iter().flatten().flatten().map(String::len).sum()
     }
 }
 
@@ -190,13 +199,21 @@ pub struct Limits {
     pub max_rows: usize,
     /// Longer cell values are cut to keep the grid responsive.
     pub max_cell_chars: usize,
+    /// Rows stop being kept once a run's values hold this many bytes of
+    /// text (the statements still run): 100,000 rows of long text took
+    /// gigabytes and could close the app.
+    pub max_result_bytes: usize,
 }
+
+/// [`Limits::max_result_bytes`] of a run: a few hundred MB of the app's memory.
+pub const MAX_RESULT_BYTES: usize = 100 * 1024 * 1024;
 
 impl Default for Limits {
     fn default() -> Self {
         Self {
             max_rows: 100_000,
             max_cell_chars: 65_535,
+            max_result_bytes: MAX_RESULT_BYTES,
         }
     }
 }
@@ -335,6 +352,7 @@ impl Connection {
         let limits = Limits {
             max_rows: usize::MAX,
             max_cell_chars: usize::MAX,
+            max_result_bytes: usize::MAX,
         };
         let out = self.execute(sql, &limits).await;
         if out.failed {
@@ -417,6 +435,7 @@ impl Connection {
         let limits = Limits {
             max_rows: 10_000,
             max_cell_chars: usize::MAX,
+            max_result_bytes: usize::MAX,
         };
         let mut out = ExplainOutput::default();
         let first_text = |o: &BatchOutput| -> Vec<String> {
@@ -563,6 +582,9 @@ pub struct ScriptOptions {
     pub variables: Vec<VariableValue>,
     /// Report the rows each statement changes (see [`Connection::execute_counted`]).
     pub counted: bool,
+    /// Bytes of results an earlier part of the run kept (a run on several
+    /// databases): [`Limits::max_result_bytes`] holds for the whole run.
+    pub kept: usize,
 }
 
 /// Output of one batch of a script, with its position in the source.
@@ -636,15 +658,31 @@ pub async fn execute_script_with(
         }
     };
     let mut results = Vec::new();
+    // the result size limit holds for the whole run, not each batch
+    let mut kept = options.kept;
+    // said by the part of the run that reached it
+    let mut told = kept >= limits.max_result_bytes;
     for batch in batches {
         let prelude = sqlotus_core::variables::prelude(&batch.text, dialect, &options.variables);
         let text = format!("{prelude}{}", batch.text);
         for _ in 0..batch.repeat {
-            let output = if options.counted {
-                conn.execute_counted(&text, limits).await
-            } else {
-                conn.execute(&text, limits).await
+            let left = Limits {
+                max_result_bytes: limits.max_result_bytes.saturating_sub(kept),
+                ..*limits
             };
+            let mut output = if options.counted {
+                conn.execute_counted(&text, &left).await
+            } else {
+                conn.execute(&text, &left).await
+            };
+            kept += output.result_sets.iter().map(ResultSet::bytes).sum::<usize>();
+            if !told && kept >= limits.max_result_bytes && output.result_sets.iter().any(|rs| rs.truncated) {
+                told = true;
+                output.info(format!(
+                    "The results reached {} MB, so the rows after that were not kept (the statements ran). Select fewer or shorter columns, or fewer rows, to see them.",
+                    limits.max_result_bytes / (1024 * 1024)
+                ));
+            }
             let failed = output.failed;
             results.push(ScriptBatch {
                 start: batch.start,
@@ -688,9 +726,14 @@ mod tests {
             truncated: false,
             clipped: 0,
         };
-        rs.push_cells([Some("abcdef".to_string()), None, Some("ab".to_string())], 3);
-        rs.push_cells([Some("xyzxyz".to_string())], 3);
+        // the bytes kept count what stays: "abc…" is 6 bytes
+        assert_eq!(
+            rs.push_cells([Some("abcdef".to_string()), None, Some("ab".to_string())], 3),
+            8
+        );
+        assert_eq!(rs.push_cells([Some("xyzxyz".to_string())], 3), 6);
         assert_eq!(rs.clipped, 2);
+        assert_eq!(rs.bytes(), 14);
         assert_eq!(rs.rows[0], vec![Some("abc…".to_string()), None, Some("ab".to_string())]);
     }
 }

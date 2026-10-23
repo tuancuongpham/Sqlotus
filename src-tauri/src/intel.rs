@@ -274,9 +274,21 @@ pub async fn find_invalid_objects(
     })
 }
 
+/// Whether `path` names a file of one of the `kinds` the app exports (or has
+/// no extension). The page chooses the path: whatever it asks, no `.bat` in
+/// the Startup folder or `.exe` gets written.
+pub(crate) fn export_kind(path: &str, kinds: &[&str]) -> CmdResult<()> {
+    match std::path::Path::new(path).extension() {
+        None => Ok(()),
+        Some(ext) if kinds.iter().any(|k| ext.eq_ignore_ascii_case(k)) => Ok(()),
+        Some(_) => Err(format!("Sqlotus saves {} files here, not {path}.", kinds.join(", "))),
+    }
+}
+
 /// Write text to a file chosen by the user (CSV export).
 #[tauri::command]
 pub async fn save_text_file(path: String, contents: String) -> CmdResult<()> {
+    export_kind(&path, &["csv", "tsv", "txt", "svg", "html", "htm", "md", "json", "sql"])?;
     // Excel reads UTF-8 CSV correctly only with a BOM
     let data = if path.to_ascii_lowercase().ends_with(".csv") {
         format!("\u{feff}{contents}")
@@ -284,4 +296,31 @@ pub async fn save_text_file(path: String, contents: String) -> CmdResult<()> {
         contents
     };
     std::fs::write(&path, data).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_export_files_are_written() {
+        let kinds = ["csv", "md"];
+        for ok in [
+            r"C:\out\results.csv",
+            "results.CSV",
+            r"C:\out\notes.md",
+            r"C:\out\results",
+        ] {
+            assert!(export_kind(ok, &kinds).is_ok(), "{ok}");
+        }
+        for bad in [
+            r"C:\Users\x\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\run.bat",
+            r"C:\out\tool.exe",
+            r"C:\out\run.bat.",
+            r"C:\out\run.csv.bat",
+            r"C:\out\x.csv::$DATA",
+        ] {
+            assert!(export_kind(bad, &kinds).is_err(), "{bad}");
+        }
+    }
 }

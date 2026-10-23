@@ -4,7 +4,8 @@
 use sqlotus_core::byte_to_utf16;
 use sqlotus_core::safety::ScriptRun;
 use sqlotus_db::{
-    BatchOutput, CancelHandle, Connection, Limits, Message, MessageKind, ResultColumn, ResultSet, execute_script,
+    BatchOutput, CancelHandle, Connection, Limits, Message, MessageKind, ResultColumn, ResultSet, ScriptOptions,
+    execute_script_with,
 };
 use tauri::State;
 
@@ -58,19 +59,20 @@ fn merge(per_db: Vec<(String, Vec<BatchOutput>)>) -> Vec<BatchOutput> {
     }
     let mut merged = BatchOutput::default();
     for (db, outs) in per_db {
-        let sets: Vec<ResultSet> = outs.iter().flat_map(|o| o.result_sets.clone()).collect();
-        for (k, rs) in sets.into_iter().enumerate() {
-            let rs = tag(&db, rs);
-            match merged.result_sets.get_mut(k) {
-                Some(target) => {
-                    target.truncated |= rs.truncated;
-                    target.clipped += rs.clipped;
-                    target.rows.extend(rs.rows);
-                }
-                None => merged.result_sets.push(rs),
-            }
-        }
+        let mut k = 0;
         for o in outs {
+            for rs in o.result_sets {
+                let rs = tag(&db, rs);
+                match merged.result_sets.get_mut(k) {
+                    Some(target) => {
+                        target.truncated |= rs.truncated;
+                        target.clipped += rs.clipped;
+                        target.rows.extend(rs.rows);
+                    }
+                    None => merged.result_sets.push(rs),
+                }
+                k += 1;
+            }
             merged.elapsed_ms += o.elapsed_ms;
             merged.messages.extend(o.messages.into_iter().map(|m| Message {
                 kind: m.kind,
@@ -115,6 +117,8 @@ pub async fn execute_multi(
             return (per_db, true);
         }
         let cancelled = || task_session.running.lock().map_or(true, |r| r.is_none());
+        // the result size limit holds for the whole run, not each database
+        let mut kept = 0;
         for db in databases {
             if cancelled() {
                 return (per_db, true);
@@ -128,11 +132,20 @@ pub async fn execute_multi(
                     {
                         r.cancel = conn.cancel_handle();
                     }
-                    let outs: Vec<BatchOutput> = execute_script(&mut conn, &script, &limits)
+                    let options = ScriptOptions {
+                        kept,
+                        ..ScriptOptions::default()
+                    };
+                    let outs: Vec<BatchOutput> = execute_script_with(&mut conn, &script, &limits, &options)
                         .await
                         .into_iter()
                         .map(|b| b.output)
                         .collect();
+                    kept += outs
+                        .iter()
+                        .flat_map(|o| &o.result_sets)
+                        .map(ResultSet::bytes)
+                        .sum::<usize>();
                     conn.close().await;
                     outs
                 }

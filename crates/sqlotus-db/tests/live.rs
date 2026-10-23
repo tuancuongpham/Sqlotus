@@ -15,7 +15,10 @@ use serde::Deserialize;
 use sqlotus_core::catalog::ObjectKind;
 use sqlotus_core::search::{MatchIn, SearchOptions, search};
 use sqlotus_core::{CompletionKind, CompletionOptions, complete};
-use sqlotus_db::{BatchOutput, Connection, ConnectionConfig, Limits, MessageKind, execute_script, load_catalog};
+use sqlotus_db::{
+    BatchOutput, Connection, ConnectionConfig, Limits, MessageKind, ScriptOptions, execute_script, execute_script_with,
+    load_catalog,
+};
 
 #[derive(Deserialize)]
 struct Env {
@@ -93,6 +96,7 @@ async fn exercise(var: &str, script: &str, expected_sets: usize, names: Names) {
             &Limits {
                 max_rows: 1,
                 max_cell_chars: 10,
+                ..Limits::default()
             },
         )
         .await;
@@ -551,6 +555,122 @@ async fn mysql_long_values_are_counted() {
     long_values_are_counted("SQLOTUS_TEST_MYSQL", "SELECT REPEAT('a', 70000) AS v, 'short' AS s").await;
 }
 
+/// Rows stop being kept once the run's values reach the size limit (50 rows
+/// of 1,000 characters against 10,000 bytes); the statements after it still
+/// run, and the run says why the rows are missing, once.
+async fn results_stop_at_the_size_limit(var: &str, script: &str) {
+    let Some(e) = env(var) else {
+        return;
+    };
+    let mut conn = connect(&e).await;
+    let limits = Limits {
+        max_result_bytes: 10_000,
+        ..Limits::default()
+    };
+    let out = execute_script(&mut conn, script, &limits).await;
+    assert!(errors(&out).is_empty(), "{out:?}");
+    let sets: Vec<_> = out.iter().flat_map(|b| &b.output.result_sets).collect();
+    assert_eq!(sets.len(), 2, "{out:?}");
+    assert_eq!(sets[0].rows.len(), 10);
+    assert!(sets[0].truncated);
+    assert!(sets[1].rows.is_empty() && sets[1].truncated, "{:?}", sets[1]);
+    let told = out
+        .iter()
+        .flat_map(|b| &b.output.messages)
+        .filter(|m| m.text.contains("were not kept"))
+        .count();
+    assert_eq!(told, 1, "{out:?}");
+    // a later part of the run (the next database) starting at the limit keeps
+    // no rows, and does not say it again
+    let options = ScriptOptions {
+        kept: 10_000,
+        ..ScriptOptions::default()
+    };
+    let later = execute_script_with(&mut conn, script, &limits, &options).await;
+    assert!(errors(&later).is_empty(), "{later:?}");
+    let sets: Vec<_> = later.iter().flat_map(|b| &b.output.result_sets).collect();
+    assert_eq!(sets.len(), 2, "{later:?}");
+    assert!(sets.iter().all(|rs| rs.rows.is_empty() && rs.truncated), "{later:?}");
+    assert!(
+        !later
+            .iter()
+            .flat_map(|b| &b.output.messages)
+            .any(|m| m.text.contains("were not kept"))
+    );
+}
+
+#[tokio::test]
+async fn mssql_results_stop_at_the_size_limit() {
+    results_stop_at_the_size_limit(
+        "SQLOTUS_TEST_MSSQL",
+        "SELECT TOP (50) REPLICATE(CAST('x' AS varchar(max)), 1000) AS v FROM sys.all_objects;\nSELECT 1 AS a;",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn postgres_results_stop_at_the_size_limit() {
+    results_stop_at_the_size_limit(
+        "SQLOTUS_TEST_PG",
+        "SELECT repeat('x', 1000) AS v FROM generate_series(1, 50);\nSELECT 1 AS a;",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn mysql_results_stop_at_the_size_limit() {
+    results_stop_at_the_size_limit(
+        "SQLOTUS_TEST_MYSQL",
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 50)\nSELECT REPEAT('x', 1000) AS v FROM n;\nSELECT 1 AS a;",
+    )
+    .await;
+}
+
+/// COPY through a terminal client is refused before it reaches the server,
+/// which would end the session waiting for rows: the transaction stays open.
+#[tokio::test]
+async fn postgres_copy_through_a_terminal_client_is_refused() {
+    let Some(e) = env("SQLOTUS_TEST_PG") else {
+        return;
+    };
+    let mut conn = connect(&e).await;
+    let l = Limits::default();
+    let begin = conn
+        .execute("BEGIN; CREATE TEMP TABLE c(x int); INSERT INTO c VALUES (1);", &l)
+        .await;
+    assert!(!begin.failed, "{begin:?}");
+    let out = conn.execute("COPY c FROM stdin;", &l).await;
+    assert!(first_error(&out).contains("FROM STDIN"), "{out:?}");
+    let out = conn.execute("COPY (SELECT x FROM c) TO STDOUT", &l).await;
+    assert!(first_error(&out).contains("TO STDOUT"), "{out:?}");
+    let out = conn.execute("SELECT count(*) FROM c; ROLLBACK;", &l).await;
+    assert!(!out.failed, "{out:?}");
+    assert_eq!(out.result_sets[0].rows[0][0].as_deref(), Some("1"));
+}
+
+/// A failed statement after a large result: PostgreSQL reads rows as they
+/// arrive, and an error still reads as the run's error with nothing kept.
+#[tokio::test]
+async fn postgres_error_after_rows() {
+    let Some(e) = env("SQLOTUS_TEST_PG") else {
+        return;
+    };
+    let mut conn = connect(&e).await;
+    let out = conn
+        .execute(
+            "SELECT g FROM generate_series(1, 200000) g; SELECT 1 / 0;",
+            &Limits::default(),
+        )
+        .await;
+    assert!(out.failed);
+    assert!(first_error(&out).contains("division by zero"), "{out:?}");
+    assert!(out.result_sets.is_empty());
+    // the connection is ready for the next statement
+    let next = conn.execute("SELECT 2 AS b", &Limits::default()).await;
+    assert!(!next.failed, "{next:?}");
+    assert_eq!(next.result_sets[0].rows[0][0].as_deref(), Some("2"));
+}
+
 /// Saving edited rows and the large-change check count changed rows; NOCOUNT,
 /// set by the session or by the script, must not hide them (0 rows would
 /// read as "changed by someone else", or skip the confirmation).
@@ -616,6 +736,7 @@ async fn mssql_procedure_named_first_in_a_batch() {
                 value: Some("41".into()),
             }],
             counted,
+            ..Default::default()
         };
         let out = sqlotus_db::execute_script_with(&mut c, script, &l, &options).await;
         assert!(errors(&out).is_empty(), "counted {counted}: {:?}", errors(&out));

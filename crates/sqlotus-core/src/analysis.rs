@@ -664,8 +664,38 @@ fn kind_label(k: ObjectKind) -> &'static str {
     }
 }
 
+/// `text` as literal Markdown: what Markdown reads as emphasis, a link, a web
+/// address, code, a table cell or an entity is escaped, and line breaks are
+/// spaces. Names come from the database: a table `_Archive_` lost its
+/// underscores in a hover, and one named `[x](https://…)` became a link.
+fn md(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in crate::text::one_line(text).chars() {
+        if matches!(
+            c,
+            '\\' | '`' | '*' | '_' | '[' | ']' | '<' | '>' | '|' | '~' | '&' | ':' | '.'
+        ) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// `text` as a Markdown code span, whatever backticks it holds.
+fn code(text: &str) -> String {
+    let text = crate::text::one_line(text);
+    let fence = "`".repeat(text.split(|c| c != '`').map(str::len).max().unwrap_or(0) + 1);
+    let pad = if text.starts_with('`') || text.ends_with('`') {
+        " "
+    } else {
+        ""
+    };
+    format!("{fence}{pad}{text}{pad}{fence}")
+}
+
 fn describe(o: &DbObject) -> String {
-    let mut s = format!("**{}.{}** — {}\n\n", o.schema, o.name, kind_label(o.kind));
+    let mut s = format!("**{}.{}** — {}\n\n", md(&o.schema), md(&o.name), kind_label(o.kind));
     if !o.columns.is_empty() {
         s.push_str("| column | type | |\n|---|---|---|\n");
         for c in o.columns.iter().take(40) {
@@ -682,19 +712,25 @@ fn describe(o: &DbObject) -> String {
             if !c.nullable {
                 flags.push("not null");
             }
-            s.push_str(&format!("| {} | {} | {} |\n", c.name, c.data_type, flags.join(", ")));
+            s.push_str(&format!(
+                "| {} | {} | {} |\n",
+                md(&c.name),
+                md(&c.data_type),
+                flags.join(", ")
+            ));
         }
         if o.columns.len() > 40 {
             s.push_str(&format!("\n…and {} more columns\n", o.columns.len() - 40));
         }
     }
     if !o.params.is_empty() {
+        // a line of its own could end the code block early
         s.push_str("```\n");
         for p in &o.params {
             s.push_str(&format!(
                 "{} {}{}\n",
-                p.name,
-                p.data_type,
+                crate::text::one_line(&p.name),
+                crate::text::one_line(&p.data_type),
                 if p.is_output { " OUTPUT" } else { "" }
             ));
         }
@@ -742,11 +778,11 @@ pub fn hover(src: &str, offset: usize, dialect: Dialect, catalog: Option<&Catalo
     if tok.kind == TokenKind::Variable {
         let syms = document_symbols(src, dialect);
         let v = syms.variables.iter().find(|v| v.name.eq_ignore_ascii_case(tok.text))?;
-        return range(format!(
-            "`{} {}`",
+        return range(code(&format!(
+            "{} {}",
             v.name,
             v.data_type.as_deref().unwrap_or("(type unknown)")
-        ));
+        )));
     }
     let cat = catalog?;
     let name = tok.ident_value();
@@ -767,13 +803,13 @@ pub fn hover(src: &str, offset: usize, dialect: Dialect, catalog: Option<&Catalo
             if !r.columns.is_empty() {
                 return range(format!(
                     "**{}** — derived table / CTE\n\ncolumns: {}",
-                    r.visible_name(),
-                    r.columns.join(", ")
+                    md(r.visible_name()),
+                    r.columns.iter().map(|c| md(c)).collect::<Vec<_>>().join(", ")
                 ));
             }
         }
         if next_is_dot && cat.is_schema(&name) {
-            return range(format!("schema **{name}**"));
+            return range(format!("schema **{}**", md(&name)));
         }
     }
     // qualified column: alias.column / table.column
@@ -783,11 +819,11 @@ pub fn hover(src: &str, offset: usize, dialect: Dialect, catalog: Option<&Catalo
         && let Some(c) = o.columns.iter().find(|c| c.name.eq_ignore_ascii_case(&name))
     {
         return range(format!(
-            "column **{}.{}.{}**\n\n`{}`{}{}",
-            o.schema,
-            o.name,
-            c.name,
-            c.data_type,
+            "column **{}.{}.{}**\n\n{}{}{}",
+            md(&o.schema),
+            md(&o.name),
+            md(&c.name),
+            code(&c.data_type),
             if c.nullable { " null" } else { " not null" },
             if c.is_primary_key { " · primary key" } else { "" }
         ));
@@ -804,8 +840,11 @@ pub fn hover(src: &str, offset: usize, dialect: Dialect, catalog: Option<&Catalo
                 && let Some(c) = o.columns.iter().find(|c| c.name.eq_ignore_ascii_case(&name))
             {
                 return range(format!(
-                    "column **{}.{}.{}**\n\n`{}`",
-                    o.schema, o.name, c.name, c.data_type
+                    "column **{}.{}.{}**\n\n{}",
+                    md(&o.schema),
+                    md(&o.name),
+                    md(&c.name),
+                    code(&c.data_type)
                 ));
             }
         }
@@ -1169,6 +1208,36 @@ SELECT 1 FROM dbo.Gone"
         assert_eq!(object_at(src, 7, Dialect::MsSql, &c).unwrap().name, "Orders");
         let h = hover("DECLARE @n nvarchar(10); SELECT @n", 33, Dialect::MsSql, None).unwrap();
         assert!(h.contents.contains("nvarchar"));
+    }
+
+    /// Names come from the database: a hover shows them as they are, never
+    /// as Markdown (emphasis, a link, a broken table).
+    #[test]
+    fn hover_shows_names_as_they_are() {
+        let mut c = cat();
+        c.objects.push(DbObject {
+            schema: "dbo".into(),
+            name: "_Archive_".into(),
+            kind: ObjectKind::Table,
+            columns: vec![col("[x](https://e.example)", "int"), col("a|b", "enum('`')")],
+            params: vec![],
+        });
+        let src = "SELECT * FROM dbo._Archive_";
+        let h = hover(src, src.len() - 2, Dialect::MsSql, Some(&c)).unwrap();
+        assert!(
+            h.contents.starts_with("**dbo.\\_Archive\\_** — table"),
+            "{}",
+            h.contents
+        );
+        assert!(
+            h.contents.contains("| \\[x\\](https\\://e\\.example) | int |"),
+            "{}",
+            h.contents
+        );
+        assert!(h.contents.contains("| a\\|b | enum('\\`') |"), "{}", h.contents);
+        assert_eq!(code("enum('`')"), "``enum('`')``");
+        assert_eq!(code("`x"), "`` `x ``");
+        assert_eq!(md("a\nb"), "a b");
     }
 
     #[test]

@@ -126,6 +126,7 @@ impl MssqlConn {
             }
         };
         let mut current: Option<ResultSet> = None;
+        let mut kept = 0;
         // the count after a result set belongs to that SELECT
         let mut after_select = false;
         loop {
@@ -136,7 +137,7 @@ impl MssqlConn {
                 }
                 Ok(Some(CommandItem::Row(row))) => {
                     if let Some(rs) = current.as_mut() {
-                        push_row(rs, row, limits);
+                        push_row(rs, row, limits, &mut kept);
                     }
                 }
                 Ok(Some(CommandItem::RowsAffected(n))) => {
@@ -172,6 +173,7 @@ impl MssqlConn {
             }
         };
         let mut current: Option<ResultSet> = None;
+        let mut kept = 0;
         loop {
             match stream.try_next().await {
                 Ok(Some(QueryItem::Metadata(meta))) => {
@@ -179,7 +181,7 @@ impl MssqlConn {
                 }
                 Ok(Some(QueryItem::Row(row))) => {
                     if let Some(rs) = current.as_mut() {
-                        push_row(rs, row, limits);
+                        push_row(rs, row, limits, &mut kept);
                     }
                 }
                 Ok(None) => break,
@@ -236,12 +238,13 @@ fn new_result_set(meta: &ResultMetadata) -> ResultSet {
     }
 }
 
-fn push_row(rs: &mut ResultSet, row: Row, limits: &Limits) {
-    if rs.rows.len() >= limits.max_rows {
+/// Keep a row while the limits allow; `kept`: bytes kept by the batch so far.
+fn push_row(rs: &mut ResultSet, row: Row, limits: &Limits, kept: &mut usize) {
+    if rs.rows.len() >= limits.max_rows || *kept >= limits.max_result_bytes {
         rs.truncated = true;
         return;
     }
-    rs.push_cells(row.into_iter().map(cell), limits.max_cell_chars);
+    *kept += rs.push_cells(row.into_iter().map(cell), limits.max_cell_chars);
 }
 
 fn error_text(e: &tiberius::error::Error) -> String {

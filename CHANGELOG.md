@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+- **A saved password goes only to the server and user it was saved for.** Editing a saved connection to point at
+  another server and pressing Test (or Save, then Connect) sent the saved password to that server. Now the dialog
+  asks to type the password, and saving the change removes the old one. Another port or instance of the same
+  computer keeps it, as the Connection Doctor's fixes need.
+- **Large results no longer close the app.** A result of long values (the row limit allows 100,000 rows of 65,535
+  characters) took gigabytes of memory; a run now keeps rows until their values hold 100 MB of text, says so, and
+  still runs the statements after (a run on multiple databases counts them all together). PostgreSQL also read a
+  whole result before keeping its first rows (a SELECT of 50 million rows could close the app); rows past the limits
+  are now dropped as they arrive. MySQL now says when a result was cut, as the others do.
+- **PostgreSQL `COPY … FROM STDIN`** (from a dump script) ended the session with "unexpected message from server",
+  rolling back an open transaction, or failed with a syntax error at its rows; `COPY … TO STDOUT` failed with the
+  same message. Both now say why they cannot run here, and nothing reaches the server.
+- **The hover shows names as they are.** A table, column or type name with Markdown characters (`_Archive_`,
+  `[x](https://…)`, `a|b`) showed in italics, as a link to a web page, or broke the list of columns.
+- **F8 opens and closes Object Explorer while typing**: the editor kept it to jump to its next problem.
+- **Connection Doctor**: a fix that needs administrator rights ran from a script file in the temp folder, which
+  another program could change between writing it and the elevated run; the script now goes on the command line.
+- **Exports write only their own kinds of files** (CSV, TSV, text, SVG, HTML, Markdown, JSON, SQL and Excel): a file
+  name with another extension is refused.
+- **Security updates**: DOMPurify 3.4.17 (three advisories of 22 October 2026; the editor uses it for hover text) and
+  Tokio 1.54.1 (1.54.0 was withdrawn: a race in its interval timers could corrupt memory).
+
 ## 0.2.9
 
 - **Execute the statement at the cursor** (Shift+F5, or F5 with that option) ran only a part of a statement that a

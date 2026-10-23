@@ -778,22 +778,48 @@ fn fix_script(fix: &Fix) -> Option<String> {
     })
 }
 
+/// `script` for `powershell -EncodedCommand`: UTF-16LE in Base64.
+fn encoded_command(script: &str) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |n, (i, b)| n | (u32::from(*b) << (16 - 8 * i)));
+        for k in 0..4 {
+            out.push(if k <= chunk.len() {
+                ALPHABET[((n >> (18 - 6 * k)) & 63) as usize] as char
+            } else {
+                '='
+            });
+        }
+    }
+    out
+}
+
 /// Run an administrative fix through a UAC prompt. Returns a message for
-/// the user either way.
+/// the user either way. The script goes on the command line: a file another
+/// program of the user could change, between writing it and the elevated
+/// run, would run as administrator.
 fn run_elevated(body: &str) -> Result<String, String> {
-    let dir = std::env::temp_dir().join(format!("sqlotus-fix-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let script = dir.join("fix.ps1");
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let dir = std::env::temp_dir().join(format!("sqlotus-fix-{}-{nonce}", std::process::id()));
+    // a new folder: one made beforehand could hold a link for the log
+    // that the elevated run would follow
+    std::fs::create_dir(&dir).map_err(|e| e.to_string())?;
     let log = dir.join("fix.log");
-    let _ = std::fs::remove_file(&log);
     let wrapped = format!(
         "$ErrorActionPreference = 'Stop'\ntry {{\n{body}\n'OK' | Out-File -FilePath {log} -Encoding utf8\n}} catch {{\n\"ERROR: $_\" | Out-File -FilePath {log} -Encoding utf8\n}}\n",
         log = ps_quote(&log.to_string_lossy())
     );
-    std::fs::write(&script, wrapped).map_err(|e| e.to_string())?;
     let launcher = format!(
-        "try {{ Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',{} ; 'launched' }} catch {{ 'declined' }}",
-        ps_quote(&format!("\"{}\"", script.to_string_lossy()))
+        "try {{ Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-EncodedCommand','{}' ; 'launched' }} catch {{ 'declined' }}",
+        encoded_command(&wrapped)
     );
     let launched = powershell(&launcher).unwrap_or_default();
     let result = std::fs::read_to_string(&log).unwrap_or_default();
@@ -844,9 +870,8 @@ pub async fn apply_fix(
     config: ConnectionConfig,
     password: Option<String>,
 ) -> CmdResult<String> {
-    let password = password
-        .filter(|p| !p.is_empty())
-        .or_else(|| state.store.get_password(&config.id).ok().flatten());
+    // the fix runs either way; checking it needs a password that fits
+    let password = crate::commands::resolve_password(&state, &config, password);
     let message = if let Fix::EnableLogin { login } = &fix {
         enable_login(&config, login).await?
     } else {
@@ -856,6 +881,10 @@ pub async fn apply_fix(
         tauri::async_runtime::spawn_blocking(move || run_elevated(&body))
             .await
             .map_err(|e| e.to_string())??
+    };
+    let password = match password {
+        Ok(p) => p,
+        Err(e) => return Ok(format!("{message} {e}")),
     };
     // give a restarted service a moment, then verify
     for attempt in 0..6 {
@@ -875,6 +904,32 @@ pub async fn apply_fix(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The elevated fix runs from the command line, not from a file: the
+    /// encoding is PowerShell's (UTF-16LE in Base64), and it runs as written.
+    #[test]
+    fn elevated_scripts_go_on_the_command_line() {
+        assert_eq!(encoded_command("a"), "YQA=");
+        assert_eq!(encoded_command("ab"), "YQBiAA==");
+        assert_eq!(
+            encoded_command("Write-Output 'Đã sửa'"),
+            "VwByAGkAdABlAC0ATwB1AHQAcAB1AHQAIAAnABAB4wAgAHMA7R5hACcA"
+        );
+        #[cfg(windows)]
+        {
+            let script = "$x = 'Đ'; Write-Output \"ok $([int][char]$x)\"";
+            let out = Command::new("powershell")
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-EncodedCommand",
+                    &encoded_command(script),
+                ])
+                .output()
+                .unwrap();
+            assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "ok 272");
+        }
+    }
 
     #[test]
     fn classifies_driver_errors() {

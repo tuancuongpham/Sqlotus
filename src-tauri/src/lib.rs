@@ -83,6 +83,7 @@ pub fn run() {
             commands::list_connections,
             commands::save_connection,
             commands::delete_connection,
+            commands::saved_password_fits,
             commands::test_connection,
             commands::connect_tab,
             commands::disconnect_tab,

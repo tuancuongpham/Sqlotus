@@ -11,6 +11,8 @@
 //   5. a pasted query nested thousands of levels deep, and a 2 MB script
 //   6. "Ignore on this line" while a string is still being typed
 //   7. typing with completion, and reopening a closed tab
+//   8. a saved connection edited to point at another server leaves its
+//      saved password behind
 //
 //   $env:SQLOTUS_E2E_PASSWORD="..."; node scripts/e2e-user-flows.mjs [screenshot-dir]
 import { start } from "./e2e-kit.mjs";
@@ -22,6 +24,20 @@ const { sleep, evaluate, press, shot, invoke } = ui;
 const before = new Set(await t.tabTitles());
 /** The SQL Server tab of flows 3 and 4 (also used to clean up). */
 let tabA = null;
+/** The saved connection flow 8 edits (its own: the shared ones keep their passwords). */
+const MOVED = {
+  id: "e2e-moved",
+  name: "E2E Moved",
+  dialect: "mssql",
+  host: "localhost,14333",
+  port: null,
+  database: "Shop",
+  auth: "sql",
+  user: "sa",
+  encrypt: false,
+  trustServerCertificate: true,
+  color: null,
+};
 const scalar = (rows) => rows?.[0]?.[0] ?? null;
 
 /** Run `sql` and return the rows of its first result. */
@@ -234,6 +250,49 @@ try {
   await press("Control+Shift+T");
   const reopened = await t.until(async () => ((await t.activeTitle()) === title ? t.flat(await ui.editorText()) : null), 8000);
   check("Ctrl+Shift+T brings the tab back with its text", !!reopened && reopened.includes("dbo.E2E_Audited"), reopened ?? "");
+
+  // 8. a saved connection edited to point at another server: its saved password stays behind
+  const tryInvoke = (cmd, args) =>
+    evaluate(`window.__TAURI_INTERNALS__.invoke(${JSON.stringify(cmd)}, ${JSON.stringify(args)}).then((v) => ({ ok: v }), (e) => ({ error: String(e) }))`);
+  await invoke("save_connection", { config: MOVED, password, forgetPassword: false });
+  const otherPort = { ...MOVED, host: "localhost", port: 14333 };
+  const elsewhere = { ...MOVED, host: "127.0.0.2,14333" };
+  check("the saved password fits its server on another port", (await invoke("saved_password_fits", { config: otherPort })) === true);
+  check("but not another server", (await invoke("saved_password_fits", { config: elsewhere })) === false);
+  const samePort = await tryInvoke("test_connection", { config: otherPort, password: null });
+  check("Test on another port of the server uses it", Array.isArray(samePort.ok) && samePort.ok.length > 0, JSON.stringify(samePort).slice(0, 160));
+  const refused = await tryInvoke("test_connection", { config: elsewhere, password: null });
+  check("Test of another server does not send it", (refused.error ?? "").includes("only sent to the server and user it was saved for"), JSON.stringify(refused).slice(0, 160));
+  await evaluate(`document.querySelector(".toolbar button").click()`);
+  await t.until(() => evaluate(`!!document.querySelector(".conn-modal")`), 5000);
+  await t.until(() =>
+    evaluate(`(() => {
+      const e = [...document.querySelectorAll(".conn-item")].find((e) => e.textContent.includes(${JSON.stringify(MOVED.name)}));
+      e?.click();
+      return !!e;
+    })()`),
+  );
+  await sleep(300);
+  await fill("Server", elsewhere.host);
+  const placeholder = await t.until(async () => {
+    const p = await evaluate(
+      `[...document.querySelectorAll(".conn-form label")].find((l) => l.firstChild?.textContent.trim() === "Password")?.querySelector("input")?.placeholder ?? ""`,
+    );
+    return p === "(type it again)" ? p : null;
+  }, 3000);
+  check("the form asks for the password again", !!placeholder);
+  await t.clearToasts();
+  await t.clickButton(".conn-modal .modal-actions", "Test");
+  const said = await t.until(() => evaluate(`document.querySelector(".conn-modal .status-error")?.textContent ?? ""`), 3000);
+  await sleep(300);
+  const doctor = await evaluate(`!!document.querySelector(".doctor-modal")`);
+  const diagnose = await evaluate(`[...document.querySelectorAll(".conn-modal button")].some((b) => b.textContent.includes("Diagnose this error"))`);
+  check("Test says to type the password, without the Connection Doctor", (said ?? "").includes("Type the password") && !doctor && !diagnose, `${said} | doctor ${doctor} | diagnose ${diagnose}`);
+  await t.clickButton(".conn-modal .modal-actions", "Save");
+  const removed = await t.waitToast("The saved password was removed", 5000);
+  const saved = (await invoke("list_connections")).find((c) => c.id === MOVED.id);
+  check("Save leaves the saved password behind", !!removed && saved?.hasPassword === false, `${removed ?? (await t.toastText())} | hasPassword ${saved?.hasPassword}`);
+  await t.clickButton(".conn-modal .modal-actions", "Close");
 } catch (e) {
   check("no exception", false, String(e?.stack ?? e));
 } finally {
@@ -249,6 +308,7 @@ try {
   } catch {
     // the cleanup is best effort
   }
+  await invoke("delete_connection", { id: MOVED.id }).catch(() => undefined);
   await t.closeTabsSince(before);
 }
 

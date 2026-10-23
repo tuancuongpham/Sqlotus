@@ -106,6 +106,9 @@ pub async fn export_xlsx(
     if rows.len() >= 1_048_576 {
         return Err("Excel sheets hold at most 1,048,575 rows; filter the results or save them as CSV.".into());
     }
+    if let Some(p) = &path {
+        crate::intel::export_kind(p, &["xlsx"])?;
+    }
     let path = match path {
         Some(p) => PathBuf::from(p),
         None => {

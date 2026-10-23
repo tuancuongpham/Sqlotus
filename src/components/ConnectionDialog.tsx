@@ -30,6 +30,9 @@ const ENV_ORDER = ["prod", "staging", "test", "dev", ""];
 
 const FOLDED_KEY = "sqlotus.foldedConnectionFolders";
 
+/** A saved connection edited to point at another server or user leaves its password behind. */
+const PASSWORD_ELSEWHERE = "Type the password: the saved one is only sent to the server and user it was saved for.";
+
 /** The folder a filter names exactly, for a new connection made while filtering. */
 function filterFolder(folders: string[], filter: string): string | null {
   return folders.find((f) => f.toLowerCase() === filter.trim().toLowerCase()) ?? null;
@@ -79,7 +82,8 @@ export function ConnectionDialog({ onClose, onConnect }: Props) {
   const [cfg, setCfg] = useState<ConnectionConfig>(empty);
   const [password, setPassword] = useState("");
   const [savePassword, setSavePassword] = useState(true);
-  const [status, setStatus] = useState<{ ok: boolean; text: string } | null>(null);
+  // hint: a note on the form itself, not an error to diagnose
+  const [status, setStatus] = useState<{ ok: boolean; text: string; hint?: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
   const [filter, setFilter] = useState("");
   const [folded, setFolded] = useState(readFolded);
@@ -116,21 +120,49 @@ export function ConnectionDialog({ onClose, onConnect }: Props) {
     auth: cfg.dialect === "mssql" ? cfg.auth : "sql",
   });
 
+  // whether the saved password still goes with the form's server and user
+  const [fits, setFits] = useState(true);
+  useEffect(() => {
+    let live = true;
+    api
+      .savedPasswordFits(normalized())
+      .then((f) => live && setFits(f))
+      .catch(() => live && setFits(true));
+    return () => {
+      live = false;
+    };
+  }, [cfg.id, cfg.dialect, cfg.host, cfg.user, list]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const [doctorError, setDoctorError] = useState<string | null>(null);
 
   const save = async (announce = false) => {
     const c = normalized();
+    // saving the other server removes the saved password instead of moving it
+    const dropped = passwordLeft && savePassword && !password;
     await api.saveConnection(c, savePassword && password ? password : null, !savePassword);
     setCfg(c);
     await reload();
     if (announce) {
-      const pw = c.auth === "windows" ? "" : savePassword ? (password ? " Password saved in Windows Credential Manager." : "") : " Password not saved.";
+      const pw =
+        c.auth === "windows"
+          ? ""
+          : !savePassword
+            ? " Password not saved."
+            : password
+              ? " Password saved in Windows Credential Manager."
+              : dropped
+                ? " The saved password was removed: it is only sent to the server and user it was saved for."
+                : "";
       toast.success(`Connection "${c.name}" saved`, pw.trim() || undefined);
     }
     return c;
   };
 
   const test = async () => {
+    if (passwordLeft && !password) {
+      setStatus({ ok: false, text: PASSWORD_ELSEWHERE, hint: true });
+      return;
+    }
     setBusy(true);
     setStatus(null);
     const c = normalized();
@@ -141,6 +173,12 @@ export function ConnectionDialog({ onClose, onConnect }: Props) {
       update(id, "success", "Connection works", `${dbs.length} database(s) available`);
     } catch (e) {
       const err = errorText(e);
+      if (err === PASSWORD_ELSEWHERE) {
+        // nothing for the Connection Doctor: the password is missing
+        setStatus({ ok: false, text: err, hint: true });
+        update(id, "error", "Password needed", err);
+        return;
+      }
       setStatus({ ok: false, text: err });
       update(id, "error", "Connection failed", "The Connection Doctor shows why and how to fix it.", [
         { label: "Diagnose", run: () => setDoctorError(err) },
@@ -152,6 +190,10 @@ export function ConnectionDialog({ onClose, onConnect }: Props) {
   };
 
   const connect = async () => {
+    if (passwordLeft && !password) {
+      setStatus({ ok: false, text: PASSWORD_ELSEWHERE, hint: true });
+      return;
+    }
     setBusy(true);
     try {
       const c = await save();
@@ -182,6 +224,8 @@ export function ConnectionDialog({ onClose, onConnect }: Props) {
 
   const isSaved = list.some((x) => x.id === cfg.id);
   const hasStoredPassword = list.find((x) => x.id === cfg.id)?.hasPassword ?? false;
+  // edited to point at another server or user: the saved password stays behind
+  const passwordLeft = hasStoredPassword && !fits && (cfg.dialect !== "mssql" || cfg.auth === "sql");
   const folders = [...new Set(list.map((c) => (c.group ?? "").trim()).filter(Boolean))].sort();
   const words = filter.trim().toLowerCase().split(/\s+/).filter(Boolean);
   const shown = words.length
@@ -300,7 +344,7 @@ export function ConnectionDialog({ onClose, onConnect }: Props) {
                   <input
                     type="password"
                     value={password}
-                    placeholder={hasStoredPassword ? "(saved)" : ""}
+                    placeholder={hasStoredPassword ? (fits ? "(saved)" : "(type it again)") : ""}
                     onChange={(e) => setPassword(e.target.value)}
                   />
                 </label>
@@ -378,7 +422,7 @@ export function ConnectionDialog({ onClose, onConnect }: Props) {
               </div>
             </label>
             {status && <div className={status.ok ? "status-ok" : "status-error"}>{status.text}</div>}
-            {status && !status.ok && (
+            {status && !status.ok && !status.hint && (
               <button className="primary" onClick={() => setDoctorError(status.text)}>
                 🩺 Diagnose this error
               </button>

@@ -47,6 +47,7 @@ async fn result(conn: &mut Connection, sql: &str) -> CmdResult<ResultSet> {
             &Limits {
                 max_rows: 10_000,
                 max_cell_chars: usize::MAX,
+                max_result_bytes: usize::MAX,
             },
         )
         .await;

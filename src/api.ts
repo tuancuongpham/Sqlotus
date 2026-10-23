@@ -61,6 +61,8 @@ export const api = {
   deleteConnection: (id: string) => invoke<void>("delete_connection", { id }),
   testConnection: (config: ConnectionConfig, password: string | null) =>
     invoke<string[]>("test_connection", { config, password }),
+  /** Whether the saved password of the connection is sent for `config` as it is (same server and user). */
+  savedPasswordFits: (config: ConnectionConfig) => invoke<boolean>("saved_password_fits", { config }),
 
   connectTab: (tabId: string, connectionId: string, database: string | null, password: string | null) =>
     invoke<TabConnection>("connect_tab", { tabId, connectionId, database, password }),
