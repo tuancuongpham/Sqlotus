@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.10
 
 - **A saved password goes only to the server and user it was saved for.** Editing a saved connection to point at
   another server and pressing Test (or Save, then Connect) sent the saved password to that server. Now the dialog
